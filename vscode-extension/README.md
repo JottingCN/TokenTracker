@@ -1,35 +1,146 @@
 # Token Tracker for VS Code
 
-Thin VS Code client for the local Token Tracker stack:
+在状态栏实时查看 Copilot Token 缓存命中率与人民币估算费用，并一键打开完整的本地看板。
 
-- Runs the bundled `TokenTracker.Server` as one shared local instance (Windows, `127.0.0.1:4318` by default). No Windows service required: VS Code starts it on activation; start/stop commands are also provided.
-- Shows cache hit rate and estimated CNY cost in the status bar (updates over WebSocket).
-- Opens the full dashboard in your default browser.
-- Exposes its server URL/API to other extensions through `extension.exports`.
+扩展本身是薄客户端：它内置并托管 `TokenTracker.Server`（Windows x64 自包含构建），多个 VS Code 窗口共享同一实例；
 
-Commands:
+## 功能
 
-- `Token Tracker: 在浏览器中打开看板`
-- `Token Tracker: 启动服务`
-- `Token Tracker: 停止服务`
-- `Token Tracker: 服务信息`
-- `Token Tracker: 刷新状态栏`
+- **状态栏合并统计**：显示当前工作区最新会话的命中率与费用，格式 `$(pulse) 00.00% · ¥0.00`；没有可用费用时省略费用。
+- **多模型 tooltip**：
+  - 标题为 `Token Tracker - 会话名称`
+  - 显示时间范围与模型数量
+  - 每个模型独立展示调用次数、命中率、费用，以及输入 / 缓存 / 输出 / 思考四类 token 与费用
+- **工作区自动匹配**：按会话工作区过滤，当前窗口没有 token 数据时自动隐藏，有数据后自动出现。
+- **名称自动刷新**：监听 `agent-host.db` 与 `workspace.yaml`，会话改名或工作区变化后自动更新。
+- **浏览器看板**：完整的主页、模型、会话、价格设置页面。
+- **共享服务**：同一端口只保留一个服务实例，VS Code 窗口和浏览器共用。
 
-The status bar automatically scopes to the current window's workspace folders (sessions are matched by their workspace path) and is hidden when that workspace has no token data; when no folder is open it falls back to all sessions. The tooltip shows the latest session's token/price breakdown.
+## 前置条件
 
-Runtime and data live in the extension cache (`globalStorage`):
+- Windows 10 / 11 x64
+- VS Code 1.90 或更高版本
+- 已安装 GitHub Copilot 并在 VS Code 中开启 OpenTelemetry 导出
 
-- `runtime/<buildId>/` — versioned copy of the bundled server. A new build gets a new directory, so updates never overwrite a running binary.
-- `data/tokentracker.db` — SQLite database (migrated once from `%LOCALAPPDATA%\TokenTracker`).
+在 VS Code `settings.json` 中加入：
 
-If an older instance was started by the extension, an updated build stops it and starts the cached copy; externally managed instances are reused with a warning.
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "otlp-http",
+  "github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:4318",
+  "github.copilot.chat.otel.protocol": "http/json",
+  "github.copilot.chat.otel.captureContent": false
+}
+```
 
-Settings: `tokentracker.port`, `tokentracker.autoStart`, `tokentracker.statsRange` (today / 7d / 30d / all), `tokentracker.idleExitSeconds` (default 60; server exits after all windows close and no clients remain).
+## 安装
 
-Build:
+```bash
+code --install-extension tokentracker-0.1.0.vsix --force
+```
+
+安装后重新加载 VS Code 窗口。扩展会在激活时自动启动服务，状态栏出现在右下角。
+
+## 命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `Token Tracker: 在浏览器中打开看板` | 用默认浏览器打开 `http://127.0.0.1:<port>` |
+| `Token Tracker: 服务信息` | 显示服务版本、地址、是否由本扩展启动 |
+| `Token Tracker: 刷新状态栏` | 重新订阅并刷新数据 |
+| `Token Tracker: 启动服务` | 启动共享服务 |
+| `Token Tracker: 停止服务` | 停止由扩展启动的服务（外部实例不会停止） |
+
+## 状态栏
+
+- 统计对象：当前窗口工作区内最近更新的会话；汇总该会话下所有模型的数据。
+- 显示内容：命中率（2 位小数）+ 估算费用（2 位小数，无法估算时隐藏）。
+- 工作区没有 token 数据时状态栏隐藏，出现新数据后自动显示。
+- 未打开文件夹时回退为“所有工作区”。
+
+### 会话名称与工作区
+
+标题优先级：
+
+1. `agent-host.db` 中 `titleSource=user`（VS Code 内手动改名）
+2. `workspace.yaml` 中 `user_named: true`
+3. `agent-host.db` 的自动摘要（与 VS Code 会话列表一致）
+4. `workspace.yaml` 的自动名称
+
+工作区路径优先取 `workspace.yaml` 的 `cwd`，缺失时回退到 `agent-host.db` 记录的工作目录。
+
+刷新机制：
+
+- `workspace.yaml` 变化：500ms 去抖后立即刷新。
+- `agent-host.db` 变化：500ms 去抖，且最多每 15 秒刷新一次（聊天过程中的草稿 / 轮次写入不会造成频繁刷新）。
+- VS Code 工作区文件夹变化：立即重新匹配。
+
+## 设置
+
+| 设置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `tokentracker.port` | `4318` | 本地服务端口（`127.0.0.1`） |
+| `tokentracker.autoStart` | `true` | 服务未运行时自动启动 |
+| `tokentracker.statsRange` | `7d` | 状态栏统计范围：`today` / `7d` / `30d` / `all` |
+| `tokentracker.idleExitSeconds` | `60` | 所有客户端（VS Code 窗口或浏览器）断开后延迟退出；`0` 表示不自动退出 |
+
+## 服务生命周期
+
+- 扩展激活时先检查端口上的现有服务：
+  - 构建一致：直接复用。
+  - 由扩展启动且构建不一致：停止旧实例并启动当前构建。
+  - 由外部启动：复用，构建不一致时提示。
+- 服务运行时文件和数据库都在扩展缓存中：
+
+```
+%APPDATA%\Code\User\globalStorage\jotting.tokentracker\
+├─ runtime\<buildId>\        # 按构建版本隔离的服务副本
+├─ data\tokentracker.db      # SQLite 数据库
+└─ extension.log             # 诊断日志
+```
+
+- 新构建使用新的 `runtime\<buildId>` 目录，不会覆盖正在运行的二进制；旧版本目录会在启动后清理（仍被占用时跳过）。
+- 首次使用时会尝试迁移 `%LOCALAPPDATA%\TokenTracker` 下的旧数据库。
+- 所有 VS Code 窗口和浏览器都断开后，服务按 `idleExitSeconds` 退出；关闭窗口不会影响其他窗口正在使用的服务。
+
+## 对外 API
+
+其他扩展可通过 `extension.exports` 访问：
+
+```ts
+interface TokenTrackerApi {
+  getServerUrl(): string | undefined;
+  getVersion(): unknown;
+  openDashboard(): Promise<void>;
+  refresh(): void;
+  startServer(): Promise<void>;
+  stopServer(): Promise<void>;
+}
+```
+
+## 开发
 
 ```bash
 npm install
-npm run build        # tsc + dotnet publish into ./server
-npm run package      # produces token tracer .vsix
+npm run build     # tsc + dotnet publish 服务到 ./server
+npm run package   # 生成 tokentracker-*.vsix
 ```
+
+调试日志：
+
+- 输出面板：`Token Tracker`
+- 文件：`%APPDATA%\Code\User\globalStorage\jotting.tokentracker\extension.log`
+
+## 排查
+
+- **状态栏不显示**：确认当前工作区有会话数据；打开“服务信息”确认服务已运行；检查 Copilot OTel 配置是否指向 `http://127.0.0.1:4318`。
+- **端口被占用**：修改 `tokentracker.port`，并同步修改 Copilot 的 `otlpEndpoint`。
+- **服务版本不一致**：若提示外部实例被复用，先停止外部进程，再执行 `Token Tracker: 启动服务`。
+- **改名未刷新**：确认 `agent-host.db` 或 `workspace.yaml` 发生变化；agent-host 触发的刷新最多延迟 15 秒。
+
+## 隐私
+
+- 仅在本机运行，不向后台上传数据。
+- 只处理 token / usage 计数，不采集对话内容（`captureContent: false`）。
+- 会话标题读取 `agent-host.db` 与 `workspace.yaml` 时使用只读连接。
