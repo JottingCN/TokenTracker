@@ -39,3 +39,24 @@ export async function httpGetJson<T>(
     return null;
   }
 }
+
+export function httpPost(url: string, timeoutMs: number): Promise<HttpResponse> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { method: 'POST' }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        resolve({ status: response.statusCode ?? 0, body });
+      });
+    });
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error('request timeout'));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}

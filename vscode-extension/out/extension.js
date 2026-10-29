@@ -29,6 +29,7 @@ const fs = __importStar(require("node:fs"));
 const os = __importStar(require("node:os"));
 const path = __importStar(require("node:path"));
 const vscode = __importStar(require("vscode"));
+const httpClient_1 = require("./httpClient");
 const runtimeManager_1 = require("./runtimeManager");
 const serverManager_1 = require("./serverManager");
 const statusBar_1 = require("./statusBar");
@@ -66,6 +67,21 @@ function currentWorkspaceRoots() {
 }
 const METADATA_DEBOUNCE_MS = 500;
 const AGENT_HOST_THROTTLE_MS = 15_000;
+async function notifyMetadataChanged() {
+    const url = server?.url;
+    if (url) {
+        try {
+            const response = await (0, httpClient_1.httpPost)(`${url}/api/metadata-changed`, 1500);
+            if (response.status >= 200 && response.status < 300) {
+                return;
+            }
+        }
+        catch {
+            // Fall back to resubscribing below.
+        }
+    }
+    statusBar?.refresh();
+}
 function registerMetadataWatchers(context) {
     const targets = [];
     const sessionStateDirectory = process.env.TOKENTRACKER_SESSION_STATE_DIR ??
@@ -107,7 +123,7 @@ function registerMetadataWatchers(context) {
                     schedule.timer = undefined;
                     schedule.lastRefreshAt = Date.now();
                     log(`session metadata changed: ${uri.fsPath}`);
-                    statusBar?.refresh();
+                    void notifyMetadataChanged();
                 }, wait);
             };
             watcher.onDidChange(changed);

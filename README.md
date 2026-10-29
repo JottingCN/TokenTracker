@@ -18,7 +18,7 @@
 - **价格覆盖**：看板内可修改内置价格、恢复默认、添加 / 删除自定义模型；保存后自动重算历史费用。
 - **时间范围**：今天 / 昨天 / 近 7 天 / 近 30 天 / 全部，Web 端支持自定义起止时间。
 - **多模型会话**：同一会话跨模型的统计自动合并，下钻时按模型分开展示。
-- **会话标题**：来自本机 VS Code 的 `agent-host.db` 与 `~/.copilot/session-state`，按优先级自动解析并跟随改名刷新。
+- **会话标题**：来自本机 VS Code 的 `agent-host.db` 与 `~/.copilot/session-state`，按优先级自动解析；改名和工作区变化会推送给所有已连接客户端。
 - **实时推送**：WebSocket 变更驱动推送（新 span、价格变更、重新订阅），空闲时服务按需退出。
 - **数据保留**：启动时清理 90 天前的 span。
 
@@ -121,7 +121,7 @@ dotnet run --project src/TokenTracker.Server -c Release
 3. `agent-host.db` 的自动 / agent 摘要（与 VS Code 会话列表一致）
 4. `workspace.yaml` 的自动名称
 
-工作区路径取 `workspace.yaml` 的 `cwd`，缺失时回退到 `agent-host.db` 的工作目录；状态栏据此匹配当前 VS Code 窗口。
+工作区路径优先取 `agent-host.db` 记录的工作目录，缺失时回退到 `workspace.yaml` 的 `cwd`；状态栏据此匹配当前 VS Code 窗口。
 
 ## 构建与测试
 

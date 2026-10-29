@@ -68,12 +68,13 @@ code --install-extension tokentracker-0.1.0.vsix --force
 3. `agent-host.db` 的自动摘要（与 VS Code 会话列表一致）
 4. `workspace.yaml` 的自动名称
 
-工作区路径优先取 `workspace.yaml` 的 `cwd`，缺失时回退到 `agent-host.db` 记录的工作目录。
+工作区路径优先取 `agent-host.db` 记录的工作目录，缺失时回退到 `workspace.yaml` 的 `cwd`。
 
 刷新机制：
 
 - `workspace.yaml` 变化：500ms 去抖后立即刷新。
 - `agent-host.db` 变化：500ms 去抖，且最多每 15 秒刷新一次（聊天过程中的草稿 / 轮次写入不会造成频繁刷新）。
+- 变化会通知本地服务，向所有已连接客户端（VS Code 与浏览器看板）推送最新快照。
 - VS Code 工作区文件夹变化：立即重新匹配。
 
 ## 设置

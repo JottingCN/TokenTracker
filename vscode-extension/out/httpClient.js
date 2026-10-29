@@ -25,6 +25,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.httpGet = httpGet;
 exports.httpGetJson = httpGetJson;
+exports.httpPost = httpPost;
 const http = __importStar(require("node:http"));
 function httpGet(url, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -55,5 +56,24 @@ async function httpGetJson(url, timeoutMs) {
     catch {
         return null;
     }
+}
+function httpPost(url, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const request = http.request(url, { method: 'POST' }, (response) => {
+            let body = '';
+            response.setEncoding('utf8');
+            response.on('data', (chunk) => {
+                body += chunk;
+            });
+            response.on('end', () => {
+                resolve({ status: response.statusCode ?? 0, body });
+            });
+        });
+        request.setTimeout(timeoutMs, () => {
+            request.destroy(new Error('request timeout'));
+        });
+        request.on('error', reject);
+        request.end();
+    });
 }
 //# sourceMappingURL=httpClient.js.map

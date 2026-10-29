@@ -35,10 +35,10 @@ public sealed class SessionMetadataProvider
 
         var workspace = GetWorkspaceMetadata(sessionId!);
         var agent = _agentHost.Get(sessionId!);
-        var workspacePath = workspace?.WorkspacePath;
+        var workspacePath = agent?.WorkspacePath;
         if (string.IsNullOrWhiteSpace(workspacePath))
         {
-            workspacePath = agent?.WorkspacePath;
+            workspacePath = workspace?.WorkspacePath;
         }
 
         if (agent is { UserNamed: true })

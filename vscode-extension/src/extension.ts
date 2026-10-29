@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { httpPost } from './httpClient';
 import { cleanupOldRuntimes, prepareRuntime } from './runtimeManager';
 import {
   ensureServer,
@@ -48,6 +49,22 @@ function currentWorkspaceRoots(): string[] {
 
 const METADATA_DEBOUNCE_MS = 500;
 const AGENT_HOST_THROTTLE_MS = 15_000;
+
+async function notifyMetadataChanged(): Promise<void> {
+  const url = server?.url;
+  if (url) {
+    try {
+      const response = await httpPost(`${url}/api/metadata-changed`, 1500);
+      if (response.status >= 200 && response.status < 300) {
+        return;
+      }
+    } catch {
+      // Fall back to resubscribing below.
+    }
+  }
+
+  statusBar?.refresh();
+}
 
 function registerMetadataWatchers(context: vscode.ExtensionContext): void {
   const targets: Array<[string, string, number]> = [];
@@ -105,7 +122,7 @@ function registerMetadataWatchers(context: vscode.ExtensionContext): void {
           schedule.timer = undefined;
           schedule.lastRefreshAt = Date.now();
           log(`session metadata changed: ${uri.fsPath}`);
-          statusBar?.refresh();
+          void notifyMetadataChanged();
         }, wait);
       };
 

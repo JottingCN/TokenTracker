@@ -194,6 +194,12 @@ app.MapDelete("/api/prices", (string model) =>
     return Results.NoContent();
 });
 
+app.MapPost("/api/metadata-changed", () =>
+{
+    hub.NotifyChanged();
+    return Results.NoContent();
+});
+
 app.MapPost("/v1/traces", async (HttpContext context) =>
 {
     try

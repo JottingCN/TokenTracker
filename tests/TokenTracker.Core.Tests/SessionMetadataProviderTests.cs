@@ -187,7 +187,7 @@ public sealed class SessionMetadataProviderTests
     }
 
     [Fact]
-    public void WorkspaceYamlCwdWinsOverAgentHostDirectory()
+    public void AgentHostDirectoryWinsOverWorkspaceYamlCwd()
     {
         var root = CreateRoot();
         try
@@ -209,7 +209,7 @@ public sealed class SessionMetadataProviderTests
             var provider = new SessionMetadataProvider(root, database);
 
             Assert.Equal(
-                @"D:\yaml\project",
+                @"D:\agent\project",
                 provider.Get("session-7")!.WorkspacePath,
                 ignoreCase: true);
         }
