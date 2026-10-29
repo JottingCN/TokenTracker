@@ -132,6 +132,7 @@ npm run package   # 生成 tokentracker-*.vsix
 
 - 输出面板：`Token Tracker`
 - 文件：`%APPDATA%\Code\User\globalStorage\jotting.tokentracker\extension.log`
+- 超过 1 MB 自动轮转为 `extension.log.1`（保留一份），磁盘占用上限约 2 MB
 
 ## 排查
 

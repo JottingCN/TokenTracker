@@ -38,12 +38,39 @@ let fallbackItem;
 let server;
 let output;
 let logFile;
+const LOG_MAX_BYTES = 1024 * 1024;
+function rotateLogIfNeeded() {
+    if (!logFile) {
+        return;
+    }
+    try {
+        if (fs.statSync(logFile).size < LOG_MAX_BYTES) {
+            return;
+        }
+    }
+    catch {
+        return;
+    }
+    try {
+        fs.rmSync(`${logFile}.1`, { force: true });
+        fs.renameSync(logFile, `${logFile}.1`);
+    }
+    catch {
+        try {
+            fs.truncateSync(logFile, 0);
+        }
+        catch {
+            // Diagnostics only.
+        }
+    }
+}
 function log(message) {
     output?.appendLine(message);
     if (!logFile) {
         return;
     }
     try {
+        rotateLogIfNeeded();
         fs.appendFileSync(logFile, `${new Date().toISOString()} ${message}\n`, 'utf8');
     }
     catch {
