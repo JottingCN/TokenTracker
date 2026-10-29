@@ -3,6 +3,7 @@ import { SummaryCards } from '../components/SummaryCards';
 import { sessionColumns } from '../components/columns';
 import { useRealtime } from '../useRealtime';
 import { providerOf, shortModelName } from '../utils/model';
+import { useMoney } from '../utils/money';
 import type { ModelPayload } from '../types';
 
 interface ModelPageProps {
@@ -20,6 +21,7 @@ export function ModelPage({
   toMs,
   onOpenSession,
 }: ModelPageProps) {
+  useMoney();
   const { data, connected } = useRealtime<ModelPayload>({
     view: 'model',
     id: modelId,
@@ -54,7 +56,7 @@ export function ModelPage({
           dataSource={data?.sessions ?? []}
           loading={!data}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          scroll={{ x: 1100, y: 420 }}
+          scroll={{ x: 930, y: 420 }}
         />
       </Card>
     </Space>

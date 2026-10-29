@@ -7,6 +7,7 @@ import {
   Input,
   InputNumber,
   Popconfirm,
+  Select,
   Space,
   Switch,
   Table,
@@ -15,6 +16,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ModelPriceRow } from '../types';
+import { useMoney } from '../utils/money';
 
 interface PriceSettingsDrawerProps {
   open: boolean;
@@ -38,6 +40,7 @@ const periodLabels: Record<PeriodKind, { text: string; color: string }> = {
 
 export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps) {
   const { message } = AntApp.useApp();
+  const money = useMoney();
   const [rows, setRows] = useState<ModelPriceRow[]>([]);
   const [drafts, setDrafts] = useState<Record<string, ModelPriceRow>>({});
   const [loading, setLoading] = useState(false);
@@ -187,7 +190,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         : field === 'uncachedInput'
           ? 'peakUncachedInput'
           : 'peakOutput';
-    const value =
+    const cnyValue =
       kind === 'peak'
         ? ((draft[peakField] ?? draft[field]) as number)
         : (draft[field] as number);
@@ -196,14 +199,14 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       <InputNumber
         size="small"
         min={0}
-        step={0.01}
-        precision={4}
+        step={money.settings.unit === 'credit' ? 0.01 : 0.001}
+        precision={money.pricePrecision}
         controls={false}
-        value={value}
+        value={money.toPriceInput(cnyValue)}
         onChange={(next) =>
           update(row, {
             [kind === 'peak' ? peakField : field]:
-              typeof next === 'number' ? next : 0,
+              money.fromPriceInput(typeof next === 'number' ? next : 0),
           } as Partial<ModelPriceRow>)
         }
         style={{ width: '100%' }}
@@ -357,7 +360,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
 
   return (
     <Drawer
-      title="模型价格设置（元 / 百万 tokens）"
+      title={`模型价格设置（${money.unitLabel} ${money.priceSuffix}）`}
       width={1120}
       open={open}
       onClose={onClose}
@@ -382,6 +385,58 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           height: '100%',
         }}
       >
+        <Space wrap size="middle">
+          <Space size={6}>
+            <Typography.Text>费用单位</Typography.Text>
+            <Select
+              value={money.settings.unit}
+              onChange={(unit) => money.setSettings({ unit })}
+              style={{ width: 150 }}
+              options={[
+                { value: 'cny', label: '人民币（CNY）' },
+                { value: 'usd', label: '美元（USD）' },
+                { value: 'credit', label: '积分' },
+              ]}
+            />
+          </Space>
+          {money.settings.unit === 'usd' && (
+            <InputNumber
+              size="small"
+              min={0.01}
+              step={0.1}
+              precision={4}
+              addonBefore="1 USD ="
+              addonAfter="CNY"
+              value={money.settings.usdRate}
+              onChange={(value) =>
+                money.setSettings({
+                  usdRate: typeof value === 'number' ? value : 7.2,
+                })
+              }
+            />
+          )}
+          {money.settings.unit === 'credit' && (
+            <InputNumber
+              size="small"
+              min={0.0001}
+              step={0.001}
+              precision={4}
+              addonBefore="1 积分 ="
+              addonAfter="CNY"
+              value={money.settings.creditRate}
+              onChange={(value) =>
+                money.setSettings({
+                  creditRate: typeof value === 'number' ? value : 0.01,
+                })
+              }
+            />
+          )}
+        </Space>
+
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          费用单位作用于看板显示与价格输入；价格保存时换算为 CNY 存入数据库。
+        </Typography.Text>
+
         <Space.Compact style={{ width: 460 }}>
           <Input
             placeholder="新增模型 ID，例如 kimi-k3.1-pro"

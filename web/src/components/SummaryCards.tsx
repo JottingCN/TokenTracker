@@ -1,5 +1,6 @@
 import { Card, Col, Row } from 'antd';
 import type { Summary } from '../types';
+import { formatMoney, useMoney } from '../utils/money';
 
 interface SummaryCardsProps {
   summary: Summary | null;
@@ -15,6 +16,8 @@ interface CardDefinition {
 }
 
 export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
+  useMoney();
+
   const cards: CardDefinition[] = [
     {
       label: '主调用',
@@ -23,12 +26,12 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
     {
       label: '输入 tokens',
       value: summary ? number.format(summary.inputTokens) : '-',
-      cost: summary?.uncachedCostText ?? '-',
+      cost: summary ? formatMoney(summary.uncachedCostCny) : '-',
     },
     {
       label: '缓存命中 tokens',
       value: summary ? number.format(summary.cacheReadTokens) : '-',
-      cost: summary?.cacheCostText ?? '-',
+      cost: summary ? formatMoney(summary.cacheCostCny) : '-',
     },
     {
       label: '命中率',
@@ -40,19 +43,19 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
     {
       label: '输出 tokens',
       value: summary ? number.format(summary.outputTokens) : '-',
-      cost: summary?.outputCostText ?? '-',
+      cost: summary ? formatMoney(summary.outputCostCny) : '-',
     },
     {
       label: '思考 tokens',
       value: summary ? summary.reasoningTokensText : '-',
       cost:
         summary && summary.reasoningTokens > 0
-          ? summary.reasoningCostText
+          ? formatMoney(summary.reasoningCostCny)
           : '-',
     },
     {
-      label: '估算费用 (CNY)',
-      value: summary ? `¥${summary.costCny.toFixed(6)}` : '-',
+      label: '估算费用',
+      value: summary ? formatMoney(summary.costCny) : '-',
     },
     lastCard ?? {
       label: '会话数',
@@ -67,7 +70,7 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
   return (
     <Row gutter={[12, 12]}>
       {cards.map((card) => (
-        <Col key={card.label} xs={12} md={8}>
+        <Col key={card.label} xs={24} sm={12} md={12} lg={8}>
           <Card size="small" style={{ height: '100%' }}>
             <div style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.45)' }}>
               {card.label}

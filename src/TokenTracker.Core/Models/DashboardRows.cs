@@ -94,7 +94,9 @@ public sealed partial record CallRow
     public string UncachedCostText => DisplayFormat.Price(UncachedCostCny);
     public string OutputCostText => DisplayFormat.Price(OutputCostCny);
     public string ReasoningCostText => DisplayFormat.Price(ReasoningCostCny);
-    public string PeriodText => DisplayFormat.Period(PricingPeriod);
+    public string PeriodText => CostCny is null
+        ? "未定价"
+        : DisplayFormat.Period(PricingPeriod);
     public string KindText => IsMain ? "main" : "util";
 }
 

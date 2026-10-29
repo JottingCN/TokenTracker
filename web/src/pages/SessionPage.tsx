@@ -5,6 +5,7 @@ import { callColumns, callRowKey } from '../components/columns';
 import { useRealtime } from '../useRealtime';
 import type { SessionPayload } from '../types';
 import { sessionDisplay } from '../utils/model';
+import { useMoney } from '../utils/money';
 
 interface SessionPageProps {
   sessionId: string;
@@ -12,6 +13,7 @@ interface SessionPageProps {
 }
 
 export function SessionPage({ sessionId, range }: SessionPageProps) {
+  useMoney();
   const { data, connected, refresh } = useRealtime<SessionPayload>({
     view: 'session',
     id: sessionId,

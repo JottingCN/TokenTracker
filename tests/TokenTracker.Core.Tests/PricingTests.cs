@@ -95,5 +95,6 @@ public sealed class PricingTests
         Assert.Equal("flat", ModelPricing.GetPricingPeriod("glm-5.3", peak));
         Assert.Equal("peak", ModelPricing.GetPricingPeriod("deepseek-flash", peak));
         Assert.Equal("idle", ModelPricing.GetPricingPeriod("deepseek-flash", idle));
+        Assert.Equal("unknown", ModelPricing.GetPricingPeriod("gpt-5.5", peak));
     }
 }

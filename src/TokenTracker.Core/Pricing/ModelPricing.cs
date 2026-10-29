@@ -120,6 +120,11 @@ public static class ModelPricing
     public static string GetPricingPeriod(string model, DateTimeOffset timestamp)
     {
         var price = GetPrice(model);
+        if (price is null)
+        {
+            return "unknown";
+        }
+
         if (price is { PeakAware: false })
         {
             return "flat";
@@ -159,14 +164,14 @@ public static class ModelPricing
         long reasoningTokens,
         DateTimeOffset timestamp)
     {
+        if (price is null)
+        {
+            return (null, "unknown", null, null, null, null);
+        }
+
         var period = price is { PeakAware: false }
             ? "flat"
             : BeijingCalendar.IsPeak(timestamp) ? "peak" : "idle";
-
-        if (price is null)
-        {
-            return (null, period, null, null, null, null);
-        }
 
         var tier = price.Value.PeakAware && period == "peak"
             ? price.Value.Peak

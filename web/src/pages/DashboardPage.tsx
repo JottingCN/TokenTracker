@@ -7,6 +7,7 @@ import {
   sessionColumns,
 } from '../components/columns';
 import type { DashboardPayload } from '../types';
+import { formatMoney, useMoney } from '../utils/money';
 
 const number = new Intl.NumberFormat('zh-CN');
 
@@ -21,6 +22,7 @@ export function DashboardPage({
   utility,
   onOpenSession,
 }: DashboardPageProps) {
+  const money = useMoney();
   const utilitySummary = data?.utilitySummary;
 
   return (
@@ -55,8 +57,8 @@ export function DashboardPage({
               },
               {
                 key: 'cost',
-                label: '估算费用 (CNY)',
-                children: `¥${utilitySummary.costCny.toFixed(6)}`,
+                label: '估算费用',
+                children: formatMoney(utilitySummary.costCny),
               },
               {
                 key: 'unpriced',
@@ -79,7 +81,7 @@ export function DashboardPage({
           dataSource={data?.models ?? []}
           loading={!data}
           pagination={false}
-          scroll={{ x: 760, y: 360 }}
+          scroll={{ x: 660, y: 360 }}
         />
       </Card>
 
@@ -91,7 +93,7 @@ export function DashboardPage({
           dataSource={data?.sessions ?? []}
           loading={!data}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          scroll={{ x: 1180, y: 420 }}
+          scroll={{ x: 1090, y: 420 }}
         />
       </Card>
 
@@ -103,13 +105,13 @@ export function DashboardPage({
           dataSource={data?.calls ?? []}
           loading={!data}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 1000, y: 480 }}
+          scroll={{ x: 1100, y: 480 }}
         />
       </Card>
 
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         费用为基于 DeepSeek、Kimi、小米 MiMo、MiniMax、智谱 GLM
-        公开价目表的估算（CNY），与 GitHub Copilot
+        公开价目表的估算（{money.unitLabel}），与 GitHub Copilot
         订阅账单无关；命中率下降不一定代表缓存失效。数据来自 Copilot OTel，经本机
         4318 接收后存入本地 SQLite，保留 90 天。
       </Typography.Text>

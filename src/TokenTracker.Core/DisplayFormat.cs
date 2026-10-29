@@ -29,6 +29,7 @@ public static class DisplayFormat
             "peak" => "高峰",
             "idle" => "空闲",
             "flat" => "固定",
+            "unknown" => "未定价",
             null or "" => "-",
             _ => period,
         };
