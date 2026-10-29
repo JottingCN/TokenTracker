@@ -13,3 +13,4 @@ dashboard.png
 src/TokenTracker.Server/wwwroot
 vscode-extension/server
 tokentracker-*.vsix
+/artifacts/

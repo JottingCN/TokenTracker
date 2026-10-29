@@ -123,6 +123,22 @@ dotnet run --project src/TokenTracker.Server -c Release
 
 工作区路径优先取 `agent-host.db` 记录的工作目录，缺失时回退到 `workspace.yaml` 的 `cwd`；状态栏据此匹配当前 VS Code 窗口。
 
+## 发布
+
+推送 `v*` 标签（或手动运行 `Release` workflow）会执行测试、构建 Web、扩展与服务端，并创建 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+发布产物：
+
+- `tokentracker-extension-<version>.vsix`：VS Code 扩展（内置服务端）
+- `tokentracker-server-<version>-win-x64.zip`：独立服务端
+
+标签版本必须与 `vscode-extension/package.json` 的 `version` 一致；手动触发时可填写标签。
+
 ## 构建与测试
 
 ```bash
