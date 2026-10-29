@@ -8,7 +8,7 @@
 - **浏览器看板**：React + TypeScript + Vite + Ant Design。
 - **WinUI 3 桌面端**（可选）：内置接收服务与看板。
 
-> 仅支持 Windows x64。所有数据保存在本机，不采集对话内容。
+> 服务端支持 Windows x64、Linux x64、macOS x64 / arm64；所有数据保存在本机，不采集对话内容。
 
 ## 功能
 
