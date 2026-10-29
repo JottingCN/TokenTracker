@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "TokenTracker.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "TokenTracker.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

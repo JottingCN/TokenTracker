@@ -1,0 +1,20 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/TokenTracker.App/TokenTracker.App.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/TokenTracker.Core/TokenTracker.Core.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/TokenTracker.Server/TokenTracker.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
+</Solution>

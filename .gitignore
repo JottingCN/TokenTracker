@@ -1,0 +1,15 @@
+legacy-extension/
+node_modules/
+.tools/
+**/bin/
+**/obj/
+*.user
+*.db
+*.db-shm
+*.db-wal
+dashboard.png
+.qoder/
+.vs/
+src/TokenTracker.Server/wwwroot
+vscode-extension/server
+tokentracker-*.vsix

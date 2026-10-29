@@ -1,0 +1,91 @@
+{
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "tokentracker.openDashboard",
+        "title": "Token Tracker: 在浏览器中打开看板"
+      },
+      {
+        "command": "tokentracker.showServerInfo",
+        "title": "Token Tracker: 服务信息"
+      },
+      {
+        "command": "tokentracker.refreshStatus",
+        "title": "Token Tracker: 刷新状态栏"
+      },
+      {
+        "command": "tokentracker.startServer",
+        "title": "Token Tracker: 启动服务"
+      },
+      {
+        "command": "tokentracker.stopServer",
+        "title": "Token Tracker: 停止服务"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "tokentracker.autoStart": {
+          "default": true,
+          "description": "服务未运行时，自动启动扩展内置的 Token Tracker 服务。",
+          "type": "boolean"
+        },
+        "tokentracker.idleExitSeconds": {
+          "default": 60,
+          "description": "所有客户端（VS Code 窗口或浏览器看板）断开后，服务延迟多少秒退出；0 表示不自动退出。",
+          "minimum": 0,
+          "type": "number"
+        },
+        "tokentracker.port": {
+          "default": 4318,
+          "description": "Token Tracker 服务 监听端口（127.0.0.1）。",
+          "type": "number"
+        },
+        "tokentracker.statsRange": {
+          "default": "7d",
+          "description": "状态栏与提示信息使用的统计时间范围。",
+          "enum": [
+            "today",
+            "7d",
+            "30d",
+            "all"
+          ],
+          "enumDescriptions": [
+            "当天",
+            "近 7 天",
+            "近 30 天",
+            "全部"
+          ],
+          "type": "string"
+        }
+      },
+      "title": "Token Tracker"
+    }
+  },
+  "description": "Copilot token hit-rate and cost dashboard backed by a shared local Token Tracker server.",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "~5.6.3"
+  },
+  "displayName": "Token Tracker",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "license": "UNLICENSED",
+  "main": "./out/extension.js",
+  "name": "tokentracker",
+  "publisher": "jotting",
+  "scripts": {
+    "build": "npm run compile && npm run sync-server",
+    "compile": "tsc -p .",
+    "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
+    "sync-server": "node scripts/sync-server.mjs"
+  },
+  "version": "0.1.0"
+}

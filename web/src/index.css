@@ -1,0 +1,23 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+.ant-table {
+  font-variant-numeric: tabular-nums;
+}
+
+.ant-statistic-content {
+  font-variant-numeric: tabular-nums;
+}
+
+.ant-table-thead > tr > th {
+  font-weight: 600;
+}
