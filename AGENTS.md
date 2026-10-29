@@ -26,7 +26,7 @@ Copilot OTLP → TokenTracker.Server (Kestrel, .NET 10 AOT) → SQLite
 | `src/TokenTracker.Server` | ASP.NET Core：OTLP 接收、REST、WebSocket、静态看板 |
 | `src/TokenTracker.App` | WinUI 3 桌面端（Windows App SDK 2.6.4，AOT） |
 | `web` | React + Ant Design + Vite，构建输出到 `src/TokenTracker.Server/wwwroot` |
-| `vscode-extension` | VS Code 薄客户端；`out/` 为编译产物（已跟踪） |
+| `vscode-extension` | VS Code 薄客户端；`out/` 为编译产物（不跟踪，构建生成） |
 | `tests/TokenTracker.Core.Tests` | 核心单元测试 |
 
 ## 常用命令
@@ -45,7 +45,7 @@ cd web && npm run build                   # 输出到服务端 wwwroot
 
 # VS Code 扩展
 cd vscode-extension && npm install
-npm run compile        # tsc → out/
+npm run compile        # tsc → out/（不提交）
 npm run build          # compile + dotnet publish 到 server/
 npm run package        # 生成 tokentracker-*.vsix
 ```
@@ -105,7 +105,7 @@ npm run package        # 生成 tokentracker-*.vsix
 ## 验证要求
 
 1. 修改核心逻辑：运行全部单元测试。
-2. 修改扩展 TypeScript：`npm run compile`；提交 `out/` 产物。验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
+2. 修改扩展 TypeScript：`npm run compile`（`out/` 不提交）；验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
 3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功。跨平台包使用 `TOKENTRACKER_TARGET_RID=<rid>` 在对应平台发布。
 4. 涉及扩展行为时，用**隔离** VS Code 实例验证：
 
