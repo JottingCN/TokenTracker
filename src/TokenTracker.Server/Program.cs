@@ -16,7 +16,10 @@ var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
     Args = args,
     ContentRootPath = AppContext.BaseDirectory,
 });
-builder.Services.AddWindowsService(options => options.ServiceName = "TokenTracker");
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddWindowsService(options => options.ServiceName = "TokenTracker");
+}
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
@@ -41,9 +44,7 @@ var serverInfo = new ServerInfoPayload(
 var dataDirectory = Environment.GetEnvironmentVariable("TOKENTRACKER_DATA_DIR");
 if (string.IsNullOrWhiteSpace(dataDirectory))
 {
-    dataDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "TokenTracker");
+    dataDirectory = Path.Combine(DefaultDataRoot(), "TokenTracker");
 }
 
 Directory.CreateDirectory(dataDirectory);
@@ -272,4 +273,21 @@ static async Task DrainAsync(HttpRequest request)
     while (await request.Body.ReadAsync(buffer) > 0)
     {
     }
+}
+
+static string DefaultDataRoot()
+{
+    if (OperatingSystem.IsMacOS())
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Library",
+            "Application Support");
+    }
+
+    var localAppData = Environment.GetFolderPath(
+        Environment.SpecialFolder.LocalApplicationData);
+    return string.IsNullOrWhiteSpace(localAppData)
+        ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+        : localAppData;
 }

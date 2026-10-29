@@ -14,7 +14,7 @@ Copilot OTLP → TokenTracker.Server (Kestrel, .NET 10 AOT) → SQLite
 客户端：VS Code 扩展 / 浏览器 / 可选 WinUI 3 桌面端
 ```
 
-- 仅支持 Windows x64；服务端为自包含 AOT 构建。
+- 服务端发布 Windows x64 / Linux x64 / macOS x64 / macOS arm64 自包含 AOT 构建；VS Code 扩展目前仅发布 Windows x64。
 - 所有数据留在本机，不采集、不上传对话内容（`captureContent: false`）。
 - 时间范围、峰谷价格均按北京时间（UTC+8）计算。
 
@@ -105,7 +105,7 @@ npm run package        # 生成 tokentracker-*.vsix
 
 1. 修改核心逻辑：运行全部单元测试。
 2. 修改扩展 TypeScript：`npm run compile`；提交 `out/` 产物。
-3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功。
+3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功。跨平台包使用 `TOKENTRACKER_TARGET_RID=<rid>` 在对应平台发布。
 4. 涉及扩展行为时，用**隔离** VS Code 实例验证：
 
 ```bash

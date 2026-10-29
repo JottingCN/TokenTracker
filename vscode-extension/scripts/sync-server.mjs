@@ -9,11 +9,15 @@ const extensionRoot = path.resolve(here, '..');
 const repoRoot = path.resolve(extensionRoot, '..');
 const project = path.join(repoRoot, 'src', 'TokenTracker.Server', 'TokenTracker.Server.csproj');
 const target = path.join(extensionRoot, 'server');
+const rid = (process.env.TOKENTRACKER_TARGET_RID ?? 'win-x64').trim();
+const executableName = rid.startsWith('win-')
+  ? 'TokenTracker.Server.exe'
+  : 'TokenTracker.Server';
 
 rmSync(target, { recursive: true, force: true });
 execFileSync(
   'dotnet',
-  ['publish', project, '-c', 'Release', '-r', 'win-x64', '-o', target],
+  ['publish', project, '-c', 'Release', '-r', rid, '-o', target],
   { stdio: 'inherit' },
 );
 
@@ -29,7 +33,7 @@ const removePdb = (directory) => {
 };
 removePdb(target);
 
-const executable = path.join(target, 'TokenTracker.Server.exe');
+const executable = path.join(target, executableName);
 const stat = statSync(executable);
 const assetHash = createHash('sha256')
   .update(readFileSync(path.join(target, 'wwwroot', 'index.html')))
@@ -41,6 +45,7 @@ writeFileSync(
   JSON.stringify(
     {
       buildId,
+      rid,
       serverVersion: '1.0.0',
       createdAt: new Date().toISOString(),
     },

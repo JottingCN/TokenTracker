@@ -359,20 +359,8 @@ internal sealed class AgentHostTitleReader
             return configured;
         }
 
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        if (string.IsNullOrWhiteSpace(appData))
+        foreach (var candidate in DefaultCandidates())
         {
-            return null;
-        }
-
-        foreach (var product in new[] { "Code", "Code - Insiders" })
-        {
-            var candidate = Path.Combine(
-                appData,
-                product,
-                "User",
-                "globalStorage",
-                "agent-host.db");
             if (File.Exists(candidate))
             {
                 return candidate;
@@ -380,11 +368,53 @@ internal sealed class AgentHostTitleReader
         }
 
         // Running as a service (SYSTEM): locate the interactive user's database.
-        return FindUserAgentHostDatabase();
+        return OperatingSystem.IsWindows() ? FindUserAgentHostDatabase() : null;
+    }
+
+    private static IEnumerable<string> DefaultCandidates()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            foreach (var product in new[] { "Code", "Code - Insiders" })
+            {
+                yield return Path.Combine(
+                    home,
+                    "Library",
+                    "Application Support",
+                    product,
+                    "User",
+                    "globalStorage",
+                    "agent-host.db");
+            }
+
+            yield break;
+        }
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (string.IsNullOrWhiteSpace(appData))
+        {
+            yield break;
+        }
+
+        foreach (var product in new[] { "Code", "Code - Insiders" })
+        {
+            yield return Path.Combine(
+                appData,
+                product,
+                "User",
+                "globalStorage",
+                "agent-host.db");
+        }
     }
 
     private static string? FindUserAgentHostDatabase()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
         try
         {
             var root = Path.GetPathRoot(Environment.SystemDirectory);
