@@ -114,6 +114,11 @@ export interface DashboardPayload {
   calls: CallRow[];
   receiver: ReceiverInfo;
   updatedAt: string;
+  retentionDays: number;
+}
+
+export interface SettingsPayload {
+  retentionDays: number;
 }
 
 export interface ModelPayload {

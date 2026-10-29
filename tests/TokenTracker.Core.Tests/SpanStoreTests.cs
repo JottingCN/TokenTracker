@@ -52,6 +52,10 @@ public sealed class SpanStoreTests
             Assert.Equal(0, utilitySummary.CostCny);
             Assert.Equal(1, utilitySummary.UnpricedCalls);
 
+            Assert.Null(store.GetSetting("retention_days"));
+            store.SetSetting("retention_days", "30");
+            Assert.Equal("30", store.GetSetting("retention_days"));
+
             var sessions = store.GetSessions(0);
             Assert.Equal(2, sessions.Count);
             Assert.Equal("session-2", sessions[0].SessionId);

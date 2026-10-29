@@ -94,6 +94,7 @@ npm run package        # 生成 tokentracker-*.vsix
 - 发布者为 `JottingCN`，许可为 MIT；扩展按 `buildId` 管理 `globalStorage/jottingcn.tokentracker/runtime/<buildId>`，共享单实例；`server-runtime.json` 缓存平台/Release。
 - 首次激活按 RID 从**最新的服务端 Release** 下载并校验 `.sha256`（支持 `http.proxy` / `HTTPS_PROXY`），Release 检查缓存 30 分钟；本地开发目录存在 `server/` 时优先使用内置副本。
 - 数据位于 `globalStorage/jottingcn.tokentracker/data/tokentracker.db`，首次启动会从旧发布者目录迁移。
+- 数据保留默认 90 天，可通过 `TOKENTRACKER_RETENTION_DAYS` 或 `POST /api/settings` 修改（`0` = 永久）；修改后立即清理，后台每 6 小时再执行。
 - 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出。
 - 扩展与服务端独立发布：扩展标签 `v*`（`Release`），服务端标签 `server-v*`（`Server Release`）。
 - `vscode-extension/server/` 由 `npm run sync-server` 生成，不要手改；发布 VSIX 通过 `.vscodeignore` 排除该目录。

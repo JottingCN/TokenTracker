@@ -17,7 +17,12 @@ public sealed record DashboardPayload(
     List<CallRow> Calls,
     ReceiverInfo Receiver,
     string UpdatedAt,
-    SummaryDto UtilitySummary);
+    SummaryDto UtilitySummary,
+    int RetentionDays);
+
+public sealed record SettingsPayload(int RetentionDays);
+
+public sealed record SettingsUpdateRequest(int? RetentionDays);
 
 public sealed record ModelPayload(
     SummaryDto Summary,
@@ -85,5 +90,7 @@ public sealed record SessionMessage(string Type, SessionPayload Data);
 [JsonSerializable(typeof(List<ModelPriceRowPayload>))]
 [JsonSerializable(typeof(ModelPriceRowPayload))]
 [JsonSerializable(typeof(PriceUpdateRequest))]
+[JsonSerializable(typeof(SettingsPayload))]
+[JsonSerializable(typeof(SettingsUpdateRequest))]
 [JsonSerializable(typeof(ServerInfoPayload))]
 public partial class AppJsonContext : JsonSerializerContext;

@@ -34,12 +34,12 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.2",
+    "1.0.3",
     1,
     port,
     startedAt,
     string.IsNullOrWhiteSpace(buildId) ? null : buildId,
-    ["dashboard", "prices", "holidays", "breakdown", "ws"]);
+    ["dashboard", "prices", "settings", "holidays", "breakdown", "ws"]);
 
 var dataDirectory = Environment.GetEnvironmentVariable("TOKENTRACKER_DATA_DIR");
 if (string.IsNullOrWhiteSpace(dataDirectory))
@@ -49,9 +49,28 @@ if (string.IsNullOrWhiteSpace(dataDirectory))
 
 Directory.CreateDirectory(dataDirectory);
 var store = new SpanStore(Path.Combine(dataDirectory, "tokentracker.db"));
+
+const string retentionKey = "retention_days";
+var defaultRetentionDays = 90;
+if (int.TryParse(
+        Environment.GetEnvironmentVariable("TOKENTRACKER_RETENTION_DAYS"),
+        out var configuredRetentionDays) &&
+    configuredRetentionDays >= 0)
+{
+    defaultRetentionDays = Math.Min(
+        configuredRetentionDays,
+        ServerSettings.MaxRetentionDays);
+}
+
+var storedRetentionDays = store.GetSetting(retentionKey);
+var retentionDays = int.TryParse(storedRetentionDays, out var parsedRetentionDays) &&
+                    parsedRetentionDays >= 0
+    ? Math.Min(parsedRetentionDays, ServerSettings.MaxRetentionDays)
+    : defaultRetentionDays;
+var settings = new ServerSettings(retentionDays);
 try
 {
-    store.DeleteOlderThan(DateTimeOffset.UtcNow.AddDays(-90).ToUnixTimeMilliseconds());
+    settings.ApplyRetention(store);
 }
 catch (Exception exception)
 {
@@ -64,7 +83,7 @@ var metadata = new SessionMetadataProvider(
     string.IsNullOrWhiteSpace(sessionStateDirectory) ? null : sessionStateDirectory);
 var counters = new ReceiverCounters();
 var endpoint = $"http://127.0.0.1:{port}";
-var service = new DashboardService(store, metadata, counters, endpoint);
+var service = new DashboardService(store, metadata, counters, settings, endpoint);
 service.ApplyOverrides();
 var hub = new RealtimeHub();
 var idleExitSeconds = 0;
@@ -107,6 +126,25 @@ _ = Task.Run(async () =>
         await Task.Delay(TimeSpan.FromHours(12));
         var year = BeijingCalendar.ToBeijing(DateTimeOffset.UtcNow).Year;
         await holidayService.EnsureYearsAsync(new[] { year, year + 1 });
+    }
+});
+
+_ = Task.Run(async () =>
+{
+    while (true)
+    {
+        await Task.Delay(TimeSpan.FromHours(6));
+        try
+        {
+            if (settings.ApplyRetention(store) > 0)
+            {
+                hub.NotifyChanged();
+            }
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"retention cleanup failed: {exception.Message}");
+        }
     }
 });
 
@@ -199,6 +237,37 @@ app.MapPost("/api/metadata-changed", () =>
 {
     hub.NotifyChanged();
     return Results.NoContent();
+});
+
+app.MapGet("/api/settings", () =>
+    Results.Json(
+        new SettingsPayload(settings.RetentionDays),
+        AppJsonContext.Default.SettingsPayload));
+
+app.MapPost("/api/settings", (SettingsUpdateRequest request) =>
+{
+    if (request.RetentionDays is not int days ||
+        days < 0 ||
+        days > ServerSettings.MaxRetentionDays)
+    {
+        return Results.BadRequest("invalid retention days");
+    }
+
+    settings.SetRetentionDays(days);
+    store.SetSetting("retention_days", days.ToString());
+    try
+    {
+        settings.ApplyRetention(store);
+    }
+    catch (Exception exception)
+    {
+        return Results.Problem(exception.Message);
+    }
+
+    hub.NotifyChanged();
+    return Results.Json(
+        new SettingsPayload(days),
+        AppJsonContext.Default.SettingsPayload);
 });
 
 app.MapPost("/v1/traces", async (HttpContext context) =>

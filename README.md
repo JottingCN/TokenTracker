@@ -111,6 +111,8 @@ dotnet run --project src/TokenTracker.Server -c Release
 | GET | `/api/prices` | 价格列表（内置 + 自定义） |
 | POST | `/api/prices` | 新增或更新价格覆盖 |
 | DELETE | `/api/prices?model=...` | 删除价格覆盖 |
+| GET | `/api/settings` | 服务端设置（当前为数据保留天数） |
+| POST | `/api/settings` | 更新数据保留天数；`0` 表示永久保留 |
 | GET | `/ws` | WebSocket：`subscribe` 后接收变更驱动的 `snapshot` |
 
 ## 环境变量（服务端）
@@ -121,6 +123,7 @@ dotnet run --project src/TokenTracker.Server -c Release
 | `TOKENTRACKER_DATA_DIR` | 见上文（按平台） | 数据库目录 |
 | `TOKENTRACKER_BUILD_ID` | 空 | `/api/version` 返回的构建标识 |
 | `TOKENTRACKER_IDLE_EXIT_SECONDS` | `0`（不退出） | 无客户端连接后延迟退出；扩展默认传 60 |
+| `TOKENTRACKER_RETENTION_DAYS` | `90` | 数据保留天数（`0` = 永久）；数据库中的设置优先于此默认值 |
 | `TOKENTRACKER_SESSION_STATE_DIR` | `~/.copilot/session-state` | 会话 `workspace.yaml` 根目录 |
 | `TOKENTRACKER_AGENT_HOST_DB` | 自动定位 | `agent-host.db` 路径（默认查找 stable / Insiders） |
 | `TOKENTRACKER_HOLIDAY_API_URL` | `https://api.apisbo.com/holidays/year/{0}` | 节假日接口模板 |
@@ -206,7 +209,7 @@ TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
 
 - 所有解析与统计均在本机完成，不上传任何数据。
 - `captureContent: false`，只处理 usage / token 计数字段，不保存对话内容。
-- 本地数据库默认 90 天保留；价格覆盖与节假日缓存同样保存在 SQLite。
+- 本地数据库默认保留 90 天，可在 Web“价格与数据设置”中修改（`0` = 永久）；价格覆盖与节假日缓存同样保存在 SQLite。
 - 会话标题来自本机 VS Code 的 `agent-host.db` 与 `~/.copilot/session-state`，只读访问。
 
 ## 已知约束

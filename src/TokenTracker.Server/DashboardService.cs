@@ -34,17 +34,20 @@ public sealed class DashboardService
     private readonly SpanStore _store;
     private readonly SessionMetadataProvider _metadata;
     private readonly ReceiverCounters _counters;
+    private readonly ServerSettings _settings;
     private readonly string _endpoint;
 
     public DashboardService(
         SpanStore store,
         SessionMetadataProvider metadata,
         ReceiverCounters counters,
+        ServerSettings settings,
         string endpoint)
     {
         _store = store;
         _metadata = metadata;
         _counters = counters;
+        _settings = settings;
         _endpoint = endpoint;
     }
 
@@ -70,7 +73,8 @@ public sealed class DashboardService
             _store.GetCalls(fromMs, includeUtility, toMs: toMs).Select(WithTitle).ToList(),
             _counters.Snapshot(_endpoint, running: true),
             updatedAt,
-            _store.GetUtilitySummary(fromMs, toMs));
+            _store.GetUtilitySummary(fromMs, toMs),
+            _settings.RetentionDays);
     }
 
     public ModelPayload GetModel(string model, int range)

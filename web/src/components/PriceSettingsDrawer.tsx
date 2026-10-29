@@ -15,7 +15,7 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { ModelPriceRow } from '../types';
+import type { ModelPriceRow, SettingsPayload } from '../types';
 import { useMoney } from '../utils/money';
 
 interface PriceSettingsDrawerProps {
@@ -45,6 +45,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   const [drafts, setDrafts] = useState<Record<string, ModelPriceRow>>({});
   const [loading, setLoading] = useState(false);
   const [newModel, setNewModel] = useState('');
+  const [retentionDays, setRetentionDays] = useState(90);
 
   const load = async () => {
     setLoading(true);
@@ -65,11 +66,43 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     }
   };
 
+  const loadSettings = async () => {
+    try {
+      const response = await fetch('/api/settings');
+      if (!response.ok) {
+        return;
+      }
+      const data = (await response.json()) as SettingsPayload;
+      setRetentionDays(data.retentionDays);
+    } catch {
+      // Older servers do not expose settings.
+    }
+  };
+
   useEffect(() => {
     if (open) {
       void load();
+      void loadSettings();
     }
   }, [open]);
+
+  const saveRetention = async () => {
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retentionDays }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = (await response.json()) as SettingsPayload;
+      setRetentionDays(data.retentionDays);
+      message.success('数据保留设置已保存');
+    } catch (error) {
+      message.error(`保存失败: ${(error as Error).message}`);
+    }
+  };
 
   const draftOf = (row: ModelPriceRow) => drafts[row.model] ?? row;
 
@@ -360,7 +393,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
 
   return (
     <Drawer
-      title={`模型价格设置（${money.unitLabel} ${money.priceSuffix}）`}
+      title={`价格与数据设置（${money.unitLabel} ${money.priceSuffix}）`}
       width={1120}
       open={open}
       onClose={onClose}
@@ -436,6 +469,35 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           费用单位作用于看板显示与价格输入；价格保存时换算为 CNY 存入数据库。
         </Typography.Text>
+
+        <Space wrap size="middle">
+          <Typography.Text>数据保留</Typography.Text>
+          <InputNumber
+            min={0}
+            max={36500}
+            precision={0}
+            addonAfter="天"
+            value={retentionDays}
+            onChange={(value) =>
+              setRetentionDays(
+                typeof value === 'number' ? Math.max(0, value) : 90,
+              )
+            }
+            style={{ width: 160 }}
+          />
+          <Popconfirm
+            title="保存数据保留设置？"
+            description="保存后会立即删除超过保留期的数据，此操作不可撤销。0 表示永久保留。"
+            okText="保存"
+            cancelText="取消"
+            onConfirm={() => void saveRetention()}
+          >
+            <Button>保存保留设置</Button>
+          </Popconfirm>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            0 = 永久保留
+          </Typography.Text>
+        </Space>
 
         <Space.Compact style={{ width: 460 }}>
           <Input
