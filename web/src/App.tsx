@@ -87,7 +87,7 @@ export default function App() {
   const [customRange, setCustomRange] = useState<[number, number] | null>(null);
   const [utility, setUtility] = useState(false);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
-  const [priceOpen, setPriceOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     const handler = () => setRoute(parseRoute());
@@ -176,8 +176,8 @@ export default function App() {
               />
             </div>
             <div style={{ padding: 12, borderTop: '1px solid #f0f0f0' }}>
-              <Button block icon={<SettingOutlined />} onClick={() => setPriceOpen(true)}>
-                价格设置
+              <Button block icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>
+                设置
               </Button>
             </div>
           </div>
@@ -297,7 +297,10 @@ export default function App() {
         </Layout>
       </Layout>
 
-      <PriceSettingsDrawer open={priceOpen} onClose={() => setPriceOpen(false)} />
+      <PriceSettingsDrawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </>
   );
 }

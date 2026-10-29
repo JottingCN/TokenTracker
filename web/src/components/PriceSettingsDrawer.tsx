@@ -11,6 +11,7 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from 'antd';
@@ -46,6 +47,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   const [loading, setLoading] = useState(false);
   const [newModel, setNewModel] = useState('');
   const [retentionDays, setRetentionDays] = useState(90);
+  const [activeTab, setActiveTab] = useState<'prices' | 'data'>('prices');
 
   const load = async () => {
     setLoading(true);
@@ -393,31 +395,32 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
 
   return (
     <Drawer
-      title={`价格与数据设置（${money.unitLabel} ${money.priceSuffix}）`}
+      title="设置"
       width={1120}
       open={open}
       onClose={onClose}
-      styles={{
-        body: {
-          padding: 16,
-          display: 'flex',
-          flexDirection: 'column',
-        },
-      }}
+      styles={{ body: { padding: 16 } }}
       extra={
         <Button onClick={() => void load()} loading={loading}>
           刷新
         </Button>
       }
     >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12,
-          height: '100%',
-        }}
-      >
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as 'prices' | 'data')}
+        items={[
+          {
+            key: 'prices',
+            label: '价格',
+            children: (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 12,
+                }}
+              >
         <Space wrap size="middle">
           <Space size={6}>
             <Typography.Text>费用单位</Typography.Text>
@@ -470,35 +473,6 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           费用单位作用于看板显示与价格输入；价格保存时换算为 CNY 存入数据库。
         </Typography.Text>
 
-        <Space wrap size="middle">
-          <Typography.Text>数据保留</Typography.Text>
-          <InputNumber
-            min={0}
-            max={36500}
-            precision={0}
-            addonAfter="天"
-            value={retentionDays}
-            onChange={(value) =>
-              setRetentionDays(
-                typeof value === 'number' ? Math.max(0, value) : 90,
-              )
-            }
-            style={{ width: 160 }}
-          />
-          <Popconfirm
-            title="保存数据保留设置？"
-            description="保存后会立即删除超过保留期的数据，此操作不可撤销。0 表示永久保留。"
-            okText="保存"
-            cancelText="取消"
-            onConfirm={() => void saveRetention()}
-          >
-            <Button>保存保留设置</Button>
-          </Popconfirm>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            0 = 永久保留
-          </Typography.Text>
-        </Space>
-
         <Space.Compact style={{ width: 460 }}>
           <Input
             placeholder="新增模型 ID，例如 kimi-k3.1-pro"
@@ -515,18 +489,16 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           内置价格可直接修改；新增模型可修改或删除。保存后会立即重算该模型的历史费用并同步刷新看板。
         </Typography.Text>
 
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-          <Table
-            size="small"
-            bordered
-            rowKey="key"
-            columns={columns}
-            dataSource={displayRows}
-            loading={loading}
-            pagination={false}
-            scroll={{ x: 1020 }}
-          />
-        </div>
+        <Table
+          size="small"
+          bordered
+          rowKey="key"
+          columns={columns}
+          dataSource={displayRows}
+          loading={loading}
+          pagination={false}
+          scroll={{ x: 1020, y: 520 }}
+        />
 
         <Alert
           type="info"
@@ -534,7 +506,57 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           message="峰谷与节假日规则"
           description="开启「区分峰谷」后，该模型显示空闲/高峰两行价格；未开启时只有一行固定价格。峰谷按北京时间判定：工作日 9:00–12:00、14:00–18:00 为高峰，其余时间为空闲；周末与中国法定节假日全天按空闲（调休上班的周末仍按周末处理）。节假日数据优先读取本地数据库，缺失时自动从 apisbo.com 获取并缓存（内置 2025–2026 年数据兜底）。"
         />
-      </div>
+              </div>
+            ),
+          },
+          {
+            key: 'data',
+            label: '数据',
+            children: (
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: '100%' }}
+              >
+                <Space wrap size="middle">
+                  <Typography.Text>数据保留</Typography.Text>
+                  <InputNumber
+                    min={0}
+                    max={36500}
+                    precision={0}
+                    addonAfter="天"
+                    value={retentionDays}
+                    onChange={(value) =>
+                      setRetentionDays(
+                        typeof value === 'number' ? Math.max(0, value) : 90,
+                      )
+                    }
+                    style={{ width: 160 }}
+                  />
+                  <Popconfirm
+                    title="保存数据保留设置？"
+                    description="保存后会立即删除超过保留期的数据，此操作不可撤销。0 表示永久保留。"
+                    okText="保存"
+                    cancelText="取消"
+                    onConfirm={() => void saveRetention()}
+                  >
+                    <Button>保存保留设置</Button>
+                  </Popconfirm>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    0 = 永久保留
+                  </Typography.Text>
+                </Space>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="数据保留"
+                  description="保留天数保存在服务端 SQLite；保存后立即清理超期 span，之后每 6 小时自动执行。删除操作不可撤销。"
+                />
+              </Space>
+            ),
+          },
+        ]}
+      />
     </Drawer>
   );
 }
