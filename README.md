@@ -1,5 +1,8 @@
 # Token Tracker
 
+[![GitHub](https://img.shields.io/badge/GitHub-JottingCN%2FTokenTracker-181717?logo=github)](https://github.com/JottingCN/TokenTracker)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 本地 Copilot Token 用量与费用看板：接收 Copilot 的 OpenTelemetry 数据，写入 SQLite，并通过 REST / WebSocket 实时呈现缓存命中率与人民币估算费用。
 
 支持三种客户端：
@@ -18,6 +21,7 @@
 - **价格覆盖**：看板内可修改内置价格、恢复默认、添加 / 删除自定义模型；保存后自动重算历史费用。
 - **时间范围**：今天 / 昨天 / 近 7 天 / 近 30 天 / 全部，Web 端支持自定义起止时间。
 - **多模型会话**：同一会话跨模型的统计自动合并，下钻时按模型分开展示。
+- **辅助调用**：主调用与辅助调用分开统计；辅助调用通常缺少 `session_id`，无法可靠归属具体会话，开启“显示辅助调用”后展示独立的调用次数、token 与费用汇总。
 - **会话标题**：来自本机 VS Code 的 `agent-host.db` 与 `~/.copilot/session-state`，按优先级自动解析；改名和工作区变化会推送给所有已连接客户端。
 - **实时推送**：WebSocket 变更驱动推送（新 span、价格变更、重新订阅），空闲时服务按需退出。
 - **数据保留**：启动时清理 90 天前的 span。
@@ -100,7 +104,7 @@ dotnet run --project src/TokenTracker.Server -c Release
 | POST | `/v1/metrics` | OTLP/HTTP JSON metrics |
 | GET | `/healthz` | 健康检查 |
 | GET | `/api/version` | 名称、版本、buildId、能力列表 |
-| GET | `/api/dashboard?range=0..4` | 汇总、模型、会话、调用；支持 `from`/`to` 自定义范围与 `utility` |
+| GET | `/api/dashboard?range=0..4` | 主调用汇总、模型、会话、辅助调用汇总与调用列表；`utility` 控制调用列表是否包含辅助调用 |
 | GET | `/api/model/{model}` | 模型详情 |
 | GET | `/api/session/{sessionId}` | 会话汇总与调用明细 |
 | GET | `/api/prices` | 价格列表（内置 + 自定义） |
@@ -133,23 +137,24 @@ dotnet run --project src/TokenTracker.Server -c Release
 
 ## 发布
 
-推送 `v*` 标签（或手动运行 `Release` workflow）会执行测试、构建 Web、扩展与服务端，并创建 GitHub Release：
+扩展与服务端独立发布：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+# 扩展（须与 vscode-extension/package.json 版本一致）
+git tag v0.1.2
+git push origin v0.1.2
+
+# 服务端
+git tag server-v1.0.0
+git push origin server-v1.0.0
 ```
 
-发布产物：
+- `Release` workflow：构建通用 VSIX，产物为 `tokentracker-<version>.vsix`。
+- `Server Release` workflow：构建四个平台的服务端包与 `.sha256`。
+- 扩展默认从**最新的服务端 Release** 下载匹配平台的服务端（缓存 30 分钟），因此服务端可以独立升级，无需重新发布扩展。
+- 服务端标签应使用 `server-v<服务端版本>`；扩展标签使用 `v<扩展版本>`。
 
-- `tokentracker-<version>.vsix`：通用 VS Code 扩展（首次运行下载对应平台服务端）
-- `tokentracker-server-<version>-win-x64.zip`
-- `tokentracker-server-<version>-linux-x64.tar.gz`
-- `tokentracker-server-<version>-osx-x64.tar.gz`
-- `tokentracker-server-<version>-osx-arm64.tar.gz`
-- 每个服务端包附带 `.sha256` 校验文件
-
-标签版本必须与 `vscode-extension/package.json` 的 `version` 一致；手动触发时可填写标签。
+也可以通过 `workflow_dispatch` 手动触发对应 workflow。
 
 ## 构建与测试
 
@@ -205,10 +210,14 @@ TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
 
 ## 已知约束
 
-- 服务端发布 `win-x64`、`linux-x64`、`osx-x64`、`osx-arm64` 自包含 AOT 构建；通用 VSIX 首次激活按平台下载并缓存对应版本。
-- 首次激活通过 GitHub API 下载服务端；支持 VS Code `http.proxy` 与 `HTTPS_PROXY` / `HTTP_PROXY`（http:// CONNECT 代理），也可将 `tokentracker.serverDownloadBaseUrl` 指到镜像。`github.com/releases/download` 在部分网络不可用。
+- 服务端发布 `win-x64`、`linux-x64`、`osx-x64`、`osx-arm64` 自包含 AOT 构建；扩展与服务端版本独立。
+- 扩展首次激活按平台解析最新服务端 Release；支持 VS Code `http.proxy` 与 `HTTPS_PROXY` / `HTTP_PROXY`（http:// CONNECT 代理），也可将 `tokentracker.serverDownloadBaseUrl` 设为镜像前缀。`github.com/releases/download` 在部分网络不可用。
 - 计时与峰谷判断使用北京时间；时间范围按北京时间自然日划分。
 - 未定价模型仍会统计 token，但费用显示为“未定价”，直到配置价格。
+
+## License
+
+[MIT](LICENSE) © 2026 JottingCN
 
 ## 文档
 

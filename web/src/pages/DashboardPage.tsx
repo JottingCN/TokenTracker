@@ -1,4 +1,4 @@
-import { Card, Space, Table, Typography } from 'antd';
+import { Card, Descriptions, Space, Table, Typography } from 'antd';
 import { SummaryCards } from '../components/SummaryCards';
 import {
   callColumns,
@@ -8,15 +8,68 @@ import {
 } from '../components/columns';
 import type { DashboardPayload } from '../types';
 
+const number = new Intl.NumberFormat('zh-CN');
+
 interface DashboardPageProps {
   data: DashboardPayload | null;
+  utility: boolean;
   onOpenSession: (sessionId: string) => void;
 }
 
-export function DashboardPage({ data, onOpenSession }: DashboardPageProps) {
+export function DashboardPage({
+  data,
+  utility,
+  onOpenSession,
+}: DashboardPageProps) {
+  const utilitySummary = data?.utilitySummary;
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <SummaryCards summary={data?.summary ?? null} />
+
+      {utility && utilitySummary && utilitySummary.calls > 0 && (
+        <Card size="small" title="辅助调用">
+          <Descriptions
+            size="small"
+            column={{ xs: 1, sm: 2, md: 3 }}
+            items={[
+              {
+                key: 'calls',
+                label: '调用',
+                children: number.format(utilitySummary.calls),
+              },
+              {
+                key: 'input',
+                label: '输入 tokens',
+                children: number.format(utilitySummary.inputTokens),
+              },
+              {
+                key: 'cache',
+                label: '缓存命中 tokens',
+                children: number.format(utilitySummary.cacheReadTokens),
+              },
+              {
+                key: 'output',
+                label: '输出 tokens',
+                children: number.format(utilitySummary.outputTokens),
+              },
+              {
+                key: 'cost',
+                label: '估算费用 (CNY)',
+                children: `¥${utilitySummary.costCny.toFixed(6)}`,
+              },
+              {
+                key: 'unpriced',
+                label: '未定价调用',
+                children: number.format(utilitySummary.unpricedCalls),
+              },
+            ]}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            辅助调用通常不带会话 ID，无法可靠归属到具体会话；此处单独统计，不并入主调用、模型与会话汇总。
+          </Typography.Text>
+        </Card>
+      )}
 
       <Card size="small" title="按模型">
         <Table
@@ -26,7 +79,7 @@ export function DashboardPage({ data, onOpenSession }: DashboardPageProps) {
           dataSource={data?.models ?? []}
           loading={!data}
           pagination={false}
-          scroll={{ x: 760 }}
+          scroll={{ x: 760, y: 360 }}
         />
       </Card>
 
@@ -38,7 +91,7 @@ export function DashboardPage({ data, onOpenSession }: DashboardPageProps) {
           dataSource={data?.sessions ?? []}
           loading={!data}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1180, y: 420 }}
         />
       </Card>
 
@@ -50,7 +103,7 @@ export function DashboardPage({ data, onOpenSession }: DashboardPageProps) {
           dataSource={data?.calls ?? []}
           loading={!data}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 1000 }}
+          scroll={{ x: 1000, y: 480 }}
         />
       </Card>
 

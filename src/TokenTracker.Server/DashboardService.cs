@@ -64,12 +64,13 @@ public sealed class DashboardService
             : "-";
 
         return new DashboardPayload(
-            _store.GetSummary(fromMs, includeUtility, toMs),
+            _store.GetSummary(fromMs, includeUtility: false, toMs),
             _store.GetModels(fromMs, toMs).ToList(),
             _store.GetSessions(fromMs, toMs: toMs).Select(WithTitle).ToList(),
             _store.GetCalls(fromMs, includeUtility, toMs: toMs).Select(WithTitle).ToList(),
             _counters.Snapshot(_endpoint, running: true),
-            updatedAt);
+            updatedAt,
+            _store.GetUtilitySummary(fromMs, toMs));
     }
 
     public ModelPayload GetModel(string model, int range)

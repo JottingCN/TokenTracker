@@ -76,6 +76,11 @@ npm run package        # 生成 tokentracker-*.vsix
 - Tip：标题 `Token Tracker - 会话名`，显示时间范围与模型数，按模型分开展示四类 token 与费用（6 位小数）。
 - 不在 Tip 中显示工作区信息。
 
+### 辅助调用
+
+- 当前实现把没有 `session_id` 的 span 视为辅助调用（`is_main = 0`）；主调用汇总、模型与会话统计不包含它们。该分类是推断，不是 Copilot 显式标记。
+- 辅助调用通常无法可靠归属具体会话；Dashboard 单独返回 `utilitySummary`，开启“显示辅助调用”时展示独立统计并在调用列表中加入辅助调用。
+
 ### 费用与定价
 
 - 内置价格可覆盖、恢复默认、删除自定义模型；保存后必须重算历史 span。
@@ -84,10 +89,11 @@ npm run package        # 生成 tokentracker-*.vsix
 
 ### 服务生命周期
 
-- 发布者为 `JottingCN`；扩展按 `buildId` 管理 `globalStorage/jottingcn.tokentracker/runtime/<buildId>`，共享单实例；`server-runtime.json` 缓存版本/平台。
-- 首次激活按 RID 通过 GitHub API 下载服务端并校验 `.sha256`（支持 `http.proxy` / `HTTPS_PROXY`）；本地开发目录存在 `server/` 时优先使用内置副本。
+- 发布者为 `JottingCN`，许可为 MIT；扩展按 `buildId` 管理 `globalStorage/jottingcn.tokentracker/runtime/<buildId>`，共享单实例；`server-runtime.json` 缓存平台/Release。
+- 首次激活按 RID 从**最新的服务端 Release** 下载并校验 `.sha256`（支持 `http.proxy` / `HTTPS_PROXY`），Release 检查缓存 30 分钟；本地开发目录存在 `server/` 时优先使用内置副本。
 - 数据位于 `globalStorage/jottingcn.tokentracker/data/tokentracker.db`，首次启动会从旧发布者目录迁移。
 - 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出。
+- 扩展与服务端独立发布：扩展标签 `v*`（`Release`），服务端标签 `server-v*`（`Server Release`）。
 - `vscode-extension/server/` 由 `npm run sync-server` 生成，不要手改；发布 VSIX 通过 `.vscodeignore` 排除该目录。
 - 日志 `extension.log` 超过 1 MB 轮转为 `extension.log.1`。
 

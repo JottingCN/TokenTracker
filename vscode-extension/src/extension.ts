@@ -283,7 +283,6 @@ async function startServerAndStatus(
     },
     (progress) =>
       prepareRuntime(context.extensionPath, context.globalStorageUri.fsPath, {
-        version: context.extension.packageJSON.version,
         ...downloadSource,
         proxyUrl,
         onProgress: (message) => progress.report({ message }),
@@ -292,7 +291,8 @@ async function startServerAndStatus(
 
   log(
     `runtime: build=${runtime.buildId} rid=${runtime.rid} ` +
-      `source=${runtime.source} version=${runtime.serverVersion} ` +
+      `source=${runtime.source} release=${runtime.releaseTag} ` +
+      `version=${runtime.serverVersion} ` +
       `dir=${runtime.runtimeDirectory} data=${runtime.dataDirectory}`,
   );
 

@@ -59,7 +59,7 @@ export function SessionPage({ sessionId, range }: SessionPageProps) {
           dataSource={data?.calls ?? []}
           loading={!data}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 900 }}
+          scroll={{ x: 900, y: 520 }}
         />
       </Card>
     </Space>

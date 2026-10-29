@@ -82,7 +82,9 @@ public sealed partial record CallRow
 
     public string TimeText => DisplayFormat.LocalTime(StartTimeMs);
     public string SessionShort => DisplayFormat.SessionShort(SessionId);
-    public string SessionDisplay => DisplayFormat.SessionDisplay(Title, SessionId);
+    public string SessionDisplay => SessionId is null
+        ? "辅助调用"
+        : DisplayFormat.SessionDisplay(Title, SessionId);
     public string InputText => DisplayFormat.Number(InputTokens);
     public string CacheText => DisplayFormat.Number(CacheReadTokens);
     public string OutputText => DisplayFormat.Number(OutputTokens);

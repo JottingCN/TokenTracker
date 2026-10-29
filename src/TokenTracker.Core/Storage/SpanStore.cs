@@ -216,7 +216,19 @@ public sealed class SpanStore
         bool includeUtility = false,
         long toMs = long.MaxValue)
     {
-        var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
+        return ReadSummary(
+            fromMs,
+            toMs,
+            includeUtility ? string.Empty : " AND is_main = 1");
+    }
+
+    public SummaryDto GetUtilitySummary(long fromMs, long toMs = long.MaxValue)
+    {
+        return ReadSummary(fromMs, toMs, " AND is_main = 0");
+    }
+
+    private SummaryDto ReadSummary(long fromMs, long toMs, string filter)
+    {
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -235,7 +247,7 @@ public sealed class SpanStore
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
             FROM spans
             WHERE start_time_ms >= @from
-              AND start_time_ms < @to{utilityFilter};
+              AND start_time_ms < @to{filter};
             """;
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);

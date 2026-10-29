@@ -54,7 +54,7 @@ export function ModelPage({
           dataSource={data?.sessions ?? []}
           loading={!data}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1100, y: 420 }}
         />
       </Card>
     </Space>

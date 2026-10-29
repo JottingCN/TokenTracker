@@ -48,7 +48,7 @@
         },
         "tokentracker.serverDownloadBaseUrl": {
           "default": "",
-          "description": "服务端 Release 下载基础地址。留空时使用扩展仓库的 GitHub Release API（v<扩展版本>）。",
+          "description": "服务端镜像地址前缀，例如 https://mirror/tokentracker-server-1.0.0；留空时使用 GitHub 最新服务端 Release。",
           "type": "string"
         },
         "tokentracker.statsRange": {
@@ -73,6 +73,10 @@
     }
   },
   "description": "Copilot token hit-rate and cost dashboard backed by a shared local Token Tracker server.",
+  "homepage": "https://github.com/JottingCN/TokenTracker#readme",
+  "bugs": {
+    "url": "https://github.com/JottingCN/TokenTracker/issues"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.90.0",
@@ -82,7 +86,7 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "main": "./out/extension.js",
   "name": "tokentracker",
   "publisher": "JottingCN",
@@ -96,5 +100,5 @@
     "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
     "sync-server": "node scripts/sync-server.mjs"
   },
-  "version": "0.1.1"
+  "version": "0.1.2"
 }

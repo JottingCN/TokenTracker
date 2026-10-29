@@ -233,28 +233,34 @@ export default function App() {
               )}
               <Space size={6}>
                 <Switch checked={utility} onChange={setUtility} />
-                <span>含辅助调用</span>
+                <span>显示辅助调用</span>
               </Space>
             </Space>
           </Header>
 
           <Content style={{ padding: 20, overflow: 'auto', minHeight: 0 }}>
-            {route.view === 'dashboard' && (
-              <DashboardPage data={dashboard} onOpenSession={openSessionFromDashboard} />
-            )}
-            {route.view === 'model' && (
-              <ModelPage
-                key={route.id}
-                modelId={route.id}
-                range={numericRange}
-                fromMs={customFrom}
-                toMs={customTo}
-                onOpenSession={openSessionFromModel}
-              />
-            )}
-            {route.view === 'session' && (
-              <SessionPage key={route.id} sessionId={route.id} range={numericRange} />
-            )}
+            <div style={{ maxWidth: 1600, margin: '0 auto' }}>
+              {route.view === 'dashboard' && (
+                <DashboardPage
+                  data={dashboard}
+                  utility={utility}
+                  onOpenSession={openSessionFromDashboard}
+                />
+              )}
+              {route.view === 'model' && (
+                <ModelPage
+                  key={route.id}
+                  modelId={route.id}
+                  range={numericRange}
+                  fromMs={customFrom}
+                  toMs={customTo}
+                  onOpenSession={openSessionFromModel}
+                />
+              )}
+              {route.view === 'session' && (
+                <SessionPage key={route.id} sessionId={route.id} range={numericRange} />
+              )}
+            </div>
           </Content>
 
           <Footer

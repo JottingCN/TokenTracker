@@ -1,5 +1,8 @@
 # Token Tracker for VS Code
 
+[![GitHub](https://img.shields.io/badge/GitHub-JottingCN%2FTokenTracker-181717?logo=github)](https://github.com/JottingCN/TokenTracker)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/JottingCN/TokenTracker/blob/main/LICENSE)
+
 在状态栏实时查看 Copilot Token 缓存命中率与人民币估算费用，并一键打开完整的本地看板。
 
 扩展本身是薄客户端：首次激活时按操作系统下载对应平台的 `TokenTracker.Server` 自包含包，校验 SHA-256 后缓存并托管，多个 VS Code 窗口共享同一实例。
@@ -20,7 +23,7 @@
 
 - 支持平台：Windows x64、Linux x64、macOS x64 / arm64
 - VS Code 1.90 或更高版本
-- 首次激活可通过 GitHub API 下载服务端（约 8 MB）；自动读取 VS Code `http.proxy` 或 `HTTPS_PROXY` / `HTTP_PROXY`
+- 首次激活从最新的服务端 Release 下载匹配平台的服务端（约 8 MB）；自动读取 VS Code `http.proxy` 或 `HTTPS_PROXY` / `HTTP_PROXY`
 - 已安装 GitHub Copilot 并在 VS Code 中开启 OpenTelemetry 导出
 
 在 VS Code `settings.json` 中加入：
@@ -83,16 +86,17 @@ code --install-extension tokentracker-*.vsix --force
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `tokentracker.port` | `4318` | 本地服务端口（`127.0.0.1`） |
-| `tokentracker.serverDownloadBaseUrl` | 空 | 服务端下载基础地址；空时使用 GitHub Release API，可指向自建镜像 |
+| `tokentracker.serverDownloadBaseUrl` | 空 | 服务端镜像前缀（如 `https://mirror/tokentracker-server-1.0.0`）；空时使用最新 GitHub 服务端 Release |
 | `tokentracker.autoStart` | `true` | 服务未运行时自动启动 |
 | `tokentracker.statsRange` | `7d` | 状态栏统计范围：`today` / `7d` / `30d` / `all` |
 | `tokentracker.idleExitSeconds` | `60` | 所有客户端（VS Code 窗口或浏览器）断开后延迟退出；`0` 表示不自动退出 |
 
 ## 服务生命周期
 
-- 首次激活按平台映射到 `win-x64` / `linux-x64` / `osx-x64` / `osx-arm64`，通过 GitHub API 下载当前版本的
+- 首次激活按平台映射到 `win-x64` / `linux-x64` / `osx-x64` / `osx-arm64`，从**最新的服务端 Release** 下载
   `tokentracker-server-<version>-<rid>.<zip|tar.gz>`，并校验同名 `.sha256`。
-- 解压到 `runtime/<buildId>` 并写入 `server-runtime.json`；后续激活直接复用，不重复下载。扩展升级后按新版本重新获取。
+- 解压到 `runtime/<buildId>` 并写入 `server-runtime.json`；Release 检查结果缓存 30 分钟，后续激活优先复用，不重复下载。
+- 扩展与服务端版本独立；服务端发布新 Release 后，扩展会在一小时内感知并升级。
 - 扩展激活时先检查端口上的现有服务：
   - 构建一致：直接复用。
   - 由扩展启动且构建不一致：停止旧实例并启动当前构建。
@@ -148,6 +152,7 @@ npm run package   # 生成通用 tokentracker-*.vsix（server/ 不打包）
 
 - **首次激活下载失败**：确认对应版本的 Release 已发布且包含当前平台的 `tokentracker-server-*` 与 `.sha256`；若提示 GitHub API 限流，稍后重试或设置 `tokentracker.serverDownloadBaseUrl` 指向镜像。
 - **代理**：自动读取 VS Code `http.proxy` 与 `HTTPS_PROXY` / `HTTP_PROXY`，支持 `http://` CONNECT 代理并遵循 `NO_PROXY`；暂不支持 SOCKS。`github.com/releases/download` 在部分网络不可用，扩展默认走 GitHub API。
+- **镜像**：`tokentracker.serverDownloadBaseUrl` 是 URL 前缀，扩展会追加 `-<rid>.<zip|tar.gz>`；例如设置为 `https://mirror/tokentracker-server-1.0.0`。
 - **从旧发布者升级**：首次启动会将 `globalStorage/jotting.tokentracker/data` 中的数据库迁移到 `jottingcn.tokentracker`。
 - **状态栏不显示**：确认当前工作区有会话数据；打开“服务信息”确认服务已运行；检查 Copilot OTel 配置是否指向 `http://127.0.0.1:4318`。
 - **端口被占用**：修改 `tokentracker.port`，并同步修改 Copilot 的 `otlpEndpoint`。

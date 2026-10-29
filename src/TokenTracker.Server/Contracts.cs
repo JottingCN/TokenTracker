@@ -16,7 +16,8 @@ public sealed record DashboardPayload(
     List<SessionRow> Sessions,
     List<CallRow> Calls,
     ReceiverInfo Receiver,
-    string UpdatedAt);
+    string UpdatedAt,
+    SummaryDto UtilitySummary);
 
 public sealed record ModelPayload(
     SummaryDto Summary,

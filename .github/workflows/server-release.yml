@@ -1,0 +1,192 @@
+name: Server Release
+
+on:
+  push:
+    tags:
+      - 'server-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Server release tag, e.g. server-v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: server-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          case "$TAG" in
+            server-v*) ;;
+            *) echo "Server tag must start with 'server-v': $TAG" >&2; exit 1 ;;
+          esac
+          VERSION="${TAG#server-v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing server $TAG"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run core tests
+        run: dotnet test tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release --nologo
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web dashboard
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload dashboard assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: wwwroot
+          path: src/TokenTracker.Server/wwwroot
+          if-no-files-found: error
+
+  server:
+    runs-on: ${{ matrix.os }}
+    needs: [meta, web]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            ext: zip
+          - os: ubuntu-latest
+            rid: linux-x64
+            ext: tar.gz
+          - os: macos-15-intel
+            rid: osx-x64
+            ext: tar.gz
+          - os: macos-15
+            rid: osx-arm64
+            ext: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install AOT prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Download dashboard assets
+        uses: actions/download-artifact@v4
+        with:
+          name: wwwroot
+          path: src/TokenTracker.Server/wwwroot
+
+      - name: Publish server
+        env:
+          TOKENTRACKER_TARGET_RID: ${{ matrix.rid }}
+        run: node vscode-extension/scripts/sync-server.mjs
+
+      - name: Archive server (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          RID: ${{ matrix.rid }}
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path 'vscode-extension/server/*' `
+            -DestinationPath "artifacts/tokentracker-server-$env:VERSION-$env:RID.zip" -Force
+
+      - name: Archive server (Unix)
+        if: runner.os != 'Windows'
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          RID: ${{ matrix.rid }}
+        run: |
+          mkdir -p artifacts
+          tar -czf "artifacts/tokentracker-server-${VERSION}-${RID}.tar.gz" \
+            -C vscode-extension/server .
+
+      - name: Write checksum
+        shell: bash
+        env:
+          ASSET: artifacts/tokentracker-server-${{ needs.meta.outputs.version }}-${{ matrix.rid }}.${{ matrix.ext }}
+        run: |
+          node -e "const c=require('crypto'),fs=require('fs'),p=require('path');const f=process.env.ASSET;const h=c.createHash('sha256').update(fs.readFileSync(f)).digest('hex');fs.writeFileSync(f+'.sha256',h+'  '+p.basename(f)+'\n')"
+
+      - name: Upload server archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.rid }}
+          path: artifacts/tokentracker-server-*
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [meta, test, server]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download server archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: server-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh artifacts
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber
+            gh release edit "$TAG" --draft=false
+          else
+            gh release create "$TAG" artifacts/* \
+              --target "$GITHUB_SHA" \
+              --title "Token Tracker Server $VERSION" \
+              --generate-notes
+          fi

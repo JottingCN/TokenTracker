@@ -7,23 +7,35 @@ import * as path from 'node:path';
 import * as tls from 'node:tls';
 import { URL } from 'node:url';
 
-export interface ServerArchiveInfo {
+export interface ServerAssetInfo {
   rid: string;
-  archivePath: string;
+  assetName: string;
+  archiveUrl: string;
+  checksumUrl?: string;
+  releaseTag: string;
+  serverVersion: string;
 }
 
 export interface ServerDownloadOptions {
   storagePath: string;
-  version: string;
   baseUrl?: string;
   githubRepo?: string;
   proxyUrl?: string;
   onProgress?: (message: string) => void;
 }
 
-interface ReleaseAsset {
-  name: string;
-  apiUrl: string;
+interface ReleaseCache {
+  checkedAt: number;
+  rid: string;
+  extension: string;
+  asset: ServerAssetInfo;
+}
+
+interface GitHubRelease {
+  tag_name?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+  assets?: Array<{ name?: string; url?: string }>;
 }
 
 class HttpError extends Error {
@@ -33,6 +45,7 @@ class HttpError extends Error {
 }
 
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
+const RELEASE_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export function resolveServerRid(): string {
   if (process.platform === 'win32' && process.arch === 'x64') {
@@ -53,92 +66,118 @@ export function resolveServerRid(): string {
   );
 }
 
-export async function ensureServerArchive(
+export async function resolveServerAsset(
   options: ServerDownloadOptions,
-): Promise<ServerArchiveInfo> {
+): Promise<ServerAssetInfo> {
   const rid = resolveServerRid();
   const extension = rid.startsWith('win-') ? 'zip' : 'tar.gz';
-  const asset = `tokentracker-server-${options.version}-${rid}.${extension}`;
 
-  const directory = path.join(options.storagePath, 'downloads');
-  fs.mkdirSync(directory, { recursive: true });
-  const archivePath = path.join(directory, asset);
+  const baseUrl = options.baseUrl?.trim();
+  if (baseUrl) {
+    const base = baseUrl.replace(/\/+$/, '');
+    const archiveUrl = `${base}-${rid}.${extension}`;
+    return {
+      rid,
+      assetName: archiveUrl,
+      archiveUrl,
+      checksumUrl: `${archiveUrl}.sha256`,
+      releaseTag: 'mirror',
+      serverVersion: parseServerVersion(archiveUrl, rid, extension) ?? 'mirror',
+    };
+  }
 
-  options.onProgress?.(`正在下载 ${asset}`);
-  if (options.baseUrl) {
-    const base = options.baseUrl.replace(/\/+$/, '');
-    const url = `${base}/${asset}`;
-    await downloadFile(url, archivePath, {}, options.proxyUrl);
-    await verifyChecksumFromUrl(
-      url,
-      archivePath,
-      options.proxyUrl,
-      options.onProgress,
-    );
-  } else if (options.githubRepo) {
-    const assets = await loadReleaseAssets(
-      options.githubRepo,
-      options.version,
-      options.proxyUrl,
-    );
-    const archive = assets.find((entry) => entry.name === asset);
-    if (!archive) {
-      throw new Error(`Release v${options.version} 中缺少 ${asset}`);
-    }
-
-    await downloadFile(
-      archive.apiUrl,
-      archivePath,
-      { Accept: 'application/octet-stream' },
-      options.proxyUrl,
-    );
-
-    const checksum = assets.find(
-      (entry) => entry.name === `${asset}.sha256`,
-    );
-    if (checksum) {
-      const text = await downloadString(
-        checksum.apiUrl,
-        { Accept: 'application/octet-stream' },
-        options.proxyUrl,
-      );
-      verifyHash(text, archivePath);
-    } else {
-      options.onProgress?.('未找到校验文件，跳过校验');
-    }
-  } else {
+  if (!options.githubRepo) {
     throw new Error('未配置服务端下载地址');
   }
 
-  return { rid, archivePath };
-}
-
-async function loadReleaseAssets(
-  repositoryUrl: string,
-  version: string,
-  proxyUrl?: string,
-): Promise<ReleaseAsset[]> {
-  const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
-    repositoryUrl,
-  );
-  if (!match) {
-    throw new Error(`无法解析 GitHub 仓库地址：${repositoryUrl}`);
+  const cached = readReleaseCache(options.storagePath, rid, extension, false);
+  if (cached) {
+    return cached;
   }
 
-  const apiUrl =
-    `https://api.github.com/repos/${match[1]}/${match[2]}` +
-    `/releases/tags/v${version}`;
+  options.onProgress?.('正在检查服务端版本');
+  try {
+    const asset = await fetchLatestServerAsset(
+      options.githubRepo,
+      rid,
+      extension,
+      options.proxyUrl,
+    );
+    writeReleaseCache(options.storagePath, rid, extension, asset);
+    return asset;
+  } catch (error) {
+    const stale = readReleaseCache(options.storagePath, rid, extension, true);
+    if (stale) {
+      options.onProgress?.('检查服务端更新失败，使用缓存版本');
+      return stale;
+    }
+    throw error;
+  }
+}
+
+export async function downloadServerArchive(
+  asset: ServerAssetInfo,
+  options: ServerDownloadOptions,
+): Promise<string> {
+  const extension = asset.rid.startsWith('win-') ? 'zip' : 'tar.gz';
+  const directory = path.join(options.storagePath, 'downloads');
+  fs.mkdirSync(directory, { recursive: true });
+  const archivePath = path.join(
+    directory,
+    `tokentracker-server-${asset.rid}.${extension}`,
+  );
+
+  options.onProgress?.(`正在下载 ${asset.assetName}`);
+  const headers: Record<string, string> =
+    asset.archiveUrl.includes('api.github.com')
+      ? { Accept: 'application/octet-stream' }
+      : {};
+  await downloadFile(asset.archiveUrl, archivePath, headers, options.proxyUrl);
+
+  if (asset.checksumUrl) {
+    try {
+      const checksum = await downloadString(
+        asset.checksumUrl,
+        headers,
+        options.proxyUrl,
+      );
+      verifyHash(checksum, archivePath);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        options.onProgress?.('未找到校验文件，跳过校验');
+      } else {
+        fs.rmSync(archivePath, { force: true });
+        throw error;
+      }
+    }
+  } else {
+    options.onProgress?.('未找到校验文件，跳过校验');
+  }
+
+  return archivePath;
+}
+
+async function fetchLatestServerAsset(
+  repositoryUrl: string,
+  rid: string,
+  extension: string,
+  proxyUrl?: string,
+): Promise<ServerAssetInfo> {
+  const repository = parseGitHubRepository(repositoryUrl);
+  const url =
+    `https://api.github.com/repos/${repository.owner}/${repository.repo}` +
+    '/releases?per_page=30';
 
   let body: string;
   try {
     body = await downloadString(
-      apiUrl,
+      url,
       { Accept: 'application/vnd.github+json' },
       proxyUrl,
     );
   } catch (error) {
     if (error instanceof HttpError && error.status === 404) {
-      throw new Error(`未找到 v${version} 的 GitHub Release`);
+      throw new Error('无法读取 GitHub Release，请检查仓库地址');
     }
     if (
       error instanceof HttpError &&
@@ -149,41 +188,124 @@ async function loadReleaseAssets(
     throw error;
   }
 
-  let release: { assets?: Array<{ name?: string; url?: string }> };
+  let releases: GitHubRelease[];
   try {
-    release = JSON.parse(body) as {
-      assets?: Array<{ name?: string; url?: string }>;
-    };
+    releases = JSON.parse(body) as GitHubRelease[];
   } catch {
-    throw new Error('无法解析 GitHub Release 信息');
+    throw new Error('无法解析 GitHub Release 列表');
   }
 
-  return (release.assets ?? [])
-    .filter(
-      (entry): entry is { name: string; url: string } =>
-        Boolean(entry.name && entry.url),
-    )
-    .map((entry) => ({ name: entry.name, apiUrl: entry.url }));
+  const pattern = serverAssetPattern(rid, extension);
+  for (const release of releases) {
+    if (release.draft || release.prerelease) {
+      continue;
+    }
+
+    const assets = (release.assets ?? []).filter(
+      (asset): asset is { name: string; url: string } =>
+        Boolean(asset.name && asset.url),
+    );
+    const archive = assets.find((asset) => pattern.test(asset.name));
+    if (!archive) {
+      continue;
+    }
+
+    const checksum = assets.find(
+      (asset) => asset.name === `${archive.name}.sha256`,
+    );
+    return {
+      rid,
+      assetName: archive.name,
+      archiveUrl: archive.url,
+      checksumUrl: checksum?.url,
+      releaseTag: release.tag_name ?? 'unknown',
+      serverVersion:
+        parseServerVersion(archive.name, rid, extension) ?? 'unknown',
+    };
+  }
+
+  throw new Error(`未找到包含 ${rid} 服务端的 Release`);
 }
 
-async function verifyChecksumFromUrl(
-  url: string,
-  archivePath: string,
-  proxyUrl?: string,
-  onProgress?: (message: string) => void,
-): Promise<void> {
-  let checksum: string;
-  try {
-    checksum = await downloadString(`${url}.sha256`, {}, proxyUrl);
-  } catch (error) {
-    if (error instanceof HttpError && error.status === 404) {
-      onProgress?.('未找到校验文件，跳过校验');
-      return;
-    }
-    throw error;
+function parseGitHubRepository(repositoryUrl: string): {
+  owner: string;
+  repo: string;
+} {
+  const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
+    repositoryUrl,
+  );
+  if (!match) {
+    throw new Error(`无法解析 GitHub 仓库地址：${repositoryUrl}`);
   }
+  return { owner: match[1], repo: match[2] };
+}
 
-  verifyHash(checksum, archivePath);
+function serverAssetPattern(rid: string, extension: string): RegExp {
+  return new RegExp(
+    `^tokentracker-server-(.+)-${escapeRegExp(rid)}\\.${escapeRegExp(extension)}$`,
+  );
+}
+
+function parseServerVersion(
+  assetName: string,
+  rid: string,
+  extension: string,
+): string | null {
+  const match = serverAssetPattern(rid, extension).exec(assetName);
+  return match ? match[1] : null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function releaseCachePath(storagePath: string): string {
+  return path.join(storagePath, 'server-release-cache.json');
+}
+
+function readReleaseCache(
+  storagePath: string,
+  rid: string,
+  extension: string,
+  allowStale: boolean,
+): ServerAssetInfo | null {
+  try {
+    const cache = JSON.parse(
+      fs.readFileSync(releaseCachePath(storagePath), 'utf8'),
+    ) as ReleaseCache;
+    if (cache.rid !== rid || cache.extension !== extension) {
+      return null;
+    }
+    if (!allowStale && Date.now() - cache.checkedAt > RELEASE_CACHE_TTL_MS) {
+      return null;
+    }
+    return cache.asset;
+  } catch {
+    return null;
+  }
+}
+
+function writeReleaseCache(
+  storagePath: string,
+  rid: string,
+  extension: string,
+  asset: ServerAssetInfo,
+): void {
+  const cache: ReleaseCache = {
+    checkedAt: Date.now(),
+    rid,
+    extension,
+    asset,
+  };
+  try {
+    fs.writeFileSync(
+      releaseCachePath(storagePath),
+      JSON.stringify(cache, null, 2),
+      'utf8',
+    );
+  } catch {
+    // Cache is best-effort.
+  }
 }
 
 function verifyHash(checksum: string, archivePath: string): void {
@@ -273,7 +395,7 @@ function downloadString(
         if (REDIRECT_CODES.has(status) && response.headers.location) {
           response.resume();
           if (redirects >= 5) {
-            reject(new Error('校验文件重定向过多'));
+            reject(new Error('服务端信息重定向过多'));
             return;
           }
           resolve(
@@ -303,7 +425,7 @@ function downloadString(
     );
 
     request.setTimeout(30_000, () => {
-      request.destroy(new Error('校验文件下载超时'));
+      request.destroy(new Error('服务端信息请求超时'));
     });
     request.on('error', reject);
   });

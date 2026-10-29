@@ -108,6 +108,7 @@ export interface ReceiverInfo {
 
 export interface DashboardPayload {
   summary: Summary;
+  utilitySummary: Summary;
   models: ModelRow[];
   sessions: SessionRow[];
   calls: CallRow[];

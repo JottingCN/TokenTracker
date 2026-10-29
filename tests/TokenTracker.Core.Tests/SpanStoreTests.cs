@@ -44,6 +44,14 @@ public sealed class SpanStoreTests
             Assert.Equal(320, withUtility.OutputTokens);
             Assert.Equal(1, withUtility.UnpricedCalls);
 
+            var utilitySummary = store.GetUtilitySummary(0);
+            Assert.Equal(1, utilitySummary.Calls);
+            Assert.Equal(100, utilitySummary.InputTokens);
+            Assert.Equal(50, utilitySummary.CacheReadTokens);
+            Assert.Equal(20, utilitySummary.OutputTokens);
+            Assert.Equal(0, utilitySummary.CostCny);
+            Assert.Equal(1, utilitySummary.UnpricedCalls);
+
             var sessions = store.GetSessions(0);
             Assert.Equal(2, sessions.Count);
             Assert.Equal("session-2", sessions[0].SessionId);

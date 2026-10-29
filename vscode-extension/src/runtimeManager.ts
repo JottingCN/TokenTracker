@@ -2,11 +2,17 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ensureServerArchive, resolveServerRid } from './serverDownloader';
+import {
+  downloadServerArchive,
+  resolveServerAsset,
+  resolveServerRid,
+  ServerAssetInfo,
+} from './serverDownloader';
 
 export interface RuntimeInfo {
   buildId: string;
   rid: string;
+  releaseTag: string;
   serverVersion: string;
   runtimeDirectory: string;
   executablePath: string;
@@ -15,7 +21,6 @@ export interface RuntimeInfo {
 }
 
 export interface PrepareRuntimeOptions {
-  version: string;
   baseUrl?: string;
   githubRepo?: string;
   proxyUrl?: string;
@@ -29,11 +34,12 @@ interface BuildInfo {
 }
 
 interface RuntimeState {
-  version: string;
   rid: string;
   buildId: string;
   serverVersion: string;
   runtimeDirectory: string;
+  assetName: string;
+  releaseTag: string;
 }
 
 export async function prepareRuntime(
@@ -69,6 +75,7 @@ export async function prepareRuntime(
     return {
       buildId,
       rid: build.rid ?? (process.platform === 'win32' ? 'win-x64' : resolveServerRid()),
+      releaseTag: 'bundled',
       serverVersion: build.serverVersion ?? 'unknown',
       runtimeDirectory,
       executablePath: path.join(runtimeDirectory, executableName),
@@ -78,43 +85,53 @@ export async function prepareRuntime(
   }
 
   const rid = resolveServerRid();
-  const state = readState(storagePath);
-  if (
-    state &&
-    state.version === options.version &&
-    state.rid === rid &&
-    state.runtimeDirectory.startsWith(runtimeRoot + path.sep)
-  ) {
-    const executablePath = path.join(state.runtimeDirectory, executableName);
-    if (
-      fs.existsSync(path.join(state.runtimeDirectory, '.ready')) &&
-      fs.existsSync(executablePath)
-    ) {
-      return {
-        buildId: state.buildId,
-        rid,
-        serverVersion: state.serverVersion,
-        runtimeDirectory: state.runtimeDirectory,
-        executablePath,
-        dataDirectory,
-        source: 'download',
-      };
-    }
+  const cached = readRuntimeState(storagePath);
+  const cachedReady = Boolean(cached && isRuntimeReady(cached, runtimeRoot, executableName));
+
+  let asset: ServerAssetInfo | null = null;
+  let resolveError: unknown;
+  try {
+    asset = await resolveServerAsset({
+      storagePath,
+      baseUrl: options.baseUrl,
+      githubRepo: options.githubRepo,
+      proxyUrl: options.proxyUrl,
+      onProgress: options.onProgress,
+    });
+  } catch (error) {
+    resolveError = error;
   }
 
-  const archive = await ensureServerArchive({
-    storagePath,
-    version: options.version,
-    baseUrl: options.baseUrl,
-    githubRepo: options.githubRepo,
-    proxyUrl: options.proxyUrl,
-    onProgress: options.onProgress,
-  });
+  if (asset && cachedReady && cached!.assetName === asset.assetName) {
+    return runtimeInfoFromState(cached!, dataDirectory, executableName);
+  }
 
-  const staging = path.join(
-    runtimeRoot,
-    `.staging-${process.pid}-${Date.now()}`,
-  );
+  if (!asset && cachedReady) {
+    options.onProgress?.('无法检查服务端更新，使用已缓存版本');
+    return runtimeInfoFromState(cached!, dataDirectory, executableName);
+  }
+
+  if (!asset) {
+    throw resolveError ?? new Error('无法获取服务端版本');
+  }
+
+  options.onProgress?.(`准备服务端 ${asset.serverVersion}`);
+  let archivePath: string;
+  try {
+    archivePath = await downloadServerArchive(asset, {
+      storagePath,
+      proxyUrl: options.proxyUrl,
+      onProgress: options.onProgress,
+    });
+  } catch (error) {
+    if (cachedReady) {
+      options.onProgress?.('服务端下载失败，使用已缓存版本');
+      return runtimeInfoFromState(cached!, dataDirectory, executableName);
+    }
+    throw error;
+  }
+
+  const staging = path.join(runtimeRoot, `.staging-${process.pid}-${Date.now()}`);
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
 
@@ -123,7 +140,7 @@ export async function prepareRuntime(
     const tarExecutable = process.platform === 'win32'
       ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
       : 'tar';
-    execFileSync(tarExecutable, ['-xf', archive.archivePath, '-C', staging], {
+    execFileSync(tarExecutable, ['-xf', archivePath, '-C', staging], {
       windowsHide: true,
     });
 
@@ -151,21 +168,23 @@ export async function prepareRuntime(
     if (process.platform !== 'win32') {
       fs.chmodSync(executablePath, 0o755);
     }
-    fs.rmSync(archive.archivePath, { force: true });
+    fs.rmSync(archivePath, { force: true });
 
     const info: RuntimeInfo = {
       buildId,
       rid,
-      serverVersion: build.serverVersion ?? 'unknown',
+      releaseTag: asset.releaseTag,
+      serverVersion: build.serverVersion ?? asset.serverVersion,
       runtimeDirectory,
       executablePath,
       dataDirectory,
       source: 'download',
     };
-    writeState(storagePath, info, options.version);
+    writeRuntimeState(storagePath, info, asset.assetName);
     return info;
   } catch (error) {
     fs.rmSync(staging, { recursive: true, force: true });
+    fs.rmSync(archivePath, { force: true });
     throw error;
   }
 }
@@ -222,6 +241,33 @@ export function cleanupOldRuntimes(
   return result;
 }
 
+function runtimeInfoFromState(
+  state: RuntimeState,
+  dataDirectory: string,
+  executableName: string,
+): RuntimeInfo {
+  return {
+    buildId: state.buildId,
+    rid: state.rid,
+    releaseTag: state.releaseTag,
+    serverVersion: state.serverVersion,
+    runtimeDirectory: state.runtimeDirectory,
+    executablePath: path.join(state.runtimeDirectory, executableName),
+    dataDirectory,
+    source: 'download',
+  };
+}
+
+function isRuntimeReady(
+  state: RuntimeState,
+  runtimeRoot: string,
+  executableName: string,
+): boolean {
+  return state.runtimeDirectory.startsWith(runtimeRoot + path.sep) &&
+    fs.existsSync(path.join(state.runtimeDirectory, '.ready')) &&
+    fs.existsSync(path.join(state.runtimeDirectory, executableName));
+}
+
 function ensureRuntimeDirectory(
   runtimeDirectory: string,
   populate: (target: string) => void,
@@ -260,26 +306,43 @@ function statePath(storagePath: string): string {
   return path.join(storagePath, 'server-runtime.json');
 }
 
-function readState(storagePath: string): RuntimeState | null {
+function readRuntimeState(storagePath: string): RuntimeState | null {
   try {
     const raw = fs.readFileSync(statePath(storagePath), 'utf8');
-    return JSON.parse(raw) as RuntimeState;
+    const state = JSON.parse(raw) as Partial<RuntimeState>;
+    if (
+      typeof state.rid !== 'string' ||
+      typeof state.buildId !== 'string' ||
+      typeof state.runtimeDirectory !== 'string' ||
+      typeof state.assetName !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      rid: state.rid,
+      buildId: state.buildId,
+      serverVersion: state.serverVersion ?? 'unknown',
+      runtimeDirectory: state.runtimeDirectory,
+      assetName: state.assetName,
+      releaseTag: state.releaseTag ?? 'unknown',
+    };
   } catch {
     return null;
   }
 }
 
-function writeState(
+function writeRuntimeState(
   storagePath: string,
   info: RuntimeInfo,
-  version: string,
+  assetName: string,
 ): void {
   const state: RuntimeState = {
-    version,
     rid: info.rid,
     buildId: info.buildId,
     serverVersion: info.serverVersion,
     runtimeDirectory: info.runtimeDirectory,
+    assetName,
+    releaseTag: info.releaseTag,
   };
   fs.writeFileSync(statePath(storagePath), JSON.stringify(state, null, 2), 'utf8');
 }
