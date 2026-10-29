@@ -550,7 +550,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                   type="info"
                   showIcon
                   message="数据保留"
-                  description="保留天数保存在服务端 SQLite；保存后立即清理超期 span，之后每 6 小时自动执行。删除操作不可撤销。"
+                  description="保留天数保存在本地 SQLite 数据库；保存后立即清理超期 span，之后每 6 小时自动执行。删除操作不可撤销。"
                 />
               </Space>
             ),

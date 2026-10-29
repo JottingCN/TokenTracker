@@ -209,7 +209,7 @@ TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
 
 - 所有解析与统计均在本机完成，不上传任何数据。
 - `captureContent: false`，只处理 usage / token 计数字段，不保存对话内容。
-- 本地数据库默认保留 90 天，可在 Web“价格与数据设置”中修改（`0` = 永久）；价格覆盖与节假日缓存同样保存在 SQLite。
+- 本地数据库默认保留 90 天，可在 Web“设置 → 数据”中修改（`0` = 永久）；保留天数、价格覆盖与节假日缓存均保存在本地 SQLite。
 - 会话标题来自本机 VS Code 的 `agent-host.db` 与 `~/.copilot/session-state`，只读访问。
 
 ## 已知约束
