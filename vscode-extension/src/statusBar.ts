@@ -400,9 +400,7 @@ export class StatusBarController implements vscode.Disposable {
             return false;
           }
           const path = normalizePath(session.workspacePath);
-          return this.workspaceRoots.some(
-            (root) => path === root || path.startsWith(root + '\\'),
-          );
+          return this.workspaceRoots.some((root) => isPathWithin(path, root));
         });
 
     if (filtered.length === 0) {
@@ -545,11 +543,22 @@ function rangeBounds(rangeIndex: number): { fromMs: number; toMs: number } {
 }
 
 function normalizePath(value: string): string {
-  let path = value.replace(/\//g, '\\');
-  while (path.endsWith('\\')) {
-    path = path.slice(0, -1);
+  const windows = process.platform === 'win32';
+  const separator = windows ? '\\' : '/';
+  let result = windows
+    ? value.replace(/\//g, '\\')
+    : value.replace(/\\/g, '/');
+  while (result.length > 1 && result.endsWith(separator)) {
+    result = result.slice(0, -1);
   }
-  return path.toLowerCase();
+  return windows ? result.toLowerCase() : result;
+}
+
+function isPathWithin(pathValue: string, root: string): boolean {
+  if (pathValue === root) {
+    return true;
+  }
+  return pathValue.startsWith(root + (process.platform === 'win32' ? '\\' : '/'));
 }
 
 function escapeMarkdown(value: string): string {

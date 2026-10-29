@@ -75,6 +75,27 @@ function currentWorkspaceRoots(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
 }
 
+function defaultAgentHostDirectories(): string[] {
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    const base = process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming');
+    return ['Code', 'Code - Insiders'].map((product) =>
+      path.join(base, product, 'User', 'globalStorage'),
+    );
+  }
+  if (process.platform === 'darwin') {
+    const base = path.join(home, 'Library', 'Application Support');
+    return ['Code', 'Code - Insiders'].map((product) =>
+      path.join(base, product, 'User', 'globalStorage'),
+    );
+  }
+
+  const base = process.env.XDG_CONFIG_HOME ?? path.join(home, '.config');
+  return ['Code', 'Code - Insiders'].map((product) =>
+    path.join(base, product, 'User', 'globalStorage'),
+  );
+}
+
 const METADATA_DEBOUNCE_MS = 500;
 const AGENT_HOST_THROTTLE_MS = 15_000;
 
@@ -109,10 +130,7 @@ function registerMetadataWatchers(context: vscode.ExtensionContext): void {
       AGENT_HOST_THROTTLE_MS,
     ]);
   } else {
-    const appData =
-      process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
-    for (const product of ['Code', 'Code - Insiders']) {
-      const directory = path.join(appData, product, 'User', 'globalStorage');
+    for (const directory of defaultAgentHostDirectories()) {
       if (fs.existsSync(path.join(directory, 'agent-host.db'))) {
         targets.push([directory, 'agent-host.db*', AGENT_HOST_THROTTLE_MS]);
       }
@@ -197,6 +215,27 @@ interface StatsRange {
   label: string;
 }
 
+function resolveDownloadBase(
+  context: vscode.ExtensionContext,
+  override: string,
+): string {
+  if (override.trim()) {
+    return override.trim().replace(/\/+$/, '');
+  }
+
+  const repository = context.extension.packageJSON.repository as
+    | string
+    | { url?: string }
+    | undefined;
+  const raw = typeof repository === 'string' ? repository : repository?.url;
+  const url = raw?.replace(/^git\+/, '').replace(/\.git$/, '').replace(/\/+$/, '');
+  if (!url) {
+    throw new Error('扩展缺少 repository 配置，无法自动下载服务端');
+  }
+
+  return `${url}/releases/download/v${context.extension.packageJSON.version}`;
+}
+
 async function startServerAndStatus(
   context: vscode.ExtensionContext,
   port: number,
@@ -204,12 +243,29 @@ async function startServerAndStatus(
   range: StatsRange,
   idleExitSeconds: number,
 ): Promise<void> {
-  const runtime = prepareRuntime(
-    context.extensionPath,
-    context.globalStorageUri.fsPath,
+  const configuration = vscode.workspace.getConfiguration('tokentracker');
+  const downloadBaseUrl = resolveDownloadBase(
+    context,
+    configuration.get<string>('serverDownloadBaseUrl', ''),
   );
+
+  const runtime = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Window,
+      title: 'Token Tracker 正在准备服务端',
+      cancellable: false,
+    },
+    (progress) =>
+      prepareRuntime(context.extensionPath, context.globalStorageUri.fsPath, {
+        version: context.extension.packageJSON.version,
+        downloadBaseUrl,
+        onProgress: (message) => progress.report({ message }),
+      }),
+  );
+
   log(
-    `runtime: build=${runtime.buildId} version=${runtime.serverVersion} ` +
+    `runtime: build=${runtime.buildId} rid=${runtime.rid} ` +
+      `source=${runtime.source} version=${runtime.serverVersion} ` +
       `dir=${runtime.runtimeDirectory} data=${runtime.dataDirectory}`,
   );
 

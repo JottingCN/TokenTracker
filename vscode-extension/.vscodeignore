@@ -4,3 +4,5 @@ scripts/**
 node_modules/**
 **/*.map
 **/*.pdb
+server/**
+*.vsix

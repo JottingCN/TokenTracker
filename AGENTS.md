@@ -14,7 +14,7 @@ Copilot OTLP → TokenTracker.Server (Kestrel, .NET 10 AOT) → SQLite
 客户端：VS Code 扩展 / 浏览器 / 可选 WinUI 3 桌面端
 ```
 
-- 服务端发布 Windows x64 / Linux x64 / macOS x64 / macOS arm64 自包含 AOT 构建；VS Code 扩展目前仅发布 Windows x64。
+- 服务端发布 Windows x64 / Linux x64 / macOS x64 / macOS arm64 自包含 AOT 构建；VS Code 扩展为通用包，首次激活按平台下载并校验对应服务端。
 - 所有数据留在本机，不采集、不上传对话内容（`captureContent: false`）。
 - 时间范围、峰谷价格均按北京时间（UTC+8）计算。
 
@@ -84,10 +84,11 @@ npm run package        # 生成 tokentracker-*.vsix
 
 ### 服务生命周期
 
-- 扩展按 `buildId` 管理 `globalStorage/jotting.tokentracker/runtime/<buildId>`，共享单实例。
+- 扩展按 `buildId` 管理 `globalStorage/jotting.tokentracker/runtime/<buildId>`，共享单实例；`server-runtime.json` 缓存版本/平台。
+- 首次激活按 RID 从 GitHub Release 下载服务端并校验 `.sha256`；本地开发目录存在 `server/` 时优先使用内置副本。
 - 数据位于 `globalStorage/jotting.tokentracker/data/tokentracker.db`。
 - 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出。
-- `vscode-extension/server/` 由 `npm run sync-server` 生成，不要手改。
+- `vscode-extension/server/` 由 `npm run sync-server` 生成，不要手改；发布 VSIX 通过 `.vscodeignore` 排除该目录。
 - 日志 `extension.log` 超过 1 MB 轮转为 `extension.log.1`。
 
 ## 工程约束
@@ -104,7 +105,7 @@ npm run package        # 生成 tokentracker-*.vsix
 ## 验证要求
 
 1. 修改核心逻辑：运行全部单元测试。
-2. 修改扩展 TypeScript：`npm run compile`；提交 `out/` 产物。
+2. 修改扩展 TypeScript：`npm run compile`；提交 `out/` 产物。验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
 3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功。跨平台包使用 `TOKENTRACKER_TARGET_RID=<rid>` 在对应平台发布。
 4. 涉及扩展行为时，用**隔离** VS Code 实例验证：
 

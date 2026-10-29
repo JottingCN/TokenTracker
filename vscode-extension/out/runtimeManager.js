@@ -25,32 +25,113 @@ var __importStar = (this && this.__importStar) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.prepareRuntime = prepareRuntime;
 exports.cleanupOldRuntimes = cleanupOldRuntimes;
+const node_child_process_1 = require("node:child_process");
 const fs = __importStar(require("node:fs"));
 const os = __importStar(require("node:os"));
 const path = __importStar(require("node:path"));
-function prepareRuntime(extensionPath, storagePath) {
-    const sourceDirectory = path.join(extensionPath, 'server');
-    const build = readBuildInfo(sourceDirectory);
-    const buildId = build.buildId ?? fallbackBuildId(sourceDirectory);
+const serverDownloader_1 = require("./serverDownloader");
+async function prepareRuntime(extensionPath, storagePath, options) {
+    const executableName = process.platform === 'win32'
+        ? 'TokenTracker.Server.exe'
+        : 'TokenTracker.Server';
     const runtimeRoot = path.join(storagePath, 'runtime');
-    const runtimeDirectory = path.join(runtimeRoot, buildId);
-    const readyMarker = path.join(runtimeDirectory, '.ready');
-    if (!fs.existsSync(readyMarker)) {
-        fs.rmSync(runtimeDirectory, { recursive: true, force: true });
-        fs.mkdirSync(runtimeDirectory, { recursive: true });
-        fs.cpSync(sourceDirectory, runtimeDirectory, { recursive: true });
-        fs.writeFileSync(readyMarker, new Date().toISOString(), 'utf8');
-    }
     const dataDirectory = path.join(storagePath, 'data');
     fs.mkdirSync(dataDirectory, { recursive: true });
-    migrateLegacyDatabase(dataDirectory);
-    return {
-        buildId,
-        serverVersion: build.serverVersion ?? 'unknown',
-        runtimeDirectory,
-        executablePath: path.join(runtimeDirectory, 'TokenTracker.Server.exe'),
-        dataDirectory,
-    };
+    if (process.platform === 'win32') {
+        migrateLegacyDatabase(dataDirectory);
+    }
+    const bundledDirectory = path.join(extensionPath, 'server');
+    const bundledExecutable = path.join(bundledDirectory, executableName);
+    if (fs.existsSync(path.join(bundledDirectory, 'build.json')) &&
+        fs.existsSync(bundledExecutable)) {
+        const build = readBuildInfo(bundledDirectory);
+        const buildId = build.buildId ?? fallbackBuildId(bundledDirectory, executableName);
+        const runtimeDirectory = path.join(runtimeRoot, buildId);
+        ensureRuntimeDirectory(runtimeDirectory, (target) => {
+            fs.cpSync(bundledDirectory, target, { recursive: true });
+        });
+        return {
+            buildId,
+            rid: build.rid ?? (process.platform === 'win32' ? 'win-x64' : (0, serverDownloader_1.resolveServerRid)()),
+            serverVersion: build.serverVersion ?? 'unknown',
+            runtimeDirectory,
+            executablePath: path.join(runtimeDirectory, executableName),
+            dataDirectory,
+            source: 'bundled',
+        };
+    }
+    const rid = (0, serverDownloader_1.resolveServerRid)();
+    const state = readState(storagePath);
+    if (state &&
+        state.version === options.version &&
+        state.rid === rid &&
+        state.runtimeDirectory.startsWith(runtimeRoot + path.sep)) {
+        const executablePath = path.join(state.runtimeDirectory, executableName);
+        if (fs.existsSync(path.join(state.runtimeDirectory, '.ready')) &&
+            fs.existsSync(executablePath)) {
+            return {
+                buildId: state.buildId,
+                rid,
+                serverVersion: state.serverVersion,
+                runtimeDirectory: state.runtimeDirectory,
+                executablePath,
+                dataDirectory,
+                source: 'download',
+            };
+        }
+    }
+    const archive = await (0, serverDownloader_1.ensureServerArchive)({
+        storagePath,
+        version: options.version,
+        baseUrl: options.downloadBaseUrl,
+        onProgress: options.onProgress,
+    });
+    const staging = path.join(runtimeRoot, `.staging-${process.pid}-${Date.now()}`);
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.mkdirSync(staging, { recursive: true });
+    try {
+        options.onProgress?.('正在解压服务端');
+        const tarExecutable = process.platform === 'win32'
+            ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+            : 'tar';
+        (0, node_child_process_1.execFileSync)(tarExecutable, ['-xf', archive.archivePath, '-C', staging], {
+            windowsHide: true,
+        });
+        const build = readBuildInfo(staging);
+        const buildId = build.buildId ?? fallbackBuildId(staging, executableName);
+        const runtimeDirectory = path.join(runtimeRoot, buildId);
+        const executablePath = path.join(runtimeDirectory, executableName);
+        if (!fs.existsSync(path.join(staging, executableName))) {
+            throw new Error('服务端包中缺少可执行文件');
+        }
+        if (!fs.existsSync(path.join(runtimeDirectory, '.ready'))) {
+            fs.rmSync(runtimeDirectory, { recursive: true, force: true });
+            fs.renameSync(staging, runtimeDirectory);
+            fs.writeFileSync(path.join(runtimeDirectory, '.ready'), new Date().toISOString(), 'utf8');
+        }
+        else {
+            fs.rmSync(staging, { recursive: true, force: true });
+        }
+        if (process.platform !== 'win32') {
+            fs.chmodSync(executablePath, 0o755);
+        }
+        fs.rmSync(archive.archivePath, { force: true });
+        const info = {
+            buildId,
+            rid,
+            serverVersion: build.serverVersion ?? 'unknown',
+            runtimeDirectory,
+            executablePath,
+            dataDirectory,
+            source: 'download',
+        };
+        writeState(storagePath, info, options.version);
+        return info;
+    }
+    catch (error) {
+        fs.rmSync(staging, { recursive: true, force: true });
+        throw error;
+    }
 }
 function cleanupOldRuntimes(storagePath, keepBuildId) {
     const result = { removed: [], failed: [] };
@@ -64,6 +145,19 @@ function cleanupOldRuntimes(storagePath, keepBuildId) {
     }
     for (const entry of entries) {
         if (!entry.isDirectory() || entry.name === keepBuildId) {
+            continue;
+        }
+        if (entry.name.startsWith('.staging-')) {
+            try {
+                fs.rmSync(path.join(runtimeRoot, entry.name), {
+                    recursive: true,
+                    force: true,
+                });
+                result.removed.push(entry.name);
+            }
+            catch {
+                result.failed.push(entry.name);
+            }
             continue;
         }
         try {
@@ -80,24 +174,56 @@ function cleanupOldRuntimes(storagePath, keepBuildId) {
     }
     return result;
 }
-function readBuildInfo(sourceDirectory) {
+function ensureRuntimeDirectory(runtimeDirectory, populate) {
+    const readyMarker = path.join(runtimeDirectory, '.ready');
+    if (fs.existsSync(readyMarker)) {
+        return;
+    }
+    fs.rmSync(runtimeDirectory, { recursive: true, force: true });
+    fs.mkdirSync(runtimeDirectory, { recursive: true });
+    populate(runtimeDirectory);
+    fs.writeFileSync(readyMarker, new Date().toISOString(), 'utf8');
+}
+function readBuildInfo(directory) {
     try {
-        const raw = fs.readFileSync(path.join(sourceDirectory, 'build.json'), 'utf8');
+        const raw = fs.readFileSync(path.join(directory, 'build.json'), 'utf8');
         return JSON.parse(raw);
     }
     catch {
         return {};
     }
 }
-function fallbackBuildId(sourceDirectory) {
+function fallbackBuildId(directory, executableName) {
     try {
-        const executable = path.join(sourceDirectory, 'TokenTracker.Server.exe');
+        const executable = path.join(directory, executableName);
         const stat = fs.statSync(executable);
         return `${Math.round(stat.mtimeMs)}-${stat.size}`;
     }
     catch {
         return 'unknown';
     }
+}
+function statePath(storagePath) {
+    return path.join(storagePath, 'server-runtime.json');
+}
+function readState(storagePath) {
+    try {
+        const raw = fs.readFileSync(statePath(storagePath), 'utf8');
+        return JSON.parse(raw);
+    }
+    catch {
+        return null;
+    }
+}
+function writeState(storagePath, info, version) {
+    const state = {
+        version,
+        rid: info.rid,
+        buildId: info.buildId,
+        serverVersion: info.serverVersion,
+        runtimeDirectory: info.runtimeDirectory,
+    };
+    fs.writeFileSync(statePath(storagePath), JSON.stringify(state, null, 2), 'utf8');
 }
 function migrateLegacyDatabase(dataDirectory) {
     const target = path.join(dataDirectory, 'tokentracker.db');

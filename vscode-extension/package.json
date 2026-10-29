@@ -46,6 +46,11 @@
           "description": "Token Tracker 服务 监听端口（127.0.0.1）。",
           "type": "number"
         },
+        "tokentracker.serverDownloadBaseUrl": {
+          "default": "",
+          "description": "服务端 Release 下载基础地址。留空时使用扩展仓库的 GitHub Release（v<扩展版本>）。",
+          "type": "string"
+        },
         "tokentracker.statsRange": {
           "default": "7d",
           "description": "状态栏与提示信息使用的统计时间范围。",
@@ -81,6 +86,10 @@
   "main": "./out/extension.js",
   "name": "tokentracker",
   "publisher": "jotting",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JottingCN/TokenTracker.git"
+  },
   "scripts": {
     "build": "npm run compile && npm run sync-server",
     "compile": "tsc -p .",

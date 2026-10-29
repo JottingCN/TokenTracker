@@ -100,9 +100,6 @@ async function ensureServer(options) {
     if (!options.autoStart) {
         throw new Error(`TokenTracker.Server 未运行（${url}），且 tokentracker.autoStart 为 false`);
     }
-    if (process.platform !== 'win32') {
-        throw new Error('扩展内置的 TokenTracker.Server 目前仅提供 Windows x64 版本');
-    }
     const executable = options.executablePath;
     const serverDirectory = path.dirname(executable);
     if (!fs.existsSync(executable)) {
@@ -203,8 +200,12 @@ function readLockPid(lockPath) {
 }
 function isOurServer(pid) {
     try {
-        const output = (0, node_child_process_1.execFileSync)('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
-        return output.includes('TokenTracker.Server.exe');
+        if (process.platform === 'win32') {
+            const output = (0, node_child_process_1.execFileSync)('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
+            return output.includes('TokenTracker.Server.exe');
+        }
+        const output = (0, node_child_process_1.execFileSync)('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' });
+        return output.trim().includes('TokenTracker.Server');
     }
     catch {
         return false;

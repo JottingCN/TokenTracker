@@ -2,7 +2,7 @@
 
 在状态栏实时查看 Copilot Token 缓存命中率与人民币估算费用，并一键打开完整的本地看板。
 
-扩展本身是薄客户端：它内置并托管 `TokenTracker.Server`（Windows x64 自包含构建），多个 VS Code 窗口共享同一实例；
+扩展本身是薄客户端：首次激活时按操作系统下载对应平台的 `TokenTracker.Server` 自包含包，校验 SHA-256 后缓存并托管，多个 VS Code 窗口共享同一实例。
 
 ## 功能
 
@@ -18,8 +18,9 @@
 
 ## 前置条件
 
-- Windows 10 / 11 x64
+- 支持平台：Windows x64、Linux x64、macOS x64 / arm64
 - VS Code 1.90 或更高版本
+- 首次激活时可访问 GitHub Release（下载约 8 MB 的服务端；可通过设置改用镜像）
 - 已安装 GitHub Copilot 并在 VS Code 中开启 OpenTelemetry 导出
 
 在 VS Code `settings.json` 中加入：
@@ -40,7 +41,7 @@
 code --install-extension tokentracker-0.1.0.vsix --force
 ```
 
-安装后重新加载 VS Code 窗口。扩展会在激活时自动启动服务，状态栏出现在右下角。
+安装后重新加载 VS Code 窗口。首次激活会下载并解压对应平台的服务端，随后自动启动；状态栏出现在右下角。
 
 ## 命令
 
@@ -82,28 +83,33 @@ code --install-extension tokentracker-0.1.0.vsix --force
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `tokentracker.port` | `4318` | 本地服务端口（`127.0.0.1`） |
+| `tokentracker.serverDownloadBaseUrl` | 空 | 服务端下载基础地址；空时使用 GitHub Release，可指向自建镜像 |
 | `tokentracker.autoStart` | `true` | 服务未运行时自动启动 |
 | `tokentracker.statsRange` | `7d` | 状态栏统计范围：`today` / `7d` / `30d` / `all` |
 | `tokentracker.idleExitSeconds` | `60` | 所有客户端（VS Code 窗口或浏览器）断开后延迟退出；`0` 表示不自动退出 |
 
 ## 服务生命周期
 
+- 首次激活按平台映射到 `win-x64` / `linux-x64` / `osx-x64` / `osx-arm64`，从当前扩展版本的 GitHub Release 下载
+  `tokentracker-server-<version>-<rid>.<zip|tar.gz>`，并校验同名 `.sha256`。
+- 解压到 `runtime/<buildId>` 并写入 `server-runtime.json`；后续激活直接复用，不重复下载。扩展升级后按新版本重新获取。
 - 扩展激活时先检查端口上的现有服务：
   - 构建一致：直接复用。
   - 由扩展启动且构建不一致：停止旧实例并启动当前构建。
   - 由外部启动：复用，构建不一致时提示。
-- 服务运行时文件和数据库都在扩展缓存中：
+- 缓存目录（VS Code globalStorage）：
 
 ```
-%APPDATA%\Code\User\globalStorage\jotting.tokentracker\
-├─ runtime\<buildId>\        # 按构建版本隔离的服务副本
-├─ data\tokentracker.db      # SQLite 数据库
+jotting.tokentracker/
+├─ runtime/<buildId>/        # 解压后的服务端（可执行文件 + wwwroot）
+├─ data/tokentracker.db      # SQLite 数据库
+├─ server-runtime.json       # 版本 / 平台 / 构建缓存
 └─ extension.log             # 诊断日志
 ```
 
-- 新构建使用新的 `runtime\<buildId>` 目录，不会覆盖正在运行的二进制；旧版本目录会在启动后清理（仍被占用时跳过）。
-- 首次使用时会尝试迁移 `%LOCALAPPDATA%\TokenTracker` 下的旧数据库。
+- Windows 首次使用时会尝试迁移 `%LOCALAPPDATA%\TokenTracker` 下的旧数据库。
 - 所有 VS Code 窗口和浏览器都断开后，服务按 `idleExitSeconds` 退出；关闭窗口不会影响其他窗口正在使用的服务。
+- 本地开发时若扩展目录存在 `server/`，直接使用内置副本，不联网下载。
 
 ## 对外 API
 
@@ -124,18 +130,23 @@ interface TokenTrackerApi {
 
 ```bash
 npm install
-npm run build     # tsc + dotnet publish 服务到 ./server
-npm run package   # 生成 tokentracker-*.vsix
+npm run build     # 本地开发：tsc + 内置 win-x64 服务端（离线运行）
+npm run compile   # 仅编译 TypeScript（发布包使用，运行时下载服务端）
+npm run package   # 生成通用 tokentracker-*.vsix（server/ 不打包）
 ```
 
 调试日志：
 
 - 输出面板：`Token Tracker`
-- 文件：`%APPDATA%\Code\User\globalStorage\jotting.tokentracker\extension.log`
+- 文件：`<globalStorage>/jotting.tokentracker/extension.log`
+  - Windows `%APPDATA%\Code\User\globalStorage`
+  - Linux `~/.config/Code/User/globalStorage`
+  - macOS `~/Library/Application Support/Code/User/globalStorage`
 - 超过 1 MB 自动轮转为 `extension.log.1`（保留一份），磁盘占用上限约 2 MB
 
 ## 排查
 
+- **首次激活下载失败**：确认对应版本的 Release 已发布且包含当前平台的 `tokentracker-server-*` 与 `.sha256`；离线环境可设置 `tokentracker.serverDownloadBaseUrl` 指向镜像。
 - **状态栏不显示**：确认当前工作区有会话数据；打开“服务信息”确认服务已运行；检查 Copilot OTel 配置是否指向 `http://127.0.0.1:4318`。
 - **端口被占用**：修改 `tokentracker.port`，并同步修改 Copilot 的 `otlpEndpoint`。
 - **服务版本不一致**：若提示外部实例被复用，先停止外部进程，再执行 `Token Tracker: 启动服务`。

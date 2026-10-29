@@ -66,13 +66,13 @@ TokenTracker.Server  (Kestrel · .NET 10 Native AOT · 127.0.0.1:4318)
 
 ### 2. 启动 Token Tracker
 
-Windows 推荐安装 `vscode-extension/tokentracker-*.vsix`，扩展会在 VS Code 激活时启动共享服务：
+安装通用 VSIX（Windows / Linux / macOS），扩展首次激活时会从当前版本的 GitHub Release 下载匹配平台的服务端，校验 SHA-256 后缓存并启动：
 
 ```bash
 code --install-extension vscode-extension/tokentracker-0.1.0.vsix --force
 ```
 
-Linux / macOS 可下载 Release 中对应的独立服务端，或直接从源码运行：
+也可以不使用扩展，直接运行服务端（见 Release 中的独立服务端包）：
 
 ```bash
 dotnet run --project src/TokenTracker.Server -c Release
@@ -142,11 +142,12 @@ git push origin v0.1.0
 
 发布产物：
 
-- `tokentracker-extension-<version>-win32-x64.vsix`：VS Code 扩展（Windows，内置 win-x64 服务端）
+- `tokentracker-<version>.vsix`：通用 VS Code 扩展（首次运行下载对应平台服务端）
 - `tokentracker-server-<version>-win-x64.zip`
 - `tokentracker-server-<version>-linux-x64.tar.gz`
 - `tokentracker-server-<version>-osx-x64.tar.gz`
 - `tokentracker-server-<version>-osx-arm64.tar.gz`
+- 每个服务端包附带 `.sha256` 校验文件
 
 标签版本必须与 `vscode-extension/package.json` 的 `version` 一致；手动触发时可填写标签。
 
@@ -168,8 +169,9 @@ npm run build
 # VS Code 扩展
 cd vscode-extension
 npm install
-npm run build    # tsc + dotnet publish 到 ./server（默认 win-x64）
-npm run package  # 生成 tokentracker-*.vsix
+npm run build    # 本地开发：tsc + 内置 win-x64 服务端（离线运行）
+npm run compile  # 仅编译 TypeScript（发布包使用，运行时下载服务端）
+npm run package  # 生成通用 tokentracker-*.vsix（不含服务端）
 
 # 生成其他平台的服务端包（需在对应平台执行 AOT 发布）
 TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
@@ -192,7 +194,7 @@ TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
 | 会话状态 | `%USERPROFILE%\.copilot\session-state` | `~/.copilot/session-state` | `~/.copilot/session-state` |
 | agent-host.db | `%APPDATA%\Code\User\globalStorage\agent-host.db` | `~/.config/Code/User/globalStorage/agent-host.db` | `~/Library/Application Support/Code/User/globalStorage/agent-host.db` |
 
-以上均可通过 `TOKENTRACKER_DATA_DIR`、`TOKENTRACKER_SESSION_STATE_DIR`、`TOKENTRACKER_AGENT_HOST_DB` 覆盖。VS Code 扩展目前仅发布 Windows 版本。
+以上均可通过 `TOKENTRACKER_DATA_DIR`、`TOKENTRACKER_SESSION_STATE_DIR`、`TOKENTRACKER_AGENT_HOST_DB` 覆盖。VS Code 扩展为通用包，首次激活时按平台下载对应服务端。
 
 ## 数据与隐私
 
@@ -203,11 +205,12 @@ TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
 
 ## 已知约束
 
-- 服务端发布 `win-x64`、`linux-x64`、`osx-x64`、`osx-arm64` 自包含 AOT 构建；VS Code 扩展仍只发布 Windows x64 版本。
+- 服务端发布 `win-x64`、`linux-x64`、`osx-x64`、`osx-arm64` 自包含 AOT 构建；通用 VSIX 首次激活按平台下载并缓存对应版本。
+- 首次激活需要访问 GitHub Release；离线环境可将 `tokentracker.serverDownloadBaseUrl` 指到自建镜像。
 - 计时与峰谷判断使用北京时间；时间范围按北京时间自然日划分。
 - 未定价模型仍会统计 token，但费用显示为“未定价”，直到配置价格。
 
 ## 文档
 
 - [VS Code 扩展说明](vscode-extension/README.md)
-- [plan.md](plan.md)（已归档的早期 SDK 设计稿，仅作历史参考）
+- [AGENTS.md](AGENTS.md)（仓库自动化代理约定）
