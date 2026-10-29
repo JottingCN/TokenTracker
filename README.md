@@ -66,10 +66,10 @@ TokenTracker.Server  (Kestrel · .NET 10 Native AOT · 127.0.0.1:4318)
 
 ### 2. 启动 Token Tracker
 
-安装通用 VSIX（Windows / Linux / macOS），扩展首次激活时会从当前版本的 GitHub Release 下载匹配平台的服务端，校验 SHA-256 后缓存并启动：
+安装通用 VSIX（Windows / Linux / macOS）。首次激活会通过 GitHub API 下载当前版本、匹配平台的服务端（支持 VS Code `http.proxy` / `HTTPS_PROXY`），校验 SHA-256 后缓存并启动：
 
 ```bash
-code --install-extension vscode-extension/tokentracker-0.1.0.vsix --force
+code --install-extension vscode-extension/tokentracker-*.vsix --force
 ```
 
 也可以不使用扩展，直接运行服务端（见 Release 中的独立服务端包）：
@@ -206,7 +206,7 @@ TOKENTRACKER_TARGET_RID=linux-x64 node vscode-extension/scripts/sync-server.mjs
 ## 已知约束
 
 - 服务端发布 `win-x64`、`linux-x64`、`osx-x64`、`osx-arm64` 自包含 AOT 构建；通用 VSIX 首次激活按平台下载并缓存对应版本。
-- 首次激活需要访问 GitHub Release；离线环境可将 `tokentracker.serverDownloadBaseUrl` 指到自建镜像。
+- 首次激活通过 GitHub API 下载服务端；支持 VS Code `http.proxy` 与 `HTTPS_PROXY` / `HTTP_PROXY`（http:// CONNECT 代理），也可将 `tokentracker.serverDownloadBaseUrl` 指到镜像。`github.com/releases/download` 在部分网络不可用。
 - 计时与峰谷判断使用北京时间；时间范围按北京时间自然日划分。
 - 未定价模型仍会统计 token，但费用显示为“未定价”，直到配置价格。
 

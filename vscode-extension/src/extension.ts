@@ -220,6 +220,24 @@ interface DownloadSource {
   githubRepo?: string;
 }
 
+function resolveProxyUrl(): string {
+  const configured = vscode.workspace
+    .getConfiguration('http')
+    .get<string>('proxy', '')
+    .trim();
+  if (configured && configured.toLowerCase() !== 'direct') {
+    return configured;
+  }
+
+  return (
+    process.env.HTTPS_PROXY ??
+    process.env.https_proxy ??
+    process.env.HTTP_PROXY ??
+    process.env.http_proxy ??
+    ''
+  ).trim();
+}
+
 function resolveDownloadSource(
   context: vscode.ExtensionContext,
   override: string,
@@ -254,6 +272,8 @@ async function startServerAndStatus(
     context,
     configuration.get<string>('serverDownloadBaseUrl', ''),
   );
+  const proxyUrl = resolveProxyUrl();
+  log(`download proxy: ${proxyUrl ? 'enabled' : 'disabled'}`);
 
   const runtime = await vscode.window.withProgress(
     {
@@ -265,6 +285,7 @@ async function startServerAndStatus(
       prepareRuntime(context.extensionPath, context.globalStorageUri.fsPath, {
         version: context.extension.packageJSON.version,
         ...downloadSource,
+        proxyUrl,
         onProgress: (message) => progress.report({ message }),
       }),
   );

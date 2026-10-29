@@ -85,7 +85,7 @@
   "license": "UNLICENSED",
   "main": "./out/extension.js",
   "name": "tokentracker",
-  "publisher": "jotting",
+  "publisher": "JottingCN",
   "repository": {
     "type": "git",
     "url": "https://github.com/JottingCN/TokenTracker.git"
@@ -96,5 +96,5 @@
     "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
     "sync-server": "node scripts/sync-server.mjs"
   },
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

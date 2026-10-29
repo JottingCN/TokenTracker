@@ -84,9 +84,9 @@ npm run package        # 生成 tokentracker-*.vsix
 
 ### 服务生命周期
 
-- 扩展按 `buildId` 管理 `globalStorage/jotting.tokentracker/runtime/<buildId>`，共享单实例；`server-runtime.json` 缓存版本/平台。
-- 首次激活按 RID 从 GitHub Release 下载服务端并校验 `.sha256`；本地开发目录存在 `server/` 时优先使用内置副本。
-- 数据位于 `globalStorage/jotting.tokentracker/data/tokentracker.db`。
+- 发布者为 `JottingCN`；扩展按 `buildId` 管理 `globalStorage/jottingcn.tokentracker/runtime/<buildId>`，共享单实例；`server-runtime.json` 缓存版本/平台。
+- 首次激活按 RID 通过 GitHub API 下载服务端并校验 `.sha256`（支持 `http.proxy` / `HTTPS_PROXY`）；本地开发目录存在 `server/` 时优先使用内置副本。
+- 数据位于 `globalStorage/jottingcn.tokentracker/data/tokentracker.db`，首次启动会从旧发布者目录迁移。
 - 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出。
 - `vscode-extension/server/` 由 `npm run sync-server` 生成，不要手改；发布 VSIX 通过 `.vscodeignore` 排除该目录。
 - 日志 `extension.log` 超过 1 MB 轮转为 `extension.log.1`。
@@ -117,7 +117,7 @@ Code.exe --new-window \
   <repo>
 ```
 
-- 通过 `<temp-profile>/User/globalStorage/jotting.tokentracker/extension.log` 检查激活与快照日志。
+- 通过 `<temp-profile>/User/globalStorage/jottingcn.tokentracker/extension.log` 检查激活与快照日志。
 - 可用临时端口（如 4330+）与临时数据库副本，避免影响正在使用的 4318 服务。
 
 ## 禁止事项

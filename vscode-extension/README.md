@@ -20,7 +20,7 @@
 
 - 支持平台：Windows x64、Linux x64、macOS x64 / arm64
 - VS Code 1.90 或更高版本
-- 首次激活时可访问 GitHub Release（下载约 8 MB 的服务端；可通过设置改用镜像）
+- 首次激活可通过 GitHub API 下载服务端（约 8 MB）；自动读取 VS Code `http.proxy` 或 `HTTPS_PROXY` / `HTTP_PROXY`
 - 已安装 GitHub Copilot 并在 VS Code 中开启 OpenTelemetry 导出
 
 在 VS Code `settings.json` 中加入：
@@ -38,7 +38,7 @@
 ## 安装
 
 ```bash
-code --install-extension tokentracker-0.1.0.vsix --force
+code --install-extension tokentracker-*.vsix --force
 ```
 
 安装后重新加载 VS Code 窗口。首次激活会下载并解压对应平台的服务端，随后自动启动；状态栏出现在右下角。
@@ -83,14 +83,14 @@ code --install-extension tokentracker-0.1.0.vsix --force
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `tokentracker.port` | `4318` | 本地服务端口（`127.0.0.1`） |
-| `tokentracker.serverDownloadBaseUrl` | 空 | 服务端下载基础地址；空时使用 GitHub Release，可指向自建镜像 |
+| `tokentracker.serverDownloadBaseUrl` | 空 | 服务端下载基础地址；空时使用 GitHub Release API，可指向自建镜像 |
 | `tokentracker.autoStart` | `true` | 服务未运行时自动启动 |
 | `tokentracker.statsRange` | `7d` | 状态栏统计范围：`today` / `7d` / `30d` / `all` |
 | `tokentracker.idleExitSeconds` | `60` | 所有客户端（VS Code 窗口或浏览器）断开后延迟退出；`0` 表示不自动退出 |
 
 ## 服务生命周期
 
-- 首次激活按平台映射到 `win-x64` / `linux-x64` / `osx-x64` / `osx-arm64`，从当前扩展版本的 GitHub Release 下载
+- 首次激活按平台映射到 `win-x64` / `linux-x64` / `osx-x64` / `osx-arm64`，通过 GitHub API 下载当前版本的
   `tokentracker-server-<version>-<rid>.<zip|tar.gz>`，并校验同名 `.sha256`。
 - 解压到 `runtime/<buildId>` 并写入 `server-runtime.json`；后续激活直接复用，不重复下载。扩展升级后按新版本重新获取。
 - 扩展激活时先检查端口上的现有服务：
@@ -100,7 +100,7 @@ code --install-extension tokentracker-0.1.0.vsix --force
 - 缓存目录（VS Code globalStorage）：
 
 ```
-jotting.tokentracker/
+jottingcn.tokentracker/
 ├─ runtime/<buildId>/        # 解压后的服务端（可执行文件 + wwwroot）
 ├─ data/tokentracker.db      # SQLite 数据库
 ├─ server-runtime.json       # 版本 / 平台 / 构建缓存
@@ -138,7 +138,7 @@ npm run package   # 生成通用 tokentracker-*.vsix（server/ 不打包）
 调试日志：
 
 - 输出面板：`Token Tracker`
-- 文件：`<globalStorage>/jotting.tokentracker/extension.log`
+- 文件：`<globalStorage>/jottingcn.tokentracker/extension.log`
   - Windows `%APPDATA%\Code\User\globalStorage`
   - Linux `~/.config/Code/User/globalStorage`
   - macOS `~/Library/Application Support/Code/User/globalStorage`
@@ -147,7 +147,8 @@ npm run package   # 生成通用 tokentracker-*.vsix（server/ 不打包）
 ## 排查
 
 - **首次激活下载失败**：确认对应版本的 Release 已发布且包含当前平台的 `tokentracker-server-*` 与 `.sha256`；若提示 GitHub API 限流，稍后重试或设置 `tokentracker.serverDownloadBaseUrl` 指向镜像。
-- **代理**：下载使用 Node 直连，不自动读取系统或 VS Code 代理设置；需要代理时请将 `tokentracker.serverDownloadBaseUrl` 指向可访问的镜像地址。
+- **代理**：自动读取 VS Code `http.proxy` 与 `HTTPS_PROXY` / `HTTP_PROXY`，支持 `http://` CONNECT 代理并遵循 `NO_PROXY`；暂不支持 SOCKS。`github.com/releases/download` 在部分网络不可用，扩展默认走 GitHub API。
+- **从旧发布者升级**：首次启动会将 `globalStorage/jotting.tokentracker/data` 中的数据库迁移到 `jottingcn.tokentracker`。
 - **状态栏不显示**：确认当前工作区有会话数据；打开“服务信息”确认服务已运行；检查 Copilot OTel 配置是否指向 `http://127.0.0.1:4318`。
 - **端口被占用**：修改 `tokentracker.port`，并同步修改 Copilot 的 `otlpEndpoint`。
 - **服务版本不一致**：若提示外部实例被复用，先停止外部进程，再执行 `Token Tracker: 启动服务`。

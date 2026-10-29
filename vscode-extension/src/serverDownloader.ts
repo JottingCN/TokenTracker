@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
+import * as net from 'node:net';
 import * as path from 'node:path';
+import * as tls from 'node:tls';
 import { URL } from 'node:url';
 
 export interface ServerArchiveInfo {
@@ -15,6 +17,7 @@ export interface ServerDownloadOptions {
   version: string;
   baseUrl?: string;
   githubRepo?: string;
+  proxyUrl?: string;
   onProgress?: (message: string) => void;
 }
 
@@ -65,26 +68,40 @@ export async function ensureServerArchive(
   if (options.baseUrl) {
     const base = options.baseUrl.replace(/\/+$/, '');
     const url = `${base}/${asset}`;
-    await downloadFile(url, archivePath);
-    await verifyChecksumFromUrl(url, archivePath, options.onProgress);
+    await downloadFile(url, archivePath, {}, options.proxyUrl);
+    await verifyChecksumFromUrl(
+      url,
+      archivePath,
+      options.proxyUrl,
+      options.onProgress,
+    );
   } else if (options.githubRepo) {
-    const assets = await loadReleaseAssets(options.githubRepo, options.version);
+    const assets = await loadReleaseAssets(
+      options.githubRepo,
+      options.version,
+      options.proxyUrl,
+    );
     const archive = assets.find((entry) => entry.name === asset);
     if (!archive) {
       throw new Error(`Release v${options.version} 中缺少 ${asset}`);
     }
 
-    await downloadFile(archive.apiUrl, archivePath, {
-      Accept: 'application/octet-stream',
-    });
+    await downloadFile(
+      archive.apiUrl,
+      archivePath,
+      { Accept: 'application/octet-stream' },
+      options.proxyUrl,
+    );
 
     const checksum = assets.find(
       (entry) => entry.name === `${asset}.sha256`,
     );
     if (checksum) {
-      const text = await downloadString(checksum.apiUrl, {
-        Accept: 'application/octet-stream',
-      });
+      const text = await downloadString(
+        checksum.apiUrl,
+        { Accept: 'application/octet-stream' },
+        options.proxyUrl,
+      );
       verifyHash(text, archivePath);
     } else {
       options.onProgress?.('未找到校验文件，跳过校验');
@@ -99,6 +116,7 @@ export async function ensureServerArchive(
 async function loadReleaseAssets(
   repositoryUrl: string,
   version: string,
+  proxyUrl?: string,
 ): Promise<ReleaseAsset[]> {
   const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
     repositoryUrl,
@@ -113,9 +131,11 @@ async function loadReleaseAssets(
 
   let body: string;
   try {
-    body = await downloadString(apiUrl, {
-      Accept: 'application/vnd.github+json',
-    });
+    body = await downloadString(
+      apiUrl,
+      { Accept: 'application/vnd.github+json' },
+      proxyUrl,
+    );
   } catch (error) {
     if (error instanceof HttpError && error.status === 404) {
       throw new Error(`未找到 v${version} 的 GitHub Release`);
@@ -149,11 +169,12 @@ async function loadReleaseAssets(
 async function verifyChecksumFromUrl(
   url: string,
   archivePath: string,
+  proxyUrl?: string,
   onProgress?: (message: string) => void,
 ): Promise<void> {
   let checksum: string;
   try {
-    checksum = await downloadString(`${url}.sha256`);
+    checksum = await downloadString(`${url}.sha256`, {}, proxyUrl);
   } catch (error) {
     if (error instanceof HttpError && error.status === 404) {
       onProgress?.('未找到校验文件，跳过校验');
@@ -184,6 +205,7 @@ function downloadFile(
   url: string,
   destination: string,
   headers: Record<string, string> = {},
+  proxyUrl?: string,
   redirects = 0,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -191,12 +213,7 @@ function downloadFile(
     const client = parsed.protocol === 'https:' ? https : http;
     const request = client.get(
       parsed,
-      {
-        headers: {
-          'User-Agent': 'TokenTracker-VSCode',
-          ...headers,
-        },
-      },
+      requestOptions(parsed, headers, proxyUrl),
       (response) => {
         const status = response.statusCode ?? 0;
         if (REDIRECT_CODES.has(status) && response.headers.location) {
@@ -210,6 +227,7 @@ function downloadFile(
               new URL(response.headers.location, parsed).toString(),
               destination,
               headers,
+              proxyUrl,
               redirects + 1,
             ),
           );
@@ -241,6 +259,7 @@ function downloadFile(
 function downloadString(
   url: string,
   headers: Record<string, string> = {},
+  proxyUrl?: string,
   redirects = 0,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -248,12 +267,7 @@ function downloadString(
     const client = parsed.protocol === 'https:' ? https : http;
     const request = client.get(
       parsed,
-      {
-        headers: {
-          'User-Agent': 'TokenTracker-VSCode',
-          ...headers,
-        },
-      },
+      requestOptions(parsed, headers, proxyUrl),
       (response) => {
         const status = response.statusCode ?? 0;
         if (REDIRECT_CODES.has(status) && response.headers.location) {
@@ -266,6 +280,7 @@ function downloadString(
             downloadString(
               new URL(response.headers.location, parsed).toString(),
               headers,
+              proxyUrl,
               redirects + 1,
             ),
           );
@@ -292,4 +307,163 @@ function downloadString(
     });
     request.on('error', reject);
   });
+}
+
+function requestOptions(
+  target: URL,
+  headers: Record<string, string>,
+  proxyUrl?: string,
+): https.RequestOptions {
+  const options: https.RequestOptions = {
+    headers: {
+      'User-Agent': 'TokenTracker-VSCode',
+      ...headers,
+    },
+  };
+
+  const agent = createProxyAgent(target, proxyUrl);
+  if (agent) {
+    options.agent = agent;
+  }
+  return options;
+}
+
+function createProxyAgent(
+  target: URL,
+  proxyUrl?: string,
+): https.Agent | undefined {
+  if (!proxyUrl || target.protocol !== 'https:') {
+    return undefined;
+  }
+  if (!shouldProxy(target.hostname)) {
+    return undefined;
+  }
+
+  let proxy: URL;
+  try {
+    proxy = new URL(
+      proxyUrl.includes('://') ? proxyUrl : `http://${proxyUrl}`,
+    );
+  } catch {
+    throw new Error('代理地址无效');
+  }
+  if (proxy.protocol !== 'http:') {
+    throw new Error(`仅支持 http:// 代理，当前为 ${proxy.protocol}`);
+  }
+
+  return buildProxyAgent(proxy);
+}
+
+type ProxyCreateConnection = (
+  options: {
+    host?: string;
+    hostname?: string;
+    port?: number | string;
+    servername?: string;
+  },
+  callback: (error: Error | null, socket?: tls.TLSSocket) => void,
+) => undefined;
+
+function buildProxyAgent(proxy: URL): https.Agent {
+  const agent = new https.Agent({ keepAlive: false });
+
+  (agent as unknown as { createConnection: ProxyCreateConnection }).createConnection =
+    (options, callback) => {
+      const host = String(options.host ?? options.hostname ?? '');
+      const port = Number(options.port ?? 443);
+      const proxyPort = Number(proxy.port || 80);
+      const socket = net.connect(proxyPort, proxy.hostname);
+
+      let settled = false;
+      let handshakeTimer: NodeJS.Timeout | undefined;
+      const fail = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+        }
+        socket.destroy();
+        callback(error);
+      };
+
+      socket.setTimeout(30_000, () => fail(new Error('代理连接超时')));
+      socket.on('error', fail);
+      socket.on('connect', () => {
+        let head = `CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n`;
+        if (proxy.username || proxy.password) {
+          const credentials = `${decodeURIComponent(proxy.username)}:` +
+            `${decodeURIComponent(proxy.password)}`;
+          head += 'Proxy-Authorization: Basic ' +
+            `${Buffer.from(credentials).toString('base64')}\r\n`;
+        }
+        socket.write(`${head}\r\n`);
+      });
+
+      let response = '';
+      const onData = (chunk: Buffer) => {
+        response += chunk.toString('latin1');
+        const headerEnd = response.indexOf('\r\n\r\n');
+        if (headerEnd < 0) {
+          if (response.length > 16 * 1024) {
+            fail(new Error('代理响应过大'));
+          }
+          return;
+        }
+
+        socket.removeListener('data', onData);
+        const statusLine = response.slice(0, response.indexOf('\r\n'));
+        const status = Number(statusLine.split(' ')[1]);
+        if (status !== 200) {
+          fail(new Error(`代理 CONNECT 失败：${statusLine}`));
+          return;
+        }
+
+        socket.setTimeout(0);
+        handshakeTimer = setTimeout(
+          () => fail(new Error('代理 TLS 握手超时')),
+          30_000,
+        );
+        const secure = tls.connect(
+          { socket, servername: options.servername ?? host },
+          () => {
+            if (handshakeTimer) {
+              clearTimeout(handshakeTimer);
+            }
+            if (settled) {
+              return;
+            }
+            settled = true;
+            callback(null, secure);
+          },
+        );
+        secure.on('error', fail);
+      };
+      socket.on('data', onData);
+
+      return undefined;
+    };
+
+  return agent;
+}
+
+function shouldProxy(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    return false;
+  }
+
+  const raw = process.env.NO_PROXY ?? process.env.no_proxy ?? '';
+  for (const entry of raw.split(',')) {
+    const pattern = entry.trim().toLowerCase().replace(/^\./, '');
+    if (!pattern) {
+      continue;
+    }
+    if (pattern === '*' || host === pattern || host.endsWith(`.${pattern}`)) {
+      return false;
+    }
+  }
+
+  return true;
 }
