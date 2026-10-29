@@ -83,7 +83,8 @@ async function prepareRuntime(extensionPath, storagePath, options) {
     const archive = await (0, serverDownloader_1.ensureServerArchive)({
         storagePath,
         version: options.version,
-        baseUrl: options.downloadBaseUrl,
+        baseUrl: options.baseUrl,
+        githubRepo: options.githubRepo,
         onProgress: options.onProgress,
     });
     const staging = path.join(runtimeRoot, `.staging-${process.pid}-${Date.now()}`);

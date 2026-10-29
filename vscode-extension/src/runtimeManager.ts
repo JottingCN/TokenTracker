@@ -16,7 +16,8 @@ export interface RuntimeInfo {
 
 export interface PrepareRuntimeOptions {
   version: string;
-  downloadBaseUrl: string;
+  baseUrl?: string;
+  githubRepo?: string;
   onProgress?: (message: string) => void;
 }
 
@@ -102,7 +103,8 @@ export async function prepareRuntime(
   const archive = await ensureServerArchive({
     storagePath,
     version: options.version,
-    baseUrl: options.downloadBaseUrl,
+    baseUrl: options.baseUrl,
+    githubRepo: options.githubRepo,
     onProgress: options.onProgress,
   });
 

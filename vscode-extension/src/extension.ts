@@ -215,12 +215,18 @@ interface StatsRange {
   label: string;
 }
 
-function resolveDownloadBase(
+interface DownloadSource {
+  baseUrl?: string;
+  githubRepo?: string;
+}
+
+function resolveDownloadSource(
   context: vscode.ExtensionContext,
   override: string,
-): string {
-  if (override.trim()) {
-    return override.trim().replace(/\/+$/, '');
+): DownloadSource {
+  const trimmed = override.trim();
+  if (trimmed) {
+    return { baseUrl: trimmed.replace(/\/+$/, '') };
   }
 
   const repository = context.extension.packageJSON.repository as
@@ -233,7 +239,7 @@ function resolveDownloadBase(
     throw new Error('扩展缺少 repository 配置，无法自动下载服务端');
   }
 
-  return `${url}/releases/download/v${context.extension.packageJSON.version}`;
+  return { githubRepo: url };
 }
 
 async function startServerAndStatus(
@@ -244,7 +250,7 @@ async function startServerAndStatus(
   idleExitSeconds: number,
 ): Promise<void> {
   const configuration = vscode.workspace.getConfiguration('tokentracker');
-  const downloadBaseUrl = resolveDownloadBase(
+  const downloadSource = resolveDownloadSource(
     context,
     configuration.get<string>('serverDownloadBaseUrl', ''),
   );
@@ -258,7 +264,7 @@ async function startServerAndStatus(
     (progress) =>
       prepareRuntime(context.extensionPath, context.globalStorageUri.fsPath, {
         version: context.extension.packageJSON.version,
-        downloadBaseUrl,
+        ...downloadSource,
         onProgress: (message) => progress.report({ message }),
       }),
   );

@@ -146,7 +146,7 @@ npm run package   # 生成通用 tokentracker-*.vsix（server/ 不打包）
 
 ## 排查
 
-- **首次激活下载失败**：确认对应版本的 Release 已发布且包含当前平台的 `tokentracker-server-*` 与 `.sha256`；离线环境可设置 `tokentracker.serverDownloadBaseUrl` 指向镜像。
+- **首次激活下载失败**：确认对应版本的 Release 已发布且包含当前平台的 `tokentracker-server-*` 与 `.sha256`；若提示 GitHub API 限流，稍后重试或设置 `tokentracker.serverDownloadBaseUrl` 指向镜像。
 - **状态栏不显示**：确认当前工作区有会话数据；打开“服务信息”确认服务已运行；检查 Copilot OTel 配置是否指向 `http://127.0.0.1:4318`。
 - **端口被占用**：修改 `tokentracker.port`，并同步修改 Copilot 的 `otlpEndpoint`。
 - **服务版本不一致**：若提示外部实例被复用，先停止外部进程，再执行 `Token Tracker: 启动服务`。

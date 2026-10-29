@@ -48,7 +48,7 @@
         },
         "tokentracker.serverDownloadBaseUrl": {
           "default": "",
-          "description": "服务端 Release 下载基础地址。留空时使用扩展仓库的 GitHub Release（v<扩展版本>）。",
+          "description": "服务端 Release 下载基础地址。留空时使用扩展仓库的 GitHub Release API（v<扩展版本>）。",
           "type": "string"
         },
         "tokentracker.statsRange": {

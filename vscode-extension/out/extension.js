@@ -193,9 +193,10 @@ function showStatusItem(text, tooltip, command) {
     fallbackItem.command = command;
     fallbackItem.show();
 }
-function resolveDownloadBase(context, override) {
-    if (override.trim()) {
-        return override.trim().replace(/\/+$/, '');
+function resolveDownloadSource(context, override) {
+    const trimmed = override.trim();
+    if (trimmed) {
+        return { baseUrl: trimmed.replace(/\/+$/, '') };
     }
     const repository = context.extension.packageJSON.repository;
     const raw = typeof repository === 'string' ? repository : repository?.url;
@@ -203,18 +204,18 @@ function resolveDownloadBase(context, override) {
     if (!url) {
         throw new Error('扩展缺少 repository 配置，无法自动下载服务端');
     }
-    return `${url}/releases/download/v${context.extension.packageJSON.version}`;
+    return { githubRepo: url };
 }
 async function startServerAndStatus(context, port, autoStart, range, idleExitSeconds) {
     const configuration = vscode.workspace.getConfiguration('tokentracker');
-    const downloadBaseUrl = resolveDownloadBase(context, configuration.get('serverDownloadBaseUrl', ''));
+    const downloadSource = resolveDownloadSource(context, configuration.get('serverDownloadBaseUrl', ''));
     const runtime = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Window,
         title: 'Token Tracker 正在准备服务端',
         cancellable: false,
     }, (progress) => (0, runtimeManager_1.prepareRuntime)(context.extensionPath, context.globalStorageUri.fsPath, {
         version: context.extension.packageJSON.version,
-        downloadBaseUrl,
+        ...downloadSource,
         onProgress: (message) => progress.report({ message }),
     }));
     log(`runtime: build=${runtime.buildId} rid=${runtime.rid} ` +

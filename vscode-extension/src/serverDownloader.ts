@@ -13,8 +13,14 @@ export interface ServerArchiveInfo {
 export interface ServerDownloadOptions {
   storagePath: string;
   version: string;
-  baseUrl: string;
+  baseUrl?: string;
+  githubRepo?: string;
   onProgress?: (message: string) => void;
+}
+
+interface ReleaseAsset {
+  name: string;
+  apiUrl: string;
 }
 
 class HttpError extends Error {
@@ -50,20 +56,97 @@ export async function ensureServerArchive(
   const rid = resolveServerRid();
   const extension = rid.startsWith('win-') ? 'zip' : 'tar.gz';
   const asset = `tokentracker-server-${options.version}-${rid}.${extension}`;
-  const url = `${options.baseUrl.replace(/\/+$/, '')}/${asset}`;
 
   const directory = path.join(options.storagePath, 'downloads');
   fs.mkdirSync(directory, { recursive: true });
   const archivePath = path.join(directory, asset);
 
   options.onProgress?.(`正在下载 ${asset}`);
-  await downloadFile(url, archivePath);
-  await verifyChecksum(url, archivePath, options.onProgress);
+  if (options.baseUrl) {
+    const base = options.baseUrl.replace(/\/+$/, '');
+    const url = `${base}/${asset}`;
+    await downloadFile(url, archivePath);
+    await verifyChecksumFromUrl(url, archivePath, options.onProgress);
+  } else if (options.githubRepo) {
+    const assets = await loadReleaseAssets(options.githubRepo, options.version);
+    const archive = assets.find((entry) => entry.name === asset);
+    if (!archive) {
+      throw new Error(`Release v${options.version} 中缺少 ${asset}`);
+    }
+
+    await downloadFile(archive.apiUrl, archivePath, {
+      Accept: 'application/octet-stream',
+    });
+
+    const checksum = assets.find(
+      (entry) => entry.name === `${asset}.sha256`,
+    );
+    if (checksum) {
+      const text = await downloadString(checksum.apiUrl, {
+        Accept: 'application/octet-stream',
+      });
+      verifyHash(text, archivePath);
+    } else {
+      options.onProgress?.('未找到校验文件，跳过校验');
+    }
+  } else {
+    throw new Error('未配置服务端下载地址');
+  }
 
   return { rid, archivePath };
 }
 
-async function verifyChecksum(
+async function loadReleaseAssets(
+  repositoryUrl: string,
+  version: string,
+): Promise<ReleaseAsset[]> {
+  const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
+    repositoryUrl,
+  );
+  if (!match) {
+    throw new Error(`无法解析 GitHub 仓库地址：${repositoryUrl}`);
+  }
+
+  const apiUrl =
+    `https://api.github.com/repos/${match[1]}/${match[2]}` +
+    `/releases/tags/v${version}`;
+
+  let body: string;
+  try {
+    body = await downloadString(apiUrl, {
+      Accept: 'application/vnd.github+json',
+    });
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404) {
+      throw new Error(`未找到 v${version} 的 GitHub Release`);
+    }
+    if (
+      error instanceof HttpError &&
+      (error.status === 403 || error.status === 429)
+    ) {
+      throw new Error('GitHub API 限流，请稍后重试或配置镜像地址');
+    }
+    throw error;
+  }
+
+  let release: { assets?: Array<{ name?: string; url?: string }> };
+  try {
+    release = JSON.parse(body) as {
+      assets?: Array<{ name?: string; url?: string }>;
+    };
+  } catch {
+    throw new Error('无法解析 GitHub Release 信息');
+  }
+
+  return (release.assets ?? [])
+    .filter(
+      (entry): entry is { name: string; url: string } =>
+        Boolean(entry.name && entry.url),
+    )
+    .map((entry) => ({ name: entry.name, apiUrl: entry.url }));
+}
+
+async function verifyChecksumFromUrl(
   url: string,
   archivePath: string,
   onProgress?: (message: string) => void,
@@ -79,6 +162,10 @@ async function verifyChecksum(
     throw error;
   }
 
+  verifyHash(checksum, archivePath);
+}
+
+function verifyHash(checksum: string, archivePath: string): void {
   const match = /([a-f0-9]{64})/i.exec(checksum);
   if (!match) {
     return;
@@ -96,6 +183,7 @@ async function verifyChecksum(
 function downloadFile(
   url: string,
   destination: string,
+  headers: Record<string, string> = {},
   redirects = 0,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -103,7 +191,12 @@ function downloadFile(
     const client = parsed.protocol === 'https:' ? https : http;
     const request = client.get(
       parsed,
-      { headers: { 'User-Agent': 'TokenTracker-VSCode' } },
+      {
+        headers: {
+          'User-Agent': 'TokenTracker-VSCode',
+          ...headers,
+        },
+      },
       (response) => {
         const status = response.statusCode ?? 0;
         if (REDIRECT_CODES.has(status) && response.headers.location) {
@@ -116,6 +209,7 @@ function downloadFile(
             downloadFile(
               new URL(response.headers.location, parsed).toString(),
               destination,
+              headers,
               redirects + 1,
             ),
           );
@@ -144,13 +238,22 @@ function downloadFile(
   });
 }
 
-function downloadString(url: string, redirects = 0): Promise<string> {
+function downloadString(
+  url: string,
+  headers: Record<string, string> = {},
+  redirects = 0,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const client = parsed.protocol === 'https:' ? https : http;
     const request = client.get(
       parsed,
-      { headers: { 'User-Agent': 'TokenTracker-VSCode' } },
+      {
+        headers: {
+          'User-Agent': 'TokenTracker-VSCode',
+          ...headers,
+        },
+      },
       (response) => {
         const status = response.statusCode ?? 0;
         if (REDIRECT_CODES.has(status) && response.headers.location) {
@@ -162,6 +265,7 @@ function downloadString(url: string, redirects = 0): Promise<string> {
           resolve(
             downloadString(
               new URL(response.headers.location, parsed).toString(),
+              headers,
               redirects + 1,
             ),
           );
