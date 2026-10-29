@@ -24,6 +24,11 @@ export function DashboardPage({
 }: DashboardPageProps) {
   const money = useMoney();
   const utilitySummary = data?.utilitySummary;
+  const retentionText = data
+    ? data.retentionDays === 0
+      ? '永久保留'
+      : `保留 ${data.retentionDays} 天`
+    : '保留期未知';
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -113,8 +118,7 @@ export function DashboardPage({
         费用为基于 DeepSeek、Kimi、小米 MiMo、MiniMax、智谱 GLM
         公开价目表的估算（{money.unitLabel}），与 GitHub Copilot
         订阅账单无关；命中率下降不一定代表缓存失效。数据来自 Copilot OTel，经本机
-        4318 接收后存入本地 SQLite，保留
-        {data?.retentionDays === 0 ? '永久' : ` ${data?.retentionDays ?? 90} 天`}。
+        4318 接收后存入本地 SQLite，{retentionText}。
       </Typography.Text>
     </Space>
   );

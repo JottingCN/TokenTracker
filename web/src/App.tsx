@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { FolderOutlined, HomeOutlined, SettingOutlined } from '@ant-design/icons';
 import {
   Badge,
-  Button,
   DatePicker,
   Layout,
   Menu,
@@ -175,10 +174,24 @@ export default function App() {
                 style={{ borderInlineEnd: 'none' }}
               />
             </div>
-            <div style={{ padding: 12, borderTop: '1px solid #f0f0f0' }}>
-              <Button block icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>
-                设置
-              </Button>
+            <div style={{ padding: '4px 0', borderTop: '1px solid #f0f0f0' }}>
+              <Menu
+                mode="inline"
+                selectable={false}
+                items={[
+                  {
+                    key: 'settings',
+                    icon: <SettingOutlined />,
+                    label: '设置',
+                  },
+                ]}
+                onClick={({ key }) => {
+                  if (key === 'settings') {
+                    setSettingsOpen(true);
+                  }
+                }}
+                style={{ borderInlineEnd: 'none' }}
+              />
             </div>
           </div>
         </Sider>
@@ -231,10 +244,12 @@ export default function App() {
                   style={{ width: 360 }}
                 />
               )}
-              <Space size={6}>
-                <Switch checked={utility} onChange={setUtility} />
-                <span>显示辅助调用</span>
-              </Space>
+              {route.view === 'dashboard' && (
+                <Space size={6}>
+                  <Switch checked={utility} onChange={setUtility} />
+                  <span>显示辅助调用</span>
+                </Space>
+              )}
             </Space>
           </Header>
 

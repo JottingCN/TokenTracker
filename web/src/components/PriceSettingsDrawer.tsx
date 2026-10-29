@@ -46,7 +46,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   const [drafts, setDrafts] = useState<Record<string, ModelPriceRow>>({});
   const [loading, setLoading] = useState(false);
   const [newModel, setNewModel] = useState('');
-  const [retentionDays, setRetentionDays] = useState(90);
+  const [retentionDays, setRetentionDays] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'prices' | 'data'>('prices');
 
   const load = async () => {
@@ -89,11 +89,16 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   }, [open]);
 
   const saveRetention = async () => {
+    const days = retentionDays;
+    if (days === null) {
+      return;
+    }
+
     try {
       const response = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ retentionDays }),
+        body: JSON.stringify({ retentionDays: days }),
       });
       if (!response.ok) {
         throw new Error(await response.text());
@@ -528,7 +533,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                     value={retentionDays}
                     onChange={(value) =>
                       setRetentionDays(
-                        typeof value === 'number' ? Math.max(0, value) : 90,
+                        typeof value === 'number' ? Math.max(0, value) : null,
                       )
                     }
                     style={{ width: 160 }}
@@ -540,7 +545,9 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                     cancelText="取消"
                     onConfirm={() => void saveRetention()}
                   >
-                    <Button>保存保留设置</Button>
+                    <Button disabled={retentionDays === null}>
+                      保存保留设置
+                    </Button>
                   </Popconfirm>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     0 = 永久保留
