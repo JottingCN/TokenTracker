@@ -25,6 +25,7 @@ export interface ServerDownloadOptions {
 }
 
 interface ReleaseCache {
+  cacheVersion: 2;
   checkedAt: number;
   rid: string;
   extension: string;
@@ -35,6 +36,8 @@ interface GitHubRelease {
   tag_name?: string;
   draft?: boolean;
   prerelease?: boolean;
+  created_at?: string;
+  published_at?: string;
   assets?: Array<{ name?: string; url?: string }>;
 }
 
@@ -195,6 +198,11 @@ async function fetchLatestServerAsset(
     throw new Error('无法解析 GitHub Release 列表');
   }
 
+  releases.sort(
+    (left, right) =>
+      releaseTime(right) - releaseTime(left),
+  );
+
   const pattern = serverAssetPattern(rid, extension);
   for (const release of releases) {
     if (release.draft || release.prerelease) {
@@ -225,6 +233,12 @@ async function fetchLatestServerAsset(
   }
 
   throw new Error(`未找到包含 ${rid} 服务端的 Release`);
+}
+
+function releaseTime(release: GitHubRelease): number {
+  const value = release.published_at ?? release.created_at;
+  const parsed = value ? Date.parse(value) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function parseGitHubRepository(repositoryUrl: string): {
@@ -273,7 +287,11 @@ function readReleaseCache(
     const cache = JSON.parse(
       fs.readFileSync(releaseCachePath(storagePath), 'utf8'),
     ) as ReleaseCache;
-    if (cache.rid !== rid || cache.extension !== extension) {
+    if (
+      cache.cacheVersion !== 2 ||
+      cache.rid !== rid ||
+      cache.extension !== extension
+    ) {
       return null;
     }
     if (!allowStale && Date.now() - cache.checkedAt > RELEASE_CACHE_TTL_MS) {
@@ -292,6 +310,7 @@ function writeReleaseCache(
   asset: ServerAssetInfo,
 ): void {
   const cache: ReleaseCache = {
+    cacheVersion: 2,
     checkedAt: Date.now(),
     rid,
     extension,
