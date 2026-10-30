@@ -78,8 +78,8 @@ npm run package        # 生成 tokentracker-*.vsix
 
 ### 辅助调用
 
-- 当前实现把没有 `session_id` 的 span 视为辅助调用（`is_main = 0`）；主调用汇总、模型与会话统计不包含它们。该分类是推断，不是 Copilot 显式标记。
-- 辅助调用通常无法可靠归属具体会话；Dashboard 单独返回 `utilitySummary`，开启“显示辅助调用”时展示独立统计并在调用列表中加入辅助调用。
+- 当前实现把没有 `session_id` 的 span 视为辅助调用（`is_main = 0`）。该分类是推断，不是 Copilot 显式标记。
+- 辅助调用并入 Dashboard 汇总与按模型统计；会话列表仅含主调用；“最近调用”独立菜单展示全部调用（含辅助调用）。辅助调用通常无法可靠归属具体会话。
 
 ### 费用与定价
 

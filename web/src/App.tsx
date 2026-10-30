@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderOutlined, HomeOutlined, SettingOutlined } from '@ant-design/icons';
+import {
+  FolderOutlined,
+  HistoryOutlined,
+  HomeOutlined,
+  SettingOutlined,
+} from '@ant-design/icons';
 import {
   Badge,
   DatePicker,
@@ -7,12 +12,12 @@ import {
   Menu,
   Select,
   Space,
-  Switch,
   Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import dayjs from 'dayjs';
 import { PriceSettingsDrawer } from './components/PriceSettingsDrawer';
+import { CallsPage } from './pages/CallsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ModelPage } from './pages/ModelPage';
 import { SessionPage } from './pages/SessionPage';
@@ -24,6 +29,7 @@ const { Header, Sider, Content, Footer } = Layout;
 
 type Route =
   | { view: 'dashboard' }
+  | { view: 'calls' }
   | { view: 'model'; id: string }
   | { view: 'session'; id: string; fromModel?: string };
 
@@ -32,6 +38,9 @@ function parseRoute(): Route {
   const [path, query] = hash.split('?');
   const parts = path.split('/').filter(Boolean);
 
+  if (parts[0] === 'calls') {
+    return { view: 'calls' };
+  }
   if (parts[0] === 'model' && parts[1]) {
     return { view: 'model', id: decodeURIComponent(parts[1]) };
   }
@@ -46,6 +55,7 @@ function parseRoute(): Route {
 function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
   const items: NonNullable<MenuProps['items']> = [
     { key: 'home', icon: <HomeOutlined />, label: '主页' },
+    { key: 'calls', icon: <HistoryOutlined />, label: '最近调用' },
   ];
   if (!dashboard) {
     return items;
@@ -84,7 +94,6 @@ export default function App() {
   const [route, setRoute] = useState<Route>(parseRoute);
   const [rangeMode, setRangeMode] = useState<RangeMode>(2);
   const [customRange, setCustomRange] = useState<[number, number] | null>(null);
-  const [utility, setUtility] = useState(false);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -101,7 +110,7 @@ export default function App() {
   const { data: dashboard, connected } = useRealtime<DashboardPayload>({
     view: 'dashboard',
     range: numericRange,
-    utility,
+    utility: true,
     fromMs: customFrom,
     toMs: customTo,
   });
@@ -123,16 +132,20 @@ export default function App() {
   const selectedKeys =
     route.view === 'dashboard'
       ? ['home']
-      : route.view === 'model'
-        ? [`model:${route.id}`]
-        : route.fromModel
-          ? [`model:${route.fromModel}`]
-          : [];
+      : route.view === 'calls'
+        ? ['calls']
+        : route.view === 'model'
+          ? [`model:${route.id}`]
+          : route.fromModel
+            ? [`model:${route.fromModel}`]
+            : [];
 
   const onMenuClick: MenuProps['onClick'] = ({ key }) => {
     const value = String(key);
     if (value === 'home') {
       location.hash = '#/';
+    } else if (value === 'calls') {
+      location.hash = '#/calls';
     } else if (value.startsWith('model:')) {
       location.hash = `#/model/${encodeURIComponent(value.slice('model:'.length))}`;
     }
@@ -244,12 +257,6 @@ export default function App() {
                   style={{ width: 360 }}
                 />
               )}
-              {route.view === 'dashboard' && (
-                <Space size={6}>
-                  <Switch checked={utility} onChange={setUtility} />
-                  <span>显示辅助调用</span>
-                </Space>
-              )}
             </Space>
           </Header>
 
@@ -258,7 +265,14 @@ export default function App() {
               {route.view === 'dashboard' && (
                 <DashboardPage
                   data={dashboard}
-                  utility={utility}
+                  onOpenSession={openSessionFromDashboard}
+                />
+              )}
+              {route.view === 'calls' && (
+                <CallsPage
+                  range={numericRange}
+                  fromMs={customFrom}
+                  toMs={customTo}
                   onOpenSession={openSessionFromDashboard}
                 />
               )}

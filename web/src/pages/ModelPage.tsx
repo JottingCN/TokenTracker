@@ -1,6 +1,10 @@
 import { Card, Space, Table, Tag, Typography } from 'antd';
 import { SummaryCards } from '../components/SummaryCards';
-import { sessionColumns } from '../components/columns';
+import {
+  callColumns,
+  callRowKey,
+  sessionColumns,
+} from '../components/columns';
 import { useRealtime } from '../useRealtime';
 import { providerOf, shortModelName } from '../utils/model';
 import { useMoney } from '../utils/money';
@@ -26,7 +30,7 @@ export function ModelPage({
     view: 'model',
     id: modelId,
     range,
-    utility: false,
+    utility: true,
     fromMs,
     toMs,
   });
@@ -48,7 +52,7 @@ export function ModelPage({
 
       <SummaryCards summary={data?.summary ?? null} />
 
-      <Card size="small" title="会话（使用该模型）">
+      <Card size="small" title="会话（使用该模型，主调用）">
         <Table
           size="small"
           rowKey="sessionId"
@@ -57,6 +61,21 @@ export function ModelPage({
           loading={!data}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
           scroll={{ x: 930, y: 420 }}
+        />
+      </Card>
+
+      <Card
+        size="small"
+        title={`最近调用（使用该模型，${data?.calls.length ?? 0}）`}
+      >
+        <Table
+          size="small"
+          rowKey={callRowKey}
+          columns={callColumns(true, onOpenSession)}
+          dataSource={data?.calls ?? []}
+          loading={!data}
+          pagination={{ pageSize: 20, hideOnSinglePage: true }}
+          scroll={{ x: 1100, y: 520 }}
         />
       </Card>
     </Space>

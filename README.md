@@ -21,7 +21,7 @@
 - **价格覆盖**：看板内可修改内置价格、恢复默认、添加 / 删除自定义模型；保存后自动重算历史费用。
 - **时间范围**：今天 / 昨天 / 近 7 天 / 近 30 天 / 全部，Web 端支持自定义起止时间。
 - **多模型会话**：同一会话跨模型的统计自动合并，下钻时按模型分开展示。
-- **辅助调用**：主调用与辅助调用分开统计；辅助调用通常缺少 `session_id`，无法可靠归属具体会话，开启“显示辅助调用”后展示独立的调用次数、token 与费用汇总。
+- **辅助调用**：辅助调用并入正常统计（顶部卡片与按模型列表）；会话统计仅包含可归属的主调用；“最近调用”作为独立菜单展示全部调用。
 - **费用单位**：Web 看板可在价格设置中切换人民币、美元、积分；USD 汇率与积分兑换率可调，价格保存时统一换算为 CNY。状态栏仍按 CNY 显示。
 - **会话标题**：来自本机 VS Code 的 `agent-host.db` 与 `~/.copilot/session-state`，按优先级自动解析；改名和工作区变化会推送给所有已连接客户端。
 - **实时推送**：WebSocket 变更驱动推送（新 span、价格变更、重新订阅），空闲时服务按需退出。
@@ -105,7 +105,7 @@ dotnet run --project src/TokenTracker.Server -c Release
 | POST | `/v1/metrics` | OTLP/HTTP JSON metrics |
 | GET | `/healthz` | 健康检查 |
 | GET | `/api/version` | 名称、版本、buildId、能力列表 |
-| GET | `/api/dashboard?range=0..4` | 主调用汇总、模型、会话、辅助调用汇总与调用列表；`utility` 控制调用列表是否包含辅助调用 |
+| GET | `/api/dashboard?range=0..4` | 汇总与按模型统计（含辅助调用）、会话（主调用）和全部调用 |
 | GET | `/api/model/{model}` | 模型详情 |
 | GET | `/api/session/{sessionId}` | 会话汇总与调用明细 |
 | GET | `/api/prices` | 价格列表（内置 + 自定义） |

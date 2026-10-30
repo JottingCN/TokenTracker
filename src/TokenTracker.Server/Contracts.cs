@@ -17,7 +17,6 @@ public sealed record DashboardPayload(
     List<CallRow> Calls,
     ReceiverInfo Receiver,
     string UpdatedAt,
-    SummaryDto UtilitySummary,
     int RetentionDays);
 
 public sealed record SettingsPayload(int RetentionDays);
@@ -27,6 +26,7 @@ public sealed record SettingsUpdateRequest(int? RetentionDays);
 public sealed record ModelPayload(
     SummaryDto Summary,
     List<SessionRow> Sessions,
+    List<CallRow> Calls,
     string Model);
 
 public sealed record SessionPayload(

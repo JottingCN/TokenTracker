@@ -249,11 +249,6 @@ public sealed class SpanStore
             includeUtility ? string.Empty : " AND is_main = 1");
     }
 
-    public SummaryDto GetUtilitySummary(long fromMs, long toMs = long.MaxValue)
-    {
-        return ReadSummary(fromMs, toMs, " AND is_main = 0");
-    }
-
     private SummaryDto ReadSummary(long fromMs, long toMs, string filter)
     {
         using var connection = OpenConnection();
@@ -414,6 +409,46 @@ public sealed class SpanStore
         return ReadCallRows(command);
     }
 
+    public IReadOnlyList<CallRow> GetCallsForModel(
+        string model,
+        long fromMs,
+        long toMs = long.MaxValue,
+        int limit = 200)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                start_time_ms,
+                COALESCE(model, '-'),
+                session_id,
+                is_main,
+                input_tokens,
+                cache_read_tokens,
+                output_tokens,
+                hit_rate,
+                cost_cny,
+                pricing_period,
+                cache_cost_cny,
+                uncached_cost_cny,
+                output_cost_cny,
+                reasoning_tokens,
+                reasoning_cost_cny
+            FROM spans
+            WHERE model = @model
+              AND start_time_ms >= @from
+              AND start_time_ms < @to
+            ORDER BY start_time_ms DESC
+            LIMIT @limit;
+            """;
+        command.Parameters.AddWithValue("@model", model);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        command.Parameters.AddWithValue("@limit", limit);
+
+        return ReadCallRows(command);
+    }
+
     public IReadOnlyList<CallRow> GetCallsForSession(
         string sessionId,
         long fromMs = 0,
@@ -440,7 +475,7 @@ public sealed class SpanStore
                 reasoning_cost_cny
             FROM spans
             WHERE session_id = @session_id AND start_time_ms >= @from
-            ORDER BY start_time_ms ASC
+            ORDER BY start_time_ms DESC
             LIMIT @limit;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
@@ -479,11 +514,15 @@ public sealed class SpanStore
         return rows;
     }
 
-    public IReadOnlyList<ModelRow> GetModels(long fromMs, long toMs = long.MaxValue)
+    public IReadOnlyList<ModelRow> GetModels(
+        long fromMs,
+        long toMs = long.MaxValue,
+        bool includeUtility = false)
     {
+        var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT
                 model,
                 COUNT(*),
@@ -493,10 +532,9 @@ public sealed class SpanStore
                 COALESCE(SUM(cost_cny), 0),
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
             FROM spans
-            WHERE is_main = 1
-              AND start_time_ms >= @from
+            WHERE start_time_ms >= @from
               AND start_time_ms < @to
-              AND model IS NOT NULL
+              AND model IS NOT NULL{utilityFilter}
             GROUP BY model
             ORDER BY COUNT(*) DESC;
             """;
@@ -530,11 +568,13 @@ public sealed class SpanStore
     public SummaryDto GetModelSummary(
         string model,
         long fromMs,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        bool includeUtility = false)
     {
+        var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT
                 COUNT(*),
                 COALESCE(SUM(input_tokens), 0),
@@ -549,10 +589,9 @@ public sealed class SpanStore
                 COALESCE(SUM(reasoning_cost_cny), 0),
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
             FROM spans
-            WHERE is_main = 1
-              AND model = @model
+            WHERE model = @model
               AND start_time_ms >= @from
-              AND start_time_ms < @to;
+              AND start_time_ms < @to{utilityFilter};
             """;
         command.Parameters.AddWithValue("@model", model);
         command.Parameters.AddWithValue("@from", fromMs);

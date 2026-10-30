@@ -44,14 +44,6 @@ public sealed class SpanStoreTests
             Assert.Equal(320, withUtility.OutputTokens);
             Assert.Equal(1, withUtility.UnpricedCalls);
 
-            var utilitySummary = store.GetUtilitySummary(0);
-            Assert.Equal(1, utilitySummary.Calls);
-            Assert.Equal(100, utilitySummary.InputTokens);
-            Assert.Equal(50, utilitySummary.CacheReadTokens);
-            Assert.Equal(20, utilitySummary.OutputTokens);
-            Assert.Equal(0, utilitySummary.CostCny);
-            Assert.Equal(1, utilitySummary.UnpricedCalls);
-
             Assert.Null(store.GetSetting("retention_days"));
             store.SetSetting("retention_days", "30");
             Assert.Equal("30", store.GetSetting("retention_days"));
@@ -74,10 +66,22 @@ public sealed class SpanStoreTests
             Assert.Contains(models, row => row.Model == "deepseek-flash");
             Assert.Contains(models, row => row.Model == "deepseek-v4-pro");
 
+            var modelsWithUtility = store.GetModels(0, includeUtility: true);
+            Assert.Contains(
+                modelsWithUtility,
+                row => row.Model == "deepseek-flash" && row.Calls == 2);
+
             var flashSummary = store.GetModelSummary("deepseek-flash", 0);
             Assert.Equal(1, flashSummary.Calls);
             Assert.Equal(1_000, flashSummary.InputTokens);
             Assert.Equal(500, flashSummary.CacheReadTokens);
+
+            var flashWithUtility = store.GetModelSummary(
+                "deepseek-flash",
+                0,
+                includeUtility: true);
+            Assert.Equal(2, flashWithUtility.Calls);
+            Assert.Equal(1_100, flashWithUtility.InputTokens);
 
             var flashSessions = store.GetSessionsForModel("deepseek-flash", 0);
             Assert.Single(flashSessions);

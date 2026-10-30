@@ -67,13 +67,12 @@ public sealed class DashboardService
             : "-";
 
         return new DashboardPayload(
-            _store.GetSummary(fromMs, includeUtility: false, toMs),
-            _store.GetModels(fromMs, toMs).ToList(),
+            _store.GetSummary(fromMs, includeUtility: true, toMs),
+            _store.GetModels(fromMs, toMs, includeUtility: true).ToList(),
             _store.GetSessions(fromMs, toMs: toMs).Select(WithTitle).ToList(),
-            _store.GetCalls(fromMs, includeUtility, toMs: toMs).Select(WithTitle).ToList(),
+            _store.GetCalls(fromMs, includeUtility: true, toMs: toMs).Select(WithTitle).ToList(),
             _counters.Snapshot(_endpoint, running: true),
             updatedAt,
-            _store.GetUtilitySummary(fromMs, toMs),
             _settings.RetentionDays);
     }
 
@@ -86,8 +85,9 @@ public sealed class DashboardService
     public ModelPayload GetModel(string model, long fromMs, long toMs)
     {
         return new ModelPayload(
-            _store.GetModelSummary(model, fromMs, toMs),
+            _store.GetModelSummary(model, fromMs, toMs, includeUtility: true),
             _store.GetSessionsForModel(model, fromMs, toMs: toMs).Select(WithTitle).ToList(),
+            _store.GetCallsForModel(model, fromMs, toMs).Select(WithTitle).ToList(),
             model);
     }
 
