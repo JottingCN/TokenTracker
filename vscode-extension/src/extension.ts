@@ -647,26 +647,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
 
   registerMetadataWatchers(context);
 
-  try {
-    await startServerAndStatus(context, port, autoStart, range, idleExitSeconds);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log(`server unavailable: ${message}`);
-    showStatusItem(
-      tr(
-        '$(warning) Token Tracker 未运行',
-        '$(warning) Token Tracker is not running',
-      ),
-      message,
-      'tokentracker.startServer',
-    );
-    void vscode.window.showWarningMessage(
-      tr(
-        `Token Tracker 服务不可用：${message}`,
-        `Token Tracker server unavailable: ${message}`,
-      ),
-    );
-  }
+  // Keep activation responsive; server download/startup continues in the background.
+  void startServerAndStatus(context, port, autoStart, range, idleExitSeconds).catch(
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`server unavailable: ${message}`);
+      showStatusItem(
+        tr(
+          '$(warning) Token Tracker 未运行',
+          '$(warning) Token Tracker is not running',
+        ),
+        message,
+        'tokentracker.startServer',
+      );
+      void vscode.window.showWarningMessage(
+        tr(
+          `Token Tracker 服务不可用：${message}`,
+          `Token Tracker server unavailable: ${message}`,
+        ),
+      );
+    },
+  );
 
   return {
     getServerUrl: () => server?.url,
