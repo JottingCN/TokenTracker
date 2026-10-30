@@ -1,3 +1,5 @@
+import { translate } from '../ui';
+
 const PROVIDERS: Array<[RegExp, string]> = [
   [/^deepseek/i, 'DeepSeek'],
   [/^(openai|gpt|o[134])/i, 'OpenAI'],
@@ -17,7 +19,18 @@ function leafOf(model: string): string {
 
 export function providerOf(model: string): string {
   const leaf = leafOf(model);
-  return PROVIDERS.find(([pattern]) => pattern.test(leaf))?.[1] ?? '其他';
+  const provider =
+    PROVIDERS.find(([pattern]) => pattern.test(leaf))?.[1] ?? '其他';
+  if (provider === '小米 MiMo') {
+    return translate('小米 MiMo', 'Xiaomi MiMo');
+  }
+  if (provider === '智谱 GLM') {
+    return translate('智谱 GLM', 'Zhipu GLM');
+  }
+  if (provider === '其他') {
+    return translate('其他', 'Other');
+  }
+  return provider;
 }
 
 export function shortModelName(model: string): string {

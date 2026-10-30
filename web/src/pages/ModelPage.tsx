@@ -6,6 +6,7 @@ import {
   sessionColumns,
 } from '../components/columns';
 import { useRealtime } from '../useRealtime';
+import { useUi } from '../ui';
 import { providerOf, shortModelName } from '../utils/model';
 import { useMoney } from '../utils/money';
 import type { ModelPayload } from '../types';
@@ -26,6 +27,7 @@ export function ModelPage({
   onOpenSession,
 }: ModelPageProps) {
   useMoney();
+  const { tr } = useUi();
   const { data, connected } = useRealtime<ModelPayload>({
     view: 'model',
     id: modelId,
@@ -47,12 +49,20 @@ export function ModelPage({
             {modelId}
           </Typography.Text>
         </div>
-        {!connected && <Tag color="error">连接断开</Tag>}
+        {!connected && (
+          <Tag color="error">{tr('连接断开', 'Disconnected')}</Tag>
+        )}
       </Space>
 
       <SummaryCards summary={data?.summary ?? null} />
 
-      <Card size="small" title="会话（使用该模型，主调用）">
+      <Card
+        size="small"
+        title={tr(
+          '会话（使用该模型，主调用）',
+          'Sessions using this model (main calls)',
+        )}
+      >
         <Table
           size="small"
           rowKey="sessionId"
@@ -66,7 +76,10 @@ export function ModelPage({
 
       <Card
         size="small"
-        title={`最近调用（使用该模型，${data?.calls.length ?? 0}）`}
+        title={tr(
+          `最近调用（使用该模型，${data?.calls.length ?? 0}）`,
+          `Recent calls using this model (${data?.calls.length ?? 0})`,
+        )}
       >
         <Table
           size="small"

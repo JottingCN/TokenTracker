@@ -27,6 +27,11 @@ const DEFAULT_SETTINGS: MoneySettings = {
 };
 
 let current = DEFAULT_SETTINGS;
+let currentLanguage: 'zh' | 'en' = 'zh';
+
+export function setMoneyLanguage(language: 'zh' | 'en'): void {
+  currentLanguage = language;
+}
 
 function normalize(value: Partial<MoneySettings> | null): MoneySettings {
   const unit =
@@ -59,12 +64,12 @@ current = typeof localStorage === 'undefined' ? DEFAULT_SETTINGS : load();
 
 export function unitLabel(unit: MoneyUnit = current.unit): string {
   if (unit === 'usd') {
-    return '美元（USD）';
+    return currentLanguage === 'zh' ? '美元（USD）' : 'US Dollar (USD)';
   }
   if (unit === 'credit') {
-    return '积分';
+    return currentLanguage === 'zh' ? '积分' : 'Credits';
   }
-  return '人民币（CNY）';
+  return currentLanguage === 'zh' ? '人民币（CNY）' : 'Chinese Yuan (CNY)';
 }
 
 export function formatMoney(
@@ -79,7 +84,8 @@ export function formatMoney(
     return `$${(cny / current.usdRate).toFixed(digits ?? 6)}`;
   }
   if (current.unit === 'credit') {
-    return `${(cny / current.creditRate).toFixed(digits ?? 2)} 积分`;
+    const suffix = currentLanguage === 'zh' ? ' 积分' : ' credits';
+    return `${(cny / current.creditRate).toFixed(digits ?? 2)}${suffix}`;
   }
   return `¥${cny.toFixed(digits ?? 6)}`;
 }
@@ -89,8 +95,9 @@ export function formatCost(
   unpricedCalls = 0,
 ): string {
   const formatted = formatMoney(cny);
+  const suffix = currentLanguage === 'zh' ? '未定价' : 'unpriced';
   return unpricedCalls > 0
-    ? `${formatted} + ${unpricedCalls} 未定价`
+    ? `${formatted} + ${unpricedCalls} ${suffix}`
     : formatted;
 }
 
@@ -120,9 +127,16 @@ function fromPriceInput(value: number): number {
 
 const MoneyContext = createContext<MoneyContextValue | null>(null);
 
-export function MoneyProvider({ children }: { children: ReactNode }) {
+export function MoneyProvider({
+  children,
+  language,
+}: {
+  children: ReactNode;
+  language: 'zh' | 'en';
+}) {
   const [settings, setSettingsState] = useState<MoneySettings>(load);
   current = settings;
+  setMoneyLanguage(language);
 
   useEffect(() => {
     try {
@@ -138,12 +152,13 @@ export function MoneyProvider({ children }: { children: ReactNode }) {
       setSettings: (patch) =>
         setSettingsState((previous) => normalize({ ...previous, ...patch })),
       unitLabel: unitLabel(settings.unit),
-      priceSuffix: '/ 百万 tokens',
+      priceSuffix:
+        currentLanguage === 'zh' ? '/ 百万 tokens' : '/ 1M tokens',
       toPriceInput,
       fromPriceInput,
       pricePrecision: settings.unit === 'credit' ? 2 : 4,
     }),
-    [settings],
+    [settings, language],
   );
 
   return <MoneyContext.Provider value={value}>{children}</MoneyContext.Provider>;

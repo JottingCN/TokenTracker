@@ -2,6 +2,7 @@ import { Card, Space, Table, Tag, Typography } from 'antd';
 import { callColumns, callRowKey } from '../components/columns';
 import { useRealtime } from '../useRealtime';
 import type { DashboardPayload } from '../types';
+import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
 
 interface CallsPageProps {
@@ -18,6 +19,7 @@ export function CallsPage({
   onOpenSession,
 }: CallsPageProps) {
   useMoney();
+  const { tr } = useUi();
   const { data, connected } = useRealtime<DashboardPayload>({
     view: 'dashboard',
     range,
@@ -30,12 +32,20 @@ export function CallsPage({
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Space size="middle" align="center">
         <Typography.Title level={4} style={{ margin: 0 }}>
-          最近调用
+          {tr('最近调用', 'Recent calls')}
         </Typography.Title>
-        {!connected && <Tag color="error">连接断开</Tag>}
+        {!connected && (
+          <Tag color="error">{tr('连接断开', 'Disconnected')}</Tag>
+        )}
       </Space>
 
-      <Card size="small" title={`调用记录（${data?.calls.length ?? 0}）`}>
+      <Card
+        size="small"
+        title={tr(
+          `调用记录（${data?.calls.length ?? 0}）`,
+          `Calls (${data?.calls.length ?? 0})`,
+        )}
+      >
         <Table
           size="small"
           rowKey={callRowKey}

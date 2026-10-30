@@ -8,6 +8,12 @@ body,
 
 body {
   font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  background: var(--ant-color-bg-layout);
+  color: var(--ant-color-text);
+}
+
+.tt-secondary {
+  color: var(--ant-color-text-secondary);
 }
 
 .ant-table {
@@ -28,7 +34,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.22) transparent;
+  scrollbar-color: var(--ant-color-text-quaternary) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -41,14 +47,14 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--ant-color-text-quaternary);
   border: 2px solid transparent;
   border-radius: 999px;
   background-clip: content-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--ant-color-text-tertiary);
   background-clip: content-box;
 }
 

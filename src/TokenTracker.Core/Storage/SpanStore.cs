@@ -87,6 +87,13 @@ public sealed class SpanStore
                 peak_cached_input REAL,
                 peak_uncached_input REAL,
                 peak_output REAL,
+                long_threshold_tokens INTEGER,
+                long_cached_input REAL,
+                long_uncached_input REAL,
+                long_output REAL,
+                long_peak_cached_input REAL,
+                long_peak_uncached_input REAL,
+                long_peak_output REAL,
                 updated_at_ms INTEGER NOT NULL
             );
 
@@ -107,6 +114,14 @@ public sealed class SpanStore
         EnsureColumn(connection, "spans", "uncached_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "output_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "reasoning_cost_cny", "REAL");
+
+        EnsureColumn(connection, "model_prices", "long_threshold_tokens", "INTEGER");
+        EnsureColumn(connection, "model_prices", "long_cached_input", "REAL");
+        EnsureColumn(connection, "model_prices", "long_uncached_input", "REAL");
+        EnsureColumn(connection, "model_prices", "long_output", "REAL");
+        EnsureColumn(connection, "model_prices", "long_peak_cached_input", "REAL");
+        EnsureColumn(connection, "model_prices", "long_peak_uncached_input", "REAL");
+        EnsureColumn(connection, "model_prices", "long_peak_output", "REAL");
     }
 
     public int InsertMany(IReadOnlyList<OtlpSpanRecord> spans)
@@ -782,7 +797,9 @@ public sealed class SpanStore
         command.CommandText = """
             SELECT
                 model, cached_input, uncached_input, output, peak_aware,
-                peak_cached_input, peak_uncached_input, peak_output, updated_at_ms
+                peak_cached_input, peak_uncached_input, peak_output, updated_at_ms,
+                long_threshold_tokens, long_cached_input, long_uncached_input, long_output,
+                long_peak_cached_input, long_peak_uncached_input, long_peak_output
             FROM model_prices;
             """;
 
@@ -802,9 +819,28 @@ public sealed class SpanStore
                     reader.IsDBNull(7) ? idle.Output : (decimal)reader.GetDouble(7))
                 : idle;
 
+            LongContextPrice? longContext = null;
+            if (!reader.IsDBNull(9) && reader.GetInt64(9) > 0)
+            {
+                var longIdle = new PriceTier(
+                    reader.IsDBNull(10) ? idle.CachedInput : (decimal)reader.GetDouble(10),
+                    reader.IsDBNull(11) ? idle.UncachedInput : (decimal)reader.GetDouble(11),
+                    reader.IsDBNull(12) ? idle.Output : (decimal)reader.GetDouble(12));
+                var longPeak = peakAware
+                    ? new PriceTier(
+                        reader.IsDBNull(13) ? longIdle.CachedInput : (decimal)reader.GetDouble(13),
+                        reader.IsDBNull(14) ? longIdle.UncachedInput : (decimal)reader.GetDouble(14),
+                        reader.IsDBNull(15) ? longIdle.Output : (decimal)reader.GetDouble(15))
+                    : longIdle;
+                longContext = new LongContextPrice(
+                    reader.GetInt64(9),
+                    longIdle,
+                    longPeak);
+            }
+
             rows.Add(new StoredModelPrice(
                 reader.GetString(0),
-                new ModelPrice(idle, peak, peakAware),
+                new ModelPrice(idle, peak, peakAware, longContext),
                 reader.GetInt64(8)));
         }
 
@@ -821,10 +857,14 @@ public sealed class SpanStore
             command.CommandText = """
                 INSERT INTO model_prices (
                     model, cached_input, uncached_input, output, peak_aware,
-                    peak_cached_input, peak_uncached_input, peak_output, updated_at_ms
+                    peak_cached_input, peak_uncached_input, peak_output, updated_at_ms,
+                    long_threshold_tokens, long_cached_input, long_uncached_input, long_output,
+                    long_peak_cached_input, long_peak_uncached_input, long_peak_output
                 ) VALUES (
                     @model, @cached, @uncached, @output, @peak_aware,
-                    @peak_cached, @peak_uncached, @peak_output, @updated
+                    @peak_cached, @peak_uncached, @peak_output, @updated,
+                    @long_threshold, @long_cached, @long_uncached, @long_output,
+                    @long_peak_cached, @long_peak_uncached, @long_peak_output
                 )
                 ON CONFLICT(model) DO UPDATE SET
                     cached_input = excluded.cached_input,
@@ -834,7 +874,14 @@ public sealed class SpanStore
                     peak_cached_input = excluded.peak_cached_input,
                     peak_uncached_input = excluded.peak_uncached_input,
                     peak_output = excluded.peak_output,
-                    updated_at_ms = excluded.updated_at_ms;
+                    updated_at_ms = excluded.updated_at_ms,
+                    long_threshold_tokens = excluded.long_threshold_tokens,
+                    long_cached_input = excluded.long_cached_input,
+                    long_uncached_input = excluded.long_uncached_input,
+                    long_output = excluded.long_output,
+                    long_peak_cached_input = excluded.long_peak_cached_input,
+                    long_peak_uncached_input = excluded.long_peak_uncached_input,
+                    long_peak_output = excluded.long_peak_output;
                 """;
             command.Parameters.AddWithValue("@model", model);
             command.Parameters.AddWithValue("@cached", (double)price.Idle.CachedInput);
@@ -851,6 +898,35 @@ public sealed class SpanStore
                 "@peak_output",
                 price.PeakAware ? (object)(double)price.Peak.Output : DBNull.Value);
             command.Parameters.AddWithValue("@updated", updatedAtMs);
+
+            var longContext = price.LongContext;
+            command.Parameters.AddWithValue(
+                "@long_threshold",
+                longContext is null ? DBNull.Value : longContext.Value.ThresholdTokens);
+            command.Parameters.AddWithValue(
+                "@long_cached",
+                longContext is null ? DBNull.Value : (object)(double)longContext.Value.Idle.CachedInput);
+            command.Parameters.AddWithValue(
+                "@long_uncached",
+                longContext is null ? DBNull.Value : (object)(double)longContext.Value.Idle.UncachedInput);
+            command.Parameters.AddWithValue(
+                "@long_output",
+                longContext is null ? DBNull.Value : (object)(double)longContext.Value.Idle.Output);
+            command.Parameters.AddWithValue(
+                "@long_peak_cached",
+                longContext is null || !price.PeakAware
+                    ? DBNull.Value
+                    : (object)(double)longContext.Value.Peak.CachedInput);
+            command.Parameters.AddWithValue(
+                "@long_peak_uncached",
+                longContext is null || !price.PeakAware
+                    ? DBNull.Value
+                    : (object)(double)longContext.Value.Peak.UncachedInput);
+            command.Parameters.AddWithValue(
+                "@long_peak_output",
+                longContext is null || !price.PeakAware
+                    ? DBNull.Value
+                    : (object)(double)longContext.Value.Peak.Output);
             command.ExecuteNonQuery();
         }
         finally

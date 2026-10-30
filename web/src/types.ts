@@ -154,4 +154,11 @@ export interface ModelPriceRow {
   peakCachedInput: number | null;
   peakUncachedInput: number | null;
   peakOutput: number | null;
+  longContextThreshold: number | null;
+  longCachedInput: number | null;
+  longUncachedInput: number | null;
+  longOutput: number | null;
+  longPeakCachedInput: number | null;
+  longPeakUncachedInput: number | null;
+  longPeakOutput: number | null;
 }

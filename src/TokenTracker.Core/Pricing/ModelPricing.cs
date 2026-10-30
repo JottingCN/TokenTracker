@@ -5,10 +5,16 @@ public readonly record struct PriceTier(
     decimal UncachedInput,
     decimal Output);
 
+public readonly record struct LongContextPrice(
+    long ThresholdTokens,
+    PriceTier Idle,
+    PriceTier Peak);
+
 public readonly record struct ModelPrice(
     PriceTier Idle,
     PriceTier Peak,
-    bool PeakAware = true);
+    bool PeakAware = true,
+    LongContextPrice? LongContext = null);
 
 public static class ModelPricing
 {
@@ -176,6 +182,14 @@ public static class ModelPricing
         var tier = price.Value.PeakAware && period == "peak"
             ? price.Value.Peak
             : price.Value.Idle;
+
+        if (price.Value.LongContext is { } longContext &&
+            inputTokens > longContext.ThresholdTokens)
+        {
+            tier = price.Value.PeakAware && period == "peak"
+                ? longContext.Peak
+                : longContext.Idle;
+        }
 
         var cached = Math.Max(0, cacheReadTokens);
         var uncached = Math.Max(0, inputTokens - cached);

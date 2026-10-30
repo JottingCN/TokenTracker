@@ -191,9 +191,45 @@ public sealed class DashboardService
                 (decimal)(request.PeakOutput ?? request.Output))
             : idle;
 
+        LongContextPrice? longContext = null;
+        if (request.LongContextThreshold is > 0 and <= 10_000_000)
+        {
+            var threshold = request.LongContextThreshold.Value;
+            var longCached = request.LongCachedInput ?? request.CachedInput;
+            var longUncached = request.LongUncachedInput ?? request.UncachedInput;
+            var longOutput = request.LongOutput ?? request.Output;
+            if (!IsValidPrice(longCached) ||
+                !IsValidPrice(longUncached) ||
+                !IsValidPrice(longOutput))
+            {
+                return null;
+            }
+
+            if (request.PeakAware &&
+                ((request.LongPeakCachedInput is { } peakCached && !IsValidPrice(peakCached)) ||
+                 (request.LongPeakUncachedInput is { } peakUncached && !IsValidPrice(peakUncached)) ||
+                 (request.LongPeakOutput is { } peakOutput && !IsValidPrice(peakOutput))))
+            {
+                return null;
+            }
+
+            var longIdle = new PriceTier(
+                (decimal)longCached,
+                (decimal)longUncached,
+                (decimal)longOutput);
+            var longPeak = request.PeakAware
+                ? new PriceTier(
+                    (decimal)(request.LongPeakCachedInput ?? longCached),
+                    (decimal)(request.LongPeakUncachedInput ?? longUncached),
+                    (decimal)(request.LongPeakOutput ?? longOutput))
+                : longIdle;
+
+            longContext = new LongContextPrice(threshold, longIdle, longPeak);
+        }
+
         _store.UpsertModelPrice(
             model,
-            new ModelPrice(idle, peak, request.PeakAware),
+            new ModelPrice(idle, peak, request.PeakAware, longContext),
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         ApplyOverrides();
         RecomputeCostsForModel(model);
@@ -231,6 +267,7 @@ public sealed class DashboardService
         var idle = price?.Idle ?? default;
         var peak = price?.Peak ?? default;
         var peakAware = price?.PeakAware ?? false;
+        var longContext = price?.LongContext;
 
         return new ModelPriceRowPayload(
             model,
@@ -242,7 +279,14 @@ public sealed class DashboardService
             (double)idle.Output,
             peakAware ? (double)peak.CachedInput : null,
             peakAware ? (double)peak.UncachedInput : null,
-            peakAware ? (double)peak.Output : null);
+            peakAware ? (double)peak.Output : null,
+            longContext?.ThresholdTokens,
+            longContext is null ? null : (double)longContext.Value.Idle.CachedInput,
+            longContext is null ? null : (double)longContext.Value.Idle.UncachedInput,
+            longContext is null ? null : (double)longContext.Value.Idle.Output,
+            longContext is null || !peakAware ? null : (double)longContext.Value.Peak.CachedInput,
+            longContext is null || !peakAware ? null : (double)longContext.Value.Peak.UncachedInput,
+            longContext is null || !peakAware ? null : (double)longContext.Value.Peak.Output);
     }
 
     private static bool IsValidPrice(double value) =>

@@ -9,51 +9,78 @@
     "commands": [
       {
         "command": "tokentracker.openDashboard",
-        "title": "Token Tracker: 在浏览器中打开看板"
+        "title": "%command.openDashboard%"
       },
       {
         "command": "tokentracker.showServerInfo",
-        "title": "Token Tracker: 服务信息"
+        "title": "%command.showServerInfo%"
       },
       {
         "command": "tokentracker.refreshStatus",
-        "title": "Token Tracker: 刷新状态栏"
+        "title": "%command.refreshStatus%"
       },
       {
         "command": "tokentracker.startServer",
-        "title": "Token Tracker: 启动服务"
+        "title": "%command.startServer%"
       },
       {
         "command": "tokentracker.stopServer",
-        "title": "Token Tracker: 停止服务"
+        "title": "%command.stopServer%"
       }
     ],
     "configuration": {
       "properties": {
         "tokentracker.autoStart": {
           "default": true,
-          "description": "服务未运行时，自动启动扩展内置的 Token Tracker 服务。",
+          "description": "%config.autoStart%",
           "type": "boolean"
+        },
+        "tokentracker.costUnit": {
+          "default": "cny",
+          "description": "%config.costUnit%",
+          "enum": [
+            "cny",
+            "usd",
+            "credit"
+          ],
+          "enumDescriptions": [
+            "%config.costUnit.cny%",
+            "%config.costUnit.usd%",
+            "%config.costUnit.credit%"
+          ],
+          "type": "string"
+        },
+        "tokentracker.creditRate": {
+          "default": 0.01,
+          "description": "%config.creditRate%",
+          "minimum": 0.0001,
+          "type": "number"
+        },
+        "tokentracker.usdRate": {
+          "default": 7.2,
+          "description": "%config.usdRate%",
+          "minimum": 0.01,
+          "type": "number"
         },
         "tokentracker.idleExitSeconds": {
           "default": 60,
-          "description": "所有客户端（VS Code 窗口或浏览器看板）断开后，服务延迟多少秒退出；0 表示不自动退出。",
+          "description": "%config.idleExitSeconds%",
           "minimum": 0,
           "type": "number"
         },
         "tokentracker.port": {
           "default": 4318,
-          "description": "Token Tracker 服务 监听端口（127.0.0.1）。",
+          "description": "%config.port%",
           "type": "number"
         },
         "tokentracker.serverDownloadBaseUrl": {
           "default": "",
-          "description": "服务端镜像地址前缀，例如 https://mirror/tokentracker-server-1.0.0；留空时使用 GitHub 最新服务端 Release。",
+          "description": "%config.serverDownloadBaseUrl%",
           "type": "string"
         },
         "tokentracker.statsRange": {
           "default": "7d",
-          "description": "状态栏与提示信息使用的统计时间范围。",
+          "description": "%config.statsRange%",
           "enum": [
             "today",
             "7d",
@@ -61,10 +88,10 @@
             "all"
           ],
           "enumDescriptions": [
-            "当天",
-            "近 7 天",
-            "近 30 天",
-            "全部"
+            "%config.statsRange.today%",
+            "%config.statsRange.7d%",
+            "%config.statsRange.30d%",
+            "%config.statsRange.all%"
           ],
           "type": "string"
         }
@@ -72,7 +99,7 @@
       "title": "Token Tracker"
     }
   },
-  "description": "Copilot token hit-rate and cost dashboard backed by a shared local Token Tracker server.",
+  "description": "%description%",
   "homepage": "https://github.com/JottingCN/TokenTracker#readme",
   "bugs": {
     "url": "https://github.com/JottingCN/TokenTracker/issues"

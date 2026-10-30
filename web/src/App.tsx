@@ -23,6 +23,7 @@ import { ModelPage } from './pages/ModelPage';
 import { SessionPage } from './pages/SessionPage';
 import { useRealtime } from './useRealtime';
 import type { DashboardPayload } from './types';
+import { translate, useUi } from './ui';
 import { providerOf, shortModelName } from './utils/model';
 
 const { Header, Sider, Content, Footer } = Layout;
@@ -54,8 +55,12 @@ function parseRoute(): Route {
 
 function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
   const items: NonNullable<MenuProps['items']> = [
-    { key: 'home', icon: <HomeOutlined />, label: '主页' },
-    { key: 'calls', icon: <HistoryOutlined />, label: '最近调用' },
+    { key: 'home', icon: <HomeOutlined />, label: translate('主页', 'Home') },
+    {
+      key: 'calls',
+      icon: <HistoryOutlined />,
+      label: translate('最近调用', 'Recent calls'),
+    },
   ];
   if (!dashboard) {
     return items;
@@ -91,6 +96,15 @@ function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
 type RangeMode = number | 'custom';
 
 export default function App() {
+  const {
+    lang,
+    tr,
+    isDark,
+    themeMode,
+    setThemeMode,
+    languageMode,
+    setLanguageMode,
+  } = useUi();
   const [route, setRoute] = useState<Route>(parseRoute);
   const [rangeMode, setRangeMode] = useState<RangeMode>(2);
   const [customRange, setCustomRange] = useState<[number, number] | null>(null);
@@ -115,7 +129,10 @@ export default function App() {
     toMs: customTo,
   });
 
-  const menuItems = useMemo(() => buildMenu(dashboard), [dashboard]);
+  const menuItems = useMemo(
+    () => buildMenu(dashboard),
+    [dashboard, lang],
+  );
 
   useEffect(() => {
     if (!dashboard) {
@@ -170,8 +187,20 @@ export default function App() {
 
   return (
     <>
-      <Layout style={{ height: '100vh', overflow: 'hidden' }}>
-        <Sider theme="light" width={230} style={{ borderRight: '1px solid #f0f0f0' }}>
+      <Layout
+        style={{
+          height: '100vh',
+          overflow: 'hidden',
+          background: 'var(--ant-color-bg-layout)',
+        }}
+      >
+        <Sider
+          theme={isDark ? 'dark' : 'light'}
+          width={230}
+          style={{
+            borderRight: '1px solid var(--ant-color-border-secondary)',
+          }}
+        >
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{ padding: '18px 20px 12px', fontSize: 16, fontWeight: 600 }}>
               Token Tracker
@@ -187,7 +216,12 @@ export default function App() {
                 style={{ borderInlineEnd: 'none' }}
               />
             </div>
-            <div style={{ padding: '4px 0', borderTop: '1px solid #f0f0f0' }}>
+            <div
+              style={{
+                padding: '4px 0',
+                borderTop: '1px solid var(--ant-color-border-secondary)',
+              }}
+            >
               <Menu
                 mode="inline"
                 selectable={false}
@@ -195,7 +229,7 @@ export default function App() {
                   {
                     key: 'settings',
                     icon: <SettingOutlined />,
-                    label: '设置',
+                    label: tr('设置', 'Settings'),
                   },
                 ]}
                 onClick={({ key }) => {
@@ -212,8 +246,8 @@ export default function App() {
         <Layout style={{ height: '100vh', overflow: 'hidden' }}>
           <Header
             style={{
-              background: '#fff',
-              borderBottom: '1px solid #f0f0f0',
+              background: 'var(--ant-color-bg-container)',
+              borderBottom: '1px solid var(--ant-color-border-secondary)',
               padding: '8px 20px',
               height: 'auto',
               minHeight: 56,
@@ -231,12 +265,12 @@ export default function App() {
                 onChange={onRangeChange}
                 style={{ width: 120 }}
                 options={[
-                  { value: 0, label: '今天' },
-                  { value: 1, label: '昨天' },
-                  { value: 2, label: '近 7 天' },
-                  { value: 3, label: '近 30 天' },
-                  { value: 4, label: '全部' },
-                  { value: 'custom', label: '自定义' },
+                  { value: 0, label: tr('今天', 'Today') },
+                  { value: 1, label: tr('昨天', 'Yesterday') },
+                  { value: 2, label: tr('近 7 天', 'Last 7 days') },
+                  { value: 3, label: tr('近 30 天', 'Last 30 days') },
+                  { value: 4, label: tr('全部', 'All') },
+                  { value: 'custom', label: tr('自定义', 'Custom') },
                 ]}
               />
               {rangeMode === 'custom' && (
@@ -257,6 +291,28 @@ export default function App() {
                   style={{ width: 360 }}
                 />
               )}
+            </Space>
+            <Space size="middle" style={{ marginLeft: 'auto' }}>
+              <Select
+                value={themeMode}
+                onChange={setThemeMode}
+                style={{ width: 132 }}
+                options={[
+                  { value: 'auto', label: tr('主题：自动', 'Theme: Auto') },
+                  { value: 'light', label: tr('浅色', 'Light') },
+                  { value: 'dark', label: tr('深色', 'Dark') },
+                ]}
+              />
+              <Select
+                value={languageMode}
+                onChange={setLanguageMode}
+                style={{ width: 120 }}
+                options={[
+                  { value: 'auto', label: tr('语言：自动', 'Language: Auto') },
+                  { value: 'zh', label: '中文' },
+                  { value: 'en', label: 'English' },
+                ]}
+              />
             </Space>
           </Header>
 
@@ -295,8 +351,8 @@ export default function App() {
           <Footer
             style={{
               padding: '6px 20px',
-              background: '#fff',
-              borderTop: '1px solid #f0f0f0',
+              background: 'var(--ant-color-bg-container)',
+              borderTop: '1px solid var(--ant-color-border-secondary)',
               flex: '0 0 auto',
             }}
           >
@@ -307,18 +363,28 @@ export default function App() {
             >
               <Badge
                 status={connected ? 'processing' : 'error'}
-                text={connected ? '实时连接' : '连接断开'}
+                text={
+                  connected
+                    ? tr('实时连接', 'Live')
+                    : tr('连接断开', 'Disconnected')
+                }
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {dashboard
                   ? dashboard.updatedAt === '-'
-                    ? '暂无数据更新'
-                    : `数据更新于 ${dashboard.updatedAt}`
-                  : '等待数据'}
+                    ? tr('暂无数据更新', 'No data yet')
+                    : tr(
+                        `数据更新于 ${dashboard.updatedAt}`,
+                        `Updated at ${dashboard.updatedAt}`,
+                      )
+                  : tr('等待数据', 'Waiting for data')}
               </Typography.Text>
               {dashboard && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {`监听 ${dashboard.receiver.endpoint} · ${dashboard.receiver.batches} 批 / ${dashboard.receiver.spans} span`}
+                  {tr(
+                    `监听 ${dashboard.receiver.endpoint} · ${dashboard.receiver.batches} 批 / ${dashboard.receiver.spans} span`,
+                    `Listening ${dashboard.receiver.endpoint} · ${dashboard.receiver.batches} batches / ${dashboard.receiver.spans} spans`,
+                  )}
                 </Typography.Text>
               )}
             </Space>

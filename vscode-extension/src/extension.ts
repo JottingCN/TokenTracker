@@ -3,6 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { httpPost } from './httpClient';
+import { tr } from './i18n';
+import { readMoneySettings } from './money';
 import { cleanupOldRuntimes, prepareRuntime } from './runtimeManager';
 import {
   ensureServer,
@@ -61,13 +63,13 @@ function log(message: string): void {
 function resolveStatsRange(value: string): StatsRange {
   switch (value) {
     case 'today':
-      return { index: 0, label: '当天' };
+      return { index: 0, label: tr('当天', 'Today') };
     case '30d':
-      return { index: 3, label: '近 30 天' };
+      return { index: 3, label: tr('近 30 天', 'Last 30 days') };
     case 'all':
-      return { index: 4, label: '全部' };
+      return { index: 4, label: tr('全部', 'All') };
     default:
-      return { index: 2, label: '近 7 天' };
+      return { index: 2, label: tr('近 7 天', 'Last 7 days') };
   }
 }
 
@@ -254,7 +256,12 @@ function resolveDownloadSource(
   const raw = typeof repository === 'string' ? repository : repository?.url;
   const url = raw?.replace(/^git\+/, '').replace(/\.git$/, '').replace(/\/+$/, '');
   if (!url) {
-    throw new Error('扩展缺少 repository 配置，无法自动下载服务端');
+    throw new Error(
+      tr(
+        '扩展缺少 repository 配置，无法自动下载服务端',
+        'The extension has no repository configuration and cannot download the server.',
+      ),
+    );
   }
 
   return { githubRepo: url };
@@ -278,7 +285,10 @@ async function startServerAndStatus(
   const runtime = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Window,
-      title: 'Token Tracker 正在准备服务端',
+      title: tr(
+        'Token Tracker 正在准备服务端',
+        'Token Tracker is preparing the server',
+      ),
       cancellable: false,
     },
     (progress) =>
@@ -309,7 +319,10 @@ async function startServerAndStatus(
   if (running.outdated) {
     log('server build differs and is externally managed');
     void vscode.window.showWarningMessage(
-      'Token Tracker 服务版本与扩展不一致，且该实例由外部启动，未自动替换。',
+      tr(
+        'Token Tracker 服务版本与扩展不一致，且该实例由外部启动，未自动替换。',
+        'The running Token Tracker server version differs and was started externally, so it was not replaced.',
+      ),
     );
   }
 
@@ -333,7 +346,13 @@ async function startServerAndStatus(
 
   disposeStatusBars();
   let lastSnapshotDetail = '';
-  statusBar = new StatusBarController(port, range.index, range.label, roots, (detail) => {
+  statusBar = new StatusBarController(
+    port,
+    range.index,
+    range.label,
+    roots,
+    readMoneySettings(),
+    (detail) => {
     if (detail !== lastSnapshotDetail) {
       lastSnapshotDetail = detail;
       log(`status snapshot: ${detail}`);
@@ -377,27 +396,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
     }),
     vscode.commands.registerCommand('tokentracker.showServerInfo', async () => {
       if (!server) {
-        void vscode.window.showWarningMessage('Token Tracker 服务未运行');
+        void vscode.window.showWarningMessage(
+          tr('Token Tracker 服务未运行', 'Token Tracker server is not running'),
+        );
         return;
       }
 
       const version = server.info
         ? `Token Tracker Server ${server.info.version}`
-        : 'Token Tracker Server（旧版本，无 /api/version）';
+        : tr(
+            'Token Tracker Server（旧版本，无 /api/version）',
+            'Token Tracker Server (old build without /api/version)',
+          );
       void vscode.window.showInformationMessage(
-        `${version} @ ${server.url}，内置启动=${server.startedHere}`,
+        tr(
+          `${version} @ ${server.url}，内置启动=${server.startedHere}`,
+          `${version} @ ${server.url}, started by extension=${server.startedHere}`,
+        ),
       );
     }),
     vscode.commands.registerCommand('tokentracker.startServer', async () => {
       try {
         await startServerAndStatus(context, port, true, range, idleExitSeconds);
         log('server started by command');
-        void vscode.window.showInformationMessage('Token Tracker 服务已启动');
+        void vscode.window.showInformationMessage(
+          tr('Token Tracker 服务已启动', 'Token Tracker server started'),
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log(`start server failed: ${message}`);
-        showStatusItem('$(warning) Token Tracker 未运行', message, 'tokentracker.startServer');
-        void vscode.window.showErrorMessage(`Token Tracker 启动失败：${message}`);
+        showStatusItem(
+          tr(
+            '$(warning) Token Tracker 未运行',
+            '$(warning) Token Tracker is not running',
+          ),
+          message,
+          'tokentracker.startServer',
+        );
+        void vscode.window.showErrorMessage(
+          tr(
+            `Token Tracker 启动失败：${message}`,
+            `Token Tracker failed to start: ${message}`,
+          ),
+        );
       }
     }),
     vscode.commands.registerCommand('tokentracker.stopServer', async () => {
@@ -407,17 +448,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
         disposeStatusBars();
         server = undefined;
         showStatusItem(
-          '$(debug-stop) Token Tracker: 服务已停止',
-          '点击启动 Token Tracker 服务',
+          tr(
+            '$(debug-stop) Token Tracker: 服务已停止',
+            '$(debug-stop) Token Tracker: server stopped',
+          ),
+          tr(
+            '点击启动 Token Tracker 服务',
+            'Click to start the Token Tracker server',
+          ),
           'tokentracker.startServer',
         );
-        void vscode.window.showInformationMessage('Token Tracker 服务已停止');
+        void vscode.window.showInformationMessage(
+          tr('Token Tracker 服务已停止', 'Token Tracker server stopped'),
+        );
         return;
       }
 
       if (result.reason === 'external') {
         void vscode.window.showWarningMessage(
-          '当前 Token Tracker 服务不是由扩展启动（可能是外部实例），未停止。',
+          tr(
+            '当前 Token Tracker 服务不是由扩展启动（可能是外部实例），未停止。',
+            'The running Token Tracker server was not started by this extension (likely external) and was not stopped.',
+          ),
         );
         return;
       }
@@ -427,8 +479,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
         disposeStatusBars();
         server = undefined;
         showStatusItem(
-          '$(debug-stop) Token Tracker: 服务已停止',
-          '点击启动 Token Tracker 服务',
+          tr(
+            '$(debug-stop) Token Tracker: 服务已停止',
+            '$(debug-stop) Token Tracker: server stopped',
+          ),
+          tr(
+            '点击启动 Token Tracker 服务',
+            'Click to start the Token Tracker server',
+          ),
           'tokentracker.startServer',
         );
       }
@@ -437,6 +495,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
       const updated = currentWorkspaceRoots();
       log(`workspace roots changed: ${updated.join(' | ') || '(none)'}`);
       statusBar?.setWorkspaceRoots(updated);
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration('tokentracker.costUnit') ||
+        event.affectsConfiguration('tokentracker.usdRate') ||
+        event.affectsConfiguration('tokentracker.creditRate')
+      ) {
+        statusBar?.setMoneySettings(readMoneySettings());
+      }
     }),
   );
 
@@ -448,11 +515,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
     const message = error instanceof Error ? error.message : String(error);
     log(`server unavailable: ${message}`);
     showStatusItem(
-      '$(warning) Token Tracker 未运行',
+      tr(
+        '$(warning) Token Tracker 未运行',
+        '$(warning) Token Tracker is not running',
+      ),
       message,
       'tokentracker.startServer',
     );
-    void vscode.window.showWarningMessage(`Token Tracker 服务不可用：${message}`);
+    void vscode.window.showWarningMessage(
+      tr(
+        `Token Tracker 服务不可用：${message}`,
+        `Token Tracker server unavailable: ${message}`,
+      ),
+    );
   }
 
   return {

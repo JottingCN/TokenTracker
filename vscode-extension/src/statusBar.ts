@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
 import { httpGetJson } from './httpClient';
+import { tr } from './i18n';
+import {
+  formatCost,
+  formatMoney,
+  MoneySettings,
+} from './money';
 import { serverUrl } from './serverManager';
 
 interface SessionSummary {
@@ -15,6 +21,10 @@ interface SessionSummary {
   outputTokens: number;
   reasoningTokens: number;
   costCny: number;
+  cacheCostCny: number;
+  uncachedCostCny: number;
+  outputCostCny: number;
+  reasoningCostCny: number;
   unpricedCalls: number;
   hitRate: number | null;
   inputText: string;
@@ -98,6 +108,7 @@ export class StatusBarController implements vscode.Disposable {
     private readonly rangeIndex: number,
     private readonly rangeLabel: string,
     workspaceRoots: string[],
+    private money: MoneySettings,
     private readonly onSnapshot?: (detail: string) => void,
   ) {
     this.workspaceRoots = workspaceRoots.map(normalizePath);
@@ -106,13 +117,27 @@ export class StatusBarController implements vscode.Disposable {
     this.item.name = 'Token Tracker';
     this.item.command = 'tokentracker.openDashboard';
     this.item.text = '$(pulse) -';
-    this.item.tooltip = 'Token Tracker：正在连接本地服务…';
+    this.item.tooltip = tr(
+      'Token Tracker：正在连接本地服务…',
+      'Token Tracker: connecting to the local server…',
+    );
     this.item.hide();
   }
 
   setWorkspaceRoots(roots: string[]): void {
     this.workspaceRoots = roots.map(normalizePath);
     this.refresh();
+  }
+
+  setMoneySettings(settings: MoneySettings): void {
+    this.money = settings;
+    if (this.currentSession) {
+      this.updateTooltip(
+        this.currentSession,
+        this.breakdownCache.get(this.breakdownKey(this.currentSession)),
+      );
+      this.renderStatusText(this.currentSession);
+    }
   }
 
   start(): void {
@@ -224,7 +249,10 @@ export class StatusBarController implements vscode.Disposable {
     if (data?.summary) {
       this.render(data);
     } else {
-      this.item.text = '$(warning) Token Tracker: 服务不可用';
+      this.item.text = tr(
+        '$(warning) Token Tracker: 服务不可用',
+        '$(warning) Token Tracker: service unavailable',
+      );
       this.item.show();
     }
 
@@ -254,11 +282,7 @@ export class StatusBarController implements vscode.Disposable {
 
     this.item.show();
     this.currentSession = session;
-
-    const rateText =
-      latest.hitRate === null ? '-' : `${(latest.hitRate * 100).toFixed(2)}%`;
-    const costText = latest.hasCost ? ` · ¥${latest.costCny.toFixed(2)}` : '';
-    this.item.text = `$(pulse) ${rateText}${costText}`;
+    this.renderStatusText(session);
 
     const key = this.breakdownKey(session);
     const cached = this.breakdownCache.get(key);
@@ -278,6 +302,17 @@ export class StatusBarController implements vscode.Disposable {
     );
   }
 
+  private renderStatusText(session: SessionSummary): void {
+    const rateText =
+      session.hitRate === null
+        ? '-'
+        : `${(session.hitRate * 100).toFixed(2)}%`;
+    const costText = sessionHasCost(session)
+      ? ` · ${formatMoney(session.costCny, this.money, 2)}`
+      : '';
+    this.item.text = `$(pulse) ${rateText}${costText}`;
+  }
+
   private updateTooltip(
     session: SessionSummary,
     breakdown: ModelBreakdown[] | undefined,
@@ -289,7 +324,9 @@ export class StatusBarController implements vscode.Disposable {
       `**Token Tracker - ${escapeMarkdown(session.sessionDisplay)}**\n\n`,
     );
 
-    const modelText = breakdown ? ` · $(symbol-class) ${breakdown.length} 个模型` : '';
+    const modelText = breakdown
+      ? ` · $(symbol-class) ${breakdown.length} ${tr('个模型', 'models')}`
+      : '';
     tooltip.appendMarkdown(
       `$(calendar) ${this.rangeLabel}${modelText}\n\n`,
     );
@@ -301,7 +338,7 @@ export class StatusBarController implements vscode.Disposable {
         }
 
         tooltip.appendMarkdown(`**${escapeMarkdown(row.model)}**\n\n`);
-        tooltip.appendMarkdown(`${modelMeta(row)}\n\n`);
+        tooltip.appendMarkdown(`${modelMeta(row, this.money)}\n\n`);
         tooltip.appendCodeblock(
           modelTable(
             row.inputTokens,
@@ -312,26 +349,41 @@ export class StatusBarController implements vscode.Disposable {
             row.cacheCostCny,
             row.outputCostCny,
             row.reasoningCostCny,
+            this.money,
           ),
           'text',
         );
       });
     } else {
-      tooltip.appendMarkdown('**会话汇总**\n\n');
+      tooltip.appendMarkdown(`**${tr('会话汇总', 'Session summary')}**\n\n`);
       tooltip.appendMarkdown(
-        `${numberFormatter.format(session.calls)} 次 · ` +
-          `命中率 ${formatRate(session.hitRate)} · ` +
-          `费用 ${formatCost(session.costCny, session.unpricedCalls)}\n\n`,
+        `${numberFormatter.format(session.calls)} ${tr('次', 'calls')} · ` +
+          `${tr('命中率', 'Hit rate')} ${formatRate(session.hitRate)} · ` +
+          `${tr('费用', 'Cost')} ${formatCost(session.costCny, session.unpricedCalls, this.money)}\n\n`,
       );
       tooltip.appendCodeblock(
         tableFromStrings([
-          ['输入', session.inputText, session.uncachedCostText],
-          ['缓存', session.cacheText, session.cacheCostText],
-          ['输出', session.outputText, session.outputCostText],
           [
-            '思考',
+            tr('输入', 'Input'),
+            session.inputText,
+            formatMoney(session.uncachedCostCny, this.money),
+          ],
+          [
+            tr('缓存', 'Cached'),
+            session.cacheText,
+            formatMoney(session.cacheCostCny, this.money),
+          ],
+          [
+            tr('输出', 'Output'),
+            session.outputText,
+            formatMoney(session.outputCostCny, this.money),
+          ],
+          [
+            tr('思考', 'Reasoning'),
             session.reasoningText,
-            session.reasoningTokens > 0 ? session.reasoningCostText : '-',
+            session.reasoningTokens > 0
+              ? formatMoney(session.reasoningCostCny, this.money)
+              : '-',
           ],
         ]),
         'text',
@@ -467,20 +519,14 @@ function aggregateModels(calls: SessionCall[]): ModelBreakdown[] {
   );
 }
 
-function modelMeta(row: ModelBreakdown): string {
+function modelMeta(row: ModelBreakdown, money: MoneySettings): string {
   const hitRate =
     row.inputTokens > 0 ? row.cacheReadTokens / row.inputTokens : null;
   return (
-    `$(zap) ${numberFormatter.format(row.calls)} 次 · ` +
+    `$(zap) ${numberFormatter.format(row.calls)} ${tr('次', 'calls')} · ` +
     `$(pulse) ${formatRate(hitRate)} · ` +
-    `$(credit-card) ${formatCost(row.costCny, row.unpricedCalls)}`
+    `$(credit-card) ${formatCost(row.costCny, row.unpricedCalls, money)}`
   );
-}
-
-function formatCost(cost: number, unpricedCalls: number): string {
-  return unpricedCalls > 0
-    ? `¥${cost.toFixed(6)} + ${unpricedCalls} 次未定价`
-    : `¥${cost.toFixed(6)}`;
 }
 
 function modelTable(
@@ -492,15 +538,28 @@ function modelTable(
   cacheCost: number,
   outputCost: number,
   reasoningCost: number,
+  money: MoneySettings,
 ): string {
   return tableFromStrings([
-    ['输入', numberFormatter.format(inputTokens), `¥${uncachedCost.toFixed(6)}`],
-    ['缓存', numberFormatter.format(cacheReadTokens), `¥${cacheCost.toFixed(6)}`],
-    ['输出', numberFormatter.format(outputTokens), `¥${outputCost.toFixed(6)}`],
     [
-      '思考',
+      tr('输入', 'Input'),
+      numberFormatter.format(inputTokens),
+      formatMoney(uncachedCost, money),
+    ],
+    [
+      tr('缓存', 'Cached'),
+      numberFormatter.format(cacheReadTokens),
+      formatMoney(cacheCost, money),
+    ],
+    [
+      tr('输出', 'Output'),
+      numberFormatter.format(outputTokens),
+      formatMoney(outputCost, money),
+    ],
+    [
+      tr('思考', 'Reasoning'),
       numberFormatter.format(reasoningTokens),
-      reasoningTokens > 0 ? `¥${reasoningCost.toFixed(6)}` : '-',
+      reasoningTokens > 0 ? formatMoney(reasoningCost, money) : '-',
     ],
   ]);
 }

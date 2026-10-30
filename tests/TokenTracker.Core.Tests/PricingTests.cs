@@ -97,4 +97,33 @@ public sealed class PricingTests
         Assert.Equal("idle", ModelPricing.GetPricingPeriod("deepseek-flash", idle));
         Assert.Equal("unknown", ModelPricing.GetPricingPeriod("gpt-5.5", peak));
     }
+
+    [Fact]
+    public void LongContextThresholdSwitchesEntireRequest()
+    {
+        var price = new ModelPrice(
+            new PriceTier(1m, 10m, 50m),
+            new PriceTier(2m, 20m, 100m),
+            PeakAware: true,
+            new LongContextPrice(
+                272_000,
+                new PriceTier(2m, 20m, 75m),
+                new PriceTier(4m, 40m, 150m)));
+        var idle = Utc("2026-10-27T04:00:00Z");
+        var peak = Utc("2026-10-27T02:00:00Z");
+
+        Assert.Equal(2.072m, ModelPricing.EvaluateDetailed(
+            price, 272_000, 72_000, 0, 0, idle).CostCny);
+
+        var longIdle = ModelPricing.EvaluateDetailed(
+            price, 272_001, 72_000, 0, 0, idle);
+        Assert.Equal(4.14402m, longIdle.CostCny);
+        Assert.Equal(0.144m, longIdle.CacheCost);
+        Assert.Equal(4.00002m, longIdle.UncachedCost);
+
+        Assert.Equal(8.28804m, ModelPricing.EvaluateDetailed(
+            price, 272_001, 72_000, 0, 0, peak).CostCny);
+        Assert.Equal(75m, ModelPricing.EvaluateDetailed(
+            price, 272_001, 0, 1_000_000, 0, idle).OutputCost);
+    }
 }

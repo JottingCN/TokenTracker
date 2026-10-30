@@ -1,0 +1,23 @@
+{
+  "description": "Copilot token hit-rate and cost dashboard backed by a shared local Token Tracker server.",
+  "command.openDashboard": "Token Tracker: Open dashboard in browser",
+  "command.showServerInfo": "Token Tracker: Server information",
+  "command.refreshStatus": "Token Tracker: Refresh status bar",
+  "command.startServer": "Token Tracker: Start server",
+  "command.stopServer": "Token Tracker: Stop server",
+  "config.autoStart": "Automatically start the bundled Token Tracker server when it is not running.",
+  "config.idleExitSeconds": "Delay before the server exits after all clients (VS Code windows or browser dashboards) disconnect. 0 disables automatic exit.",
+  "config.port": "Token Tracker server port on 127.0.0.1.",
+  "config.serverDownloadBaseUrl": "Server mirror URL prefix, e.g. https://mirror/tokentracker-server-1.0.0. Leave empty to use the latest GitHub server release.",
+  "config.statsRange": "Time range used by the status bar and tooltip.",
+  "config.statsRange.today": "Today",
+  "config.statsRange.7d": "Last 7 days",
+  "config.statsRange.30d": "Last 30 days",
+  "config.statsRange.all": "All",
+  "config.costUnit": "Cost unit used by the status bar and tooltip.",
+  "config.costUnit.cny": "Chinese Yuan (CNY)",
+  "config.costUnit.usd": "US Dollar (USD)",
+  "config.costUnit.credit": "Credits",
+  "config.creditRate": "CNY value of one credit.",
+  "config.usdRate": "CNY value of one US dollar."
+}

@@ -64,7 +64,14 @@ public sealed record ModelPriceRowPayload(
     double Output,
     double? PeakCachedInput,
     double? PeakUncachedInput,
-    double? PeakOutput);
+    double? PeakOutput,
+    long? LongContextThreshold,
+    double? LongCachedInput,
+    double? LongUncachedInput,
+    double? LongOutput,
+    double? LongPeakCachedInput,
+    double? LongPeakUncachedInput,
+    double? LongPeakOutput);
 
 public sealed record PriceUpdateRequest(
     string? Model,
@@ -74,7 +81,14 @@ public sealed record PriceUpdateRequest(
     double Output,
     double? PeakCachedInput,
     double? PeakUncachedInput,
-    double? PeakOutput);
+    double? PeakOutput,
+    long? LongContextThreshold,
+    double? LongCachedInput,
+    double? LongUncachedInput,
+    double? LongOutput,
+    double? LongPeakCachedInput,
+    double? LongPeakUncachedInput,
+    double? LongPeakOutput);
 
 public sealed record DashboardMessage(string Type, DashboardPayload Data);
 
