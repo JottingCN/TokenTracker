@@ -70,7 +70,8 @@ npm run package        # 生成 tokentracker-*.vsix
 
 - 扩展监听 `workspace.yaml`（500ms 去抖）和 `agent-host.db*`（500ms 去抖、15 秒节流）。
 - Agent Host AHP 客户端后台读取 `local-endpoint/entries`，通过命名管道/UDS/TCP 连接，订阅根通道并处理 `listSessions`、`session/titleChanged`、`root/sessionSummaryChanged`；断线 30 秒重连，仅用于标题，不读取对话内容。
-- DashboardPayload 的 `ahp` 字段返回 `state / connected / sessions`；状态变化触发实时推送，页脚展示 AHP 连接情况。
+- AHP 协议层使用官方 `Microsoft.VisualStudioCode.AgentHostProtocol` SDK；自定义 transport 仅负责本地 named pipe/UDS 的 WebSocket 握手。
+- DashboardPayload 的 `ahp` 字段返回 `state / connected / sessions / items`；`items` 包含 AHP 会话标题、provider、状态、工作区、活动和最近修改；状态变化触发实时推送，页脚展示 AHP 连接情况。
 - 变化后调用 `POST /api/metadata-changed`，服务向所有 WS 客户端广播新快照。
 - 旧服务不支持该接口时，扩展回退为本地重新订阅。
 
@@ -92,12 +93,14 @@ npm run package        # 生成 tokentracker-*.vsix
 - 模型归因优先 `gen_ai.response.model`（Auto 模式下 request model 可能是 `auto`）；会话 ID 依次取 `copilot_chat.session_id`、`copilot_chat.chat_session_id`、`gen_ai.conversation.id`。
 - Anthropic/Claude 的 `input_tokens` 不含缓存：解析时把 cache read + cache creation 合并为总输入；cache creation 按缓存写入价计费，未配置时回退到未缓存输入价。
 - 扩展管线若带 `copilot_chat.copilot_usage_nano_aiu`，调用列表在估算费用下方显示实际 AIC（nano-AIU / 1e9）；Agent Host 无该字段。
+- 模型名保存前统一规范化（去掉 provider 前缀并转小写）。同一会话/模型/输入输出且开始时间相差不超过 2 秒的跨管线 span 会去重，优先保留包含缓存、推理或 AIC 的记录；启动时以 `duplicate_spans_merged` 标记执行一次历史合并。扩展与 Agent Host 的 `gen_ai.response.id` 实际不同，不能作为跨管线唯一键。
 - 两个本地 span 库（扩展 `agent-traces.db`、Agent Host `agent-host-traces.db`）只保留约 7 天/100 会话；`POST /api/import-local` 只读导入并按 `(trace_id, span_id)` 去重，扩展命令为 `Token Tracker: 导入本地 Copilot OTel 数据`。
 - 只统计 `gen_ai.operation.name=chat` 的 span，避免与 `invoke_agent` / `execute_tool` 重复计数。
 
 ### 费用与定价
 
-- 内置价格可覆盖、恢复默认、删除自定义模型；保存后必须重算历史 span。
+- 不内置任何模型价格；价格必须按模型配置。模型列表来自已有调用记录或手动新增，未配置价格的模型显示“未定价”；保存后必须重算历史 span。
+- 从旧版本升级时，服务端启动会以 `builtin_prices_removed` 标记重算一次历史费用，使旧内置价格不再生效。
 - 支持按单次调用输入 token 阈值（含缓存命中）设置第二档长上下文价格：未超过阈值用默认档，超过阈值整次调用按长上下文档计价；峰谷与分档可同时启用。
 - DeepSeek 区分高峰 / 空闲价；节假日优先读 SQLite，缺失时按年拉取并缓存。
 - 费用展示统一 6 位小数（状态栏摘要可用 2 位）。

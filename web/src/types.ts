@@ -108,10 +108,22 @@ export interface ReceiverInfo {
   lastError: string | null;
 }
 
+export interface AhpSessionInfo {
+  resource: string;
+  provider: string;
+  title: string;
+  status: string;
+  activity: string | null;
+  workspacePath: string | null;
+  modifiedAt: string;
+  chats: number;
+}
+
 export interface AhpStatus {
   state: 'disabled' | 'searching' | 'connecting' | 'connected' | string;
   connected: boolean;
   sessions: number;
+  items: AhpSessionInfo[];
 }
 
 export interface DashboardPayload {
@@ -155,7 +167,7 @@ export interface Subscription {
 export interface ModelPriceRow {
   model: string;
   customized: boolean;
-  hasDefault: boolean;
+  calls: number;
   peakAware: boolean;
   cachedInput: number;
   uncachedInput: number;

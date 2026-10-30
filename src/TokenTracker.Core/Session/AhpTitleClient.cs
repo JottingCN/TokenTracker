@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
@@ -6,7 +6,7 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using Microsoft.AgentHostProtocol;
 
 namespace TokenTracker.Core.Session;
 
@@ -14,10 +14,21 @@ internal sealed record AhpTitle(
     string Title,
     string? WorkspacePath);
 
+public sealed record AhpSessionInfo(
+    string Resource,
+    string Provider,
+    string Title,
+    string Status,
+    string? Activity,
+    string? WorkspacePath,
+    string ModifiedAt,
+    int Chats);
+
 public sealed record AhpConnectionStatus(
     string State,
     bool Connected,
-    int Sessions);
+    int Sessions,
+    IReadOnlyList<AhpSessionInfo> Items);
 
 internal sealed class AhpTitleClient
 {
@@ -29,13 +40,9 @@ internal sealed class AhpTitleClient
     private readonly object _gate = new();
     private readonly Dictionary<string, AhpTitle> _titles =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AhpSessionInfo> _sessions =
+        new(StringComparer.OrdinalIgnoreCase);
     private string _state;
-    private int _sessionCount;
-
-    private WebSocket? _socket;
-    private SemaphoreSlim? _sendLock;
-    private Dictionary<int, TaskCompletionSource<JsonElement?>>? _pending;
-    private int _nextId;
 
     public AhpTitleClient(
         IEnumerable<string>? userDataDirectories,
@@ -61,7 +68,11 @@ internal sealed class AhpTitleClient
             return new AhpConnectionStatus(
                 _state,
                 _state == "connected",
-                _sessionCount);
+                _sessions.Count,
+                _sessions.Values
+                    .OrderByDescending(item => item.ModifiedAt, StringComparer.Ordinal)
+                    .ThenBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+                    .ToArray());
         }
     }
 
@@ -135,70 +146,61 @@ internal sealed class AhpTitleClient
         CancellationToken cancellationToken)
     {
         using var stream = await ConnectStreamAsync(endpoint, cancellationToken);
-        var (socket, sendLock, pending) = await UpgradeAsync(stream, endpoint, cancellationToken);
-        _socket = socket;
-        _sendLock = sendLock;
-        _pending = pending;
+        var socket = await UpgradeAsync(stream, endpoint, cancellationToken);
+        await using var client = AhpClient.Connect(
+            new AhpStreamTransport(socket),
+            new ClientConfig { DefaultRequestTimeout = RequestTimeout });
         using var connectionCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var readTask = ReadLoopAsync(
-            socket,
-            pending,
+        var rootSubscription = client.AttachSubscription(
+            ProtocolVersion.RootResourceUri);
+        var eventsTask = ReadEventsAsync(
+            rootSubscription,
             connectionCancellation.Token);
         try
         {
-            await InitializeAsync(connectionCancellation.Token);
+            await client.InitializeAsync(
+                "token-tracker",
+                ProtocolVersion.Supported,
+                new[] { ProtocolVersion.RootResourceUri },
+                connectionCancellation.Token);
             lock (_gate)
             {
                 _titles.Clear();
+                _sessions.Clear();
             }
 
-            await ListSessionsAsync(connectionCancellation.Token);
+            await ListSessionsAsync(client, connectionCancellation.Token);
             SetState("connected");
-            _ = RefreshLoopAsync(connectionCancellation.Token);
-            await readTask;
+            _ = RefreshLoopAsync(client, connectionCancellation.Token);
+            await client.Completion.WaitAsync(cancellationToken);
+            await eventsTask;
         }
         finally
         {
             connectionCancellation.Cancel();
-            _socket = null;
-            _sendLock = null;
-            _pending = null;
-            socket.Dispose();
-            var changed = false;
+            rootSubscription.Dispose();
             lock (_gate)
             {
-                changed = _titles.Count > 0 ||
-                    _state != "searching" ||
-                    _sessionCount != 0;
                 _titles.Clear();
+                _sessions.Clear();
                 _state = "searching";
-                _sessionCount = 0;
             }
 
-            if (changed)
-            {
-                StatusChanged?.Invoke();
-            }
-
-            try
-            {
-                await readTask;
-            }
-            catch
-            {
-            }
+            StatusChanged?.Invoke();
         }
     }
 
-    private async Task RefreshLoopAsync(CancellationToken cancellationToken)
+    private async Task RefreshLoopAsync(
+        AhpClient client,
+        CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(60), cancellationToken);
-                await ListSessionsAsync(cancellationToken);
+                await ListSessionsAsync(client, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -208,6 +210,104 @@ internal sealed class AhpTitleClient
             {
             }
         }
+    }
+
+    private async Task ReadEventsAsync(
+        Subscription subscription,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var item in subscription.Events.ReadAllAsync(cancellationToken))
+            {
+                switch (item)
+                {
+                    case SubscriptionEventSessionSummaryChanged changed:
+                        UpdateSession(changed.Params.Session, changed.Params.Changes);
+                        break;
+                    case SubscriptionEventSessionAdded added:
+                        UpdateSession(added.Params.Summary);
+                        break;
+                    case SubscriptionEventSessionRemoved removed:
+                        RemoveSession(removed.Params.Session);
+                        break;
+                    case SubscriptionEventAction action
+                        when action.Envelope.Action.Value is SessionTitleChangedAction titleChanged:
+                        UpdateTitle(
+                            action.Envelope.Channel,
+                            titleChanged.Title,
+                            null);
+                        break;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task ListSessionsAsync(
+        AhpClient client,
+        CancellationToken cancellationToken)
+    {
+        string? cursor = null;
+        var pages = 0;
+        do
+        {
+            if (++pages > 1_000)
+            {
+                return;
+            }
+
+            var result = await client.RequestAsync<ListSessionsParams, ListSessionsResult>(
+                "listSessions",
+                new ListSessionsParams
+                {
+                    Channel = ProtocolVersion.RootResourceUri,
+                    Limit = 200,
+                    Cursor = cursor,
+                },
+                cancellationToken);
+            if (result is null)
+            {
+                return;
+            }
+
+            foreach (var session in result.Items)
+            {
+                if (string.IsNullOrWhiteSpace(session.Resource) ||
+                    string.IsNullOrWhiteSpace(session.Title))
+                {
+                    continue;
+                }
+
+                var workspace = GetWorkingDirectory(session.WorkingDirectories);
+                UpdateSession(session);
+                UpdateTitle(session.Resource, session.Title, workspace);
+                if (session.Chats is not null)
+                {
+                    foreach (var chat in session.Chats)
+                    {
+                        if (!string.IsNullOrWhiteSpace(chat.Resource))
+                        {
+                            UpdateTitle(
+                                chat.Resource,
+                                string.IsNullOrWhiteSpace(chat.Title)
+                                    ? session.Title
+                                    : chat.Title,
+                                workspace);
+                        }
+                    }
+                }
+            }
+
+            cursor = result.NextCursor;
+        } while (!string.IsNullOrWhiteSpace(cursor));
+
+        StatusChanged?.Invoke();
     }
 
     private static async Task<Stream> ConnectStreamAsync(
@@ -247,10 +347,7 @@ internal sealed class AhpTitleClient
         return new NetworkStream(client.Client, ownsSocket: true);
     }
 
-    private static async Task<(
-        WebSocket Socket,
-        SemaphoreSlim SendLock,
-        Dictionary<int, TaskCompletionSource<JsonElement?>> Pending)> UpgradeAsync(
+    private static async Task<WebSocket> UpgradeAsync(
         Stream stream,
         AhpEndpoint endpoint,
         CancellationToken cancellationToken)
@@ -272,15 +369,11 @@ internal sealed class AhpTitleClient
             throw new InvalidOperationException("AHP WebSocket upgrade failed");
         }
 
-        var socket = WebSocket.CreateFromStream(
+        return WebSocket.CreateFromStream(
             stream,
             isServer: false,
             subProtocol: null,
             keepAliveInterval: TimeSpan.FromSeconds(20));
-        return (
-            socket,
-            new SemaphoreSlim(1, 1),
-            new Dictionary<int, TaskCompletionSource<JsonElement?>>());
     }
 
     private static async Task<string> ReadHeadersAsync(
@@ -307,307 +400,49 @@ internal sealed class AhpTitleClient
         throw new InvalidOperationException("AHP handshake closed");
     }
 
-    private async Task InitializeAsync(CancellationToken cancellationToken)
+    private static string? GetWorkingDirectory(IEnumerable<string>? directories)
     {
-        var parameters = new JsonObject
-        {
-            ["channel"] = "ahp-root://",
-            ["protocolVersions"] = new JsonArray("1.1.0", "1.0.0", "0.9.0"),
-            ["clientId"] = "token-tracker",
-            ["clientInfo"] = new JsonObject
-            {
-                ["name"] = "Token Tracker",
-                ["version"] = "1.0",
-            },
-            ["initialSubscriptions"] = new JsonArray("ahp-root://"),
-            ["_meta"] = new JsonObject
-            {
-                ["vscode.ahpSessionUris"] = true,
-                ["vscode.ahpChatUris"] = true,
-            },
-        };
-
-        var result = await SendRequestAsync("initialize", parameters, cancellationToken);
-        if (result is null)
-        {
-            throw new InvalidOperationException("AHP initialize failed");
-        }
-    }
-
-    private async Task ListSessionsAsync(CancellationToken cancellationToken)
-    {
-        string? cursor = null;
-        var pages = 0;
-        var total = 0;
-        do
-        {
-            if (++pages > 1_000)
-            {
-                return;
-            }
-
-            var parameters = new JsonObject
-            {
-                ["channel"] = "ahp-root://",
-                ["limit"] = 200,
-            };
-            if (!string.IsNullOrWhiteSpace(cursor))
-            {
-                parameters["cursor"] = cursor;
-            }
-
-            var result = await SendRequestAsync(
-                "listSessions",
-                parameters,
-                cancellationToken);
-            if (result is not { } document ||
-                !document.TryGetProperty("items", out var items) ||
-                items.ValueKind != JsonValueKind.Array)
-            {
-                return;
-            }
-
-            total += items.GetArrayLength();
-            foreach (var item in items.EnumerateArray())
-            {
-                var resource = GetString(item, "resource");
-                var title = GetString(item, "title");
-                if (string.IsNullOrWhiteSpace(resource) ||
-                    string.IsNullOrWhiteSpace(title))
-                {
-                    continue;
-                }
-
-                UpdateTitle(
-                    resource,
-                    title,
-                    GetWorkingDirectory(item, "workingDirectories"));
-
-                if (item.TryGetProperty("chats", out var chats) &&
-                    chats.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var chat in chats.EnumerateArray())
-                    {
-                        var chatResource = GetString(chat, "resource");
-                        if (string.IsNullOrWhiteSpace(chatResource))
-                        {
-                            continue;
-                        }
-
-                        var chatTitle = GetString(chat, "title");
-                        UpdateTitle(
-                            chatResource,
-                            string.IsNullOrWhiteSpace(chatTitle) ? title : chatTitle,
-                            GetWorkingDirectory(item, "workingDirectories"));
-                    }
-                }
-            }
-
-            cursor = GetString(document, "nextCursor");
-        } while (!string.IsNullOrWhiteSpace(cursor));
-
-        lock (_gate)
-        {
-            if (_sessionCount == total)
-            {
-                return;
-            }
-
-            _sessionCount = total;
-        }
-
-        StatusChanged?.Invoke();
-    }
-
-    private async Task<JsonElement?> SendRequestAsync(
-        string method,
-        JsonObject parameters,
-        CancellationToken cancellationToken)
-    {
-        var socket = _socket;
-        var sendLock = _sendLock;
-        var pending = _pending;
-        if (socket is null || sendLock is null || pending is null)
+        if (directories is null)
         {
             return null;
         }
 
-        var id = Interlocked.Increment(ref _nextId);
-        var completion = new TaskCompletionSource<JsonElement?>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (pending)
+        foreach (var directory in directories)
         {
-            pending[id] = completion;
-        }
-
-        var payload = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = id,
-            ["method"] = method,
-            ["params"] = parameters,
-        };
-
-        await sendLock.WaitAsync(cancellationToken);
-        try
-        {
-            var bytes = Encoding.UTF8.GetBytes(payload.ToJsonString());
-            await socket.SendAsync(
-                bytes,
-                WebSocketMessageType.Text,
-                endOfMessage: true,
-                cancellationToken);
-        }
-        finally
-        {
-            sendLock.Release();
-        }
-
-        try
-        {
-            return await completion.Task.WaitAsync(RequestTimeout, cancellationToken);
-        }
-        catch
-        {
-            lock (pending)
+            var path = ToLocalPath(directory);
+            if (path is not null)
             {
-                pending.Remove(id);
+                return path;
             }
-
-            throw;
         }
+
+        return null;
     }
 
-    private async Task ReadLoopAsync(
-        WebSocket socket,
-        Dictionary<int, TaskCompletionSource<JsonElement?>> pending,
-        CancellationToken cancellationToken)
+    private void RemoveTitle(string resource)
     {
-        var buffer = new byte[16 * 1024];
-        using var message = new MemoryStream();
-        while (socket.State == WebSocketState.Open)
+        lock (_gate)
         {
-            var result = await socket.ReceiveAsync(buffer, cancellationToken);
-            if (result.MessageType == WebSocketMessageType.Close)
+            _titles.Remove(resource);
+            var canonical = CanonicalSessionId(resource);
+            if (canonical is not null)
             {
-                return;
+                _titles.Remove(canonical);
             }
-
-            message.Write(buffer, 0, result.Count);
-            if (!result.EndOfMessage)
-            {
-                continue;
-            }
-
-            var text = Encoding.UTF8.GetString(message.ToArray());
-            message.SetLength(0);
-            try
-            {
-                HandleMessage(text, pending);
-            }
-            catch (JsonException)
-            {
-                // A malformed notification must not tear down the title stream.
-            }
-        }
-    }
-
-    private void HandleMessage(
-        string text,
-        Dictionary<int, TaskCompletionSource<JsonElement?>> pending)
-    {
-        using var document = JsonDocument.Parse(text);
-        var root = document.RootElement;
-
-        if (root.TryGetProperty("id", out var idElement) &&
-            idElement.TryGetInt64(out var id))
-        {
-            TaskCompletionSource<JsonElement?>? completion;
-            lock (pending)
-            {
-                pending.Remove((int)id, out completion);
-            }
-
-            if (completion is null)
-            {
-                return;
-            }
-
-            if (root.TryGetProperty("result", out var result))
-            {
-                completion.TrySetResult(result.Clone());
-            }
-            else
-            {
-                completion.TrySetException(
-                    new InvalidOperationException("AHP request failed"));
-            }
-
-            return;
-        }
-
-        if (!root.TryGetProperty("method", out var methodElement) ||
-            methodElement.ValueKind != JsonValueKind.String)
-        {
-            return;
-        }
-
-        var method = methodElement.GetString();
-        if (method == "action")
-        {
-            HandleAction(root);
-        }
-        else if (method == "root/sessionSummaryChanged")
-        {
-            HandleSummaryChanged(root);
-        }
-    }
-
-    private void HandleAction(JsonElement root)
-    {
-        if (!root.TryGetProperty("params", out var parameters) ||
-            !parameters.TryGetProperty("channel", out var channelElement) ||
-            channelElement.ValueKind != JsonValueKind.String ||
-            !parameters.TryGetProperty("action", out var action) ||
-            !action.TryGetProperty("type", out var typeElement) ||
-            typeElement.GetString() != "session/titleChanged")
-        {
-            return;
-        }
-
-        var channel = channelElement.GetString();
-        var title = GetString(action, "title");
-        if (!string.IsNullOrWhiteSpace(channel) &&
-            !string.IsNullOrWhiteSpace(title))
-        {
-            UpdateTitle(channel, title, null);
-        }
-    }
-
-    private void HandleSummaryChanged(JsonElement root)
-    {
-        if (!root.TryGetProperty("params", out var parameters) ||
-            !parameters.TryGetProperty("session", out var sessionElement) ||
-            sessionElement.ValueKind != JsonValueKind.String ||
-            !parameters.TryGetProperty("changes", out var changes))
-        {
-            return;
-        }
-
-        var session = sessionElement.GetString();
-        var title = GetString(changes, "title");
-        if (!string.IsNullOrWhiteSpace(session) &&
-            !string.IsNullOrWhiteSpace(title))
-        {
-            UpdateTitle(session, title, null);
         }
     }
 
     private void UpdateTitle(
         string resource,
-        string title,
+        string? title,
         string? workspacePath)
     {
+        if (string.IsNullOrWhiteSpace(resource) ||
+            string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+
         lock (_gate)
         {
             if (_titles.TryGetValue(resource, out var existing))
@@ -623,6 +458,97 @@ internal sealed class AhpTitleClient
                 _titles[canonical] = value;
             }
         }
+    }
+
+    private void UpdateSession(SessionSummary summary)
+    {
+        if (string.IsNullOrWhiteSpace(summary.Resource) ||
+            string.IsNullOrWhiteSpace(summary.Title))
+        {
+            return;
+        }
+
+        var workspace = GetWorkingDirectory(summary.WorkingDirectories);
+        UpdateTitle(summary.Resource, summary.Title, workspace);
+        lock (_gate)
+        {
+            _sessions[summary.Resource] = new AhpSessionInfo(
+                summary.Resource,
+                summary.Provider ?? string.Empty,
+                summary.Title.Trim(),
+                MapSessionStatus(summary.Status),
+                summary.Activity,
+                workspace,
+                summary.ModifiedAt ?? string.Empty,
+                summary.Chats?.Count ?? 0);
+        }
+    }
+
+    private void UpdateSession(string resource, PartialSessionSummary changes)
+    {
+        if (string.IsNullOrWhiteSpace(resource))
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _sessions.TryGetValue(resource, out var existing);
+            var title = changes.Title ?? existing?.Title;
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return;
+            }
+
+            var workspace = changes.WorkingDirectories is null
+                ? existing?.WorkspacePath
+                : GetWorkingDirectory(changes.WorkingDirectories);
+            var info = new AhpSessionInfo(
+                resource,
+                changes.Provider ?? existing?.Provider ?? string.Empty,
+                title.Trim(),
+                changes.Status is { } status
+                    ? MapSessionStatus(status)
+                    : existing?.Status ?? "unknown",
+                changes.Activity ?? existing?.Activity,
+                workspace,
+                changes.ModifiedAt ?? existing?.ModifiedAt ?? string.Empty,
+                changes.Chats?.Count ?? existing?.Chats ?? 0);
+            _sessions[resource] = info;
+            UpdateTitle(resource, info.Title, info.WorkspacePath);
+        }
+    }
+
+    private void RemoveSession(string resource)
+    {
+        lock (_gate)
+        {
+            _sessions.Remove(resource);
+        }
+
+        RemoveTitle(resource);
+    }
+
+    private static string MapSessionStatus(SessionStatus status)
+    {
+        if ((status & SessionStatus.InputNeeded) == SessionStatus.InputNeeded)
+        {
+            return "input_needed";
+        }
+
+        if ((status & SessionStatus.InProgress) == SessionStatus.InProgress)
+        {
+            return "in_progress";
+        }
+
+        if ((status & SessionStatus.Error) == SessionStatus.Error)
+        {
+            return "error";
+        }
+
+        return (status & SessionStatus.Idle) == SessionStatus.Idle
+            ? "idle"
+            : "unknown";
     }
 
     private AhpEndpoint? DiscoverEndpoint()
@@ -831,33 +757,6 @@ internal sealed class AhpTitleClient
         }
 
         return string.IsNullOrWhiteSpace(value) ? null : value;
-    }
-
-    private static string? GetWorkingDirectory(
-        JsonElement item,
-        string propertyName)
-    {
-        if (!item.TryGetProperty(propertyName, out var directories) ||
-            directories.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        foreach (var directory in directories.EnumerateArray())
-        {
-            if (directory.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var path = ToLocalPath(directory.GetString());
-            if (path is not null)
-            {
-                return path;
-            }
-        }
-
-        return null;
     }
 
     private static string? ToLocalPath(string? value)

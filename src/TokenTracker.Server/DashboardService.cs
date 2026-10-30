@@ -79,7 +79,19 @@ public sealed class DashboardService
             _counters.Snapshot(_endpoint, running: true),
             updatedAt,
             _settings.RetentionDays,
-            new AhpStatusPayload(ahp.State, ahp.Connected, ahp.Sessions));
+            new AhpStatusPayload(
+                ahp.State,
+                ahp.Connected,
+                ahp.Sessions,
+                ahp.Items.Select(item => new AhpSessionPayload(
+                    item.Resource,
+                    item.Provider,
+                    item.Title,
+                    item.Status,
+                    item.Activity,
+                    item.WorkspacePath,
+                    item.ModifiedAt,
+                    item.Chats)).ToList()));
     }
 
     public ModelPayload GetModel(string model, int range)
@@ -146,24 +158,25 @@ public sealed class DashboardService
             spanModels.TryAdd(ModelPricing.NormalizeModel(model), model);
         }
 
-        var defaultModels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in ModelPricing.GetDefaultEntries())
-        {
-            defaultModels[ModelPricing.NormalizeModel(entry.Model)] = entry.Model;
-        }
+        var callCounts = _store.GetModelCallCounts();
 
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         keys.UnionWith(overrides.Keys);
         keys.UnionWith(spanModels.Keys);
-        keys.UnionWith(defaultModels.Keys);
 
         var rows = new List<ModelPriceRowPayload>();
         foreach (var key in keys)
         {
-            var display = defaultModels.TryGetValue(key, out var canonical)
+            var display = spanModels.TryGetValue(key, out var canonical)
                 ? canonical
-                : key;
-            rows.Add(ToPriceRow(display, customized: overrides.ContainsKey(key)));
+                : overrides.TryGetValue(key, out var original)
+                    ? original
+                    : key;
+            var calls = callCounts.TryGetValue(display, out var count) ? count : 0;
+            rows.Add(ToPriceRow(
+                display,
+                customized: overrides.ContainsKey(key),
+                calls));
         }
 
         return rows
@@ -262,7 +275,9 @@ public sealed class DashboardService
         ApplyOverrides();
         RecomputeCostsForModel(model);
 
-        return ToPriceRow(model, customized: true);
+        var calls = _store.GetModelCallCounts()
+            .TryGetValue(model, out var count) ? count : 0;
+        return ToPriceRow(model, customized: true, calls);
     }
 
     public bool DeletePrice(string model)
@@ -288,10 +303,12 @@ public sealed class DashboardService
         }
     }
 
-    private static ModelPriceRowPayload ToPriceRow(string model, bool customized)
+    private static ModelPriceRowPayload ToPriceRow(
+        string model,
+        bool customized,
+        long calls)
     {
         var price = ModelPricing.GetPrice(model);
-        var hasDefault = ModelPricing.GetBuiltInPrice(model) is not null;
         var idle = price?.Idle ?? default;
         var peak = price?.Peak ?? default;
         var peakAware = price?.PeakAware ?? false;
@@ -300,7 +317,7 @@ public sealed class DashboardService
         return new ModelPriceRowPayload(
             model,
             customized,
-            hasDefault,
+            calls,
             peakAware,
             (double)idle.CachedInput,
             (double)idle.UncachedInput,

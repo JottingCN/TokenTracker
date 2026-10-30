@@ -85,6 +85,17 @@ var counters = new ReceiverCounters();
 var endpoint = $"http://127.0.0.1:{port}";
 var service = new DashboardService(store, metadata, counters, settings, endpoint);
 service.ApplyOverrides();
+if (store.GetSetting("builtin_prices_removed") != "1")
+{
+    store.RecomputeCostsInRange(0, long.MaxValue);
+    store.SetSetting("builtin_prices_removed", "1");
+}
+
+if (store.GetSetting("duplicate_spans_merged") != "1")
+{
+    store.DeduplicateSpans();
+    store.SetSetting("duplicate_spans_merged", "1");
+}
 var hub = new RealtimeHub();
 metadata.AhpStatusChanged += hub.NotifyChanged;
 var idleExitSeconds = 0;

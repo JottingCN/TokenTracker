@@ -99,6 +99,8 @@ public static class OtlpTraceParser
             return null;
         }
 
+        model = ModelPricing.NormalizeModel(model);
+
         var inputTokens = GetLong(attributes, "gen_ai.usage.input_tokens");
         if (inputTokens is null)
         {

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using TokenTracker.Core.Otlp;
 
@@ -31,12 +31,11 @@ public sealed class OtlpTraceParserTests
         Assert.Equal(8900, main.InputTokens);
         Assert.Equal(1152, main.CacheReadTokens);
         Assert.Equal(2, main.OutputTokens);
-        Assert.Equal("peak", main.PricingPeriod);
+        Assert.Equal("unknown", main.PricingPeriod);
         Assert.Equal(PeakUtc.ToUnixTimeMilliseconds(), main.StartTimeMs);
         Assert.NotNull(main.HitRate);
         Assert.Equal(0.129438202247191, main.HitRate!.Value, 6);
-        Assert.NotNull(main.CostCny);
-        Assert.Equal(0.01555808, main.CostCny!.Value, 8);
+        Assert.Null(main.CostCny);
         Assert.Equal("copilot-chat", main.ServiceName);
 
         var utility = Assert.Single(spans, span => !span.IsMain);
@@ -71,7 +70,7 @@ public sealed class OtlpTraceParserTests
                       "attributes": [
                         { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
                         { "key": "gen_ai.request.model", "value": { "stringValue": "auto" } },
-                        { "key": "gen_ai.response.model", "value": { "stringValue": "deepseek-flash" } },
+                        { "key": "gen_ai.response.model", "value": { "stringValue": "DeepSeek/deepseek-flash" } },
                         { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "1000" } },
                         { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "10" } },
                         { "key": "copilot_chat.copilot_usage_nano_aiu", "value": { "intValue": "1250000000" } },
@@ -94,7 +93,7 @@ public sealed class OtlpTraceParserTests
         Assert.Equal("agent-chat-1", span.SessionId);
         Assert.Equal(1_250_000_000, span.NanoAiu);
         Assert.True(span.IsMain);
-        Assert.NotNull(span.CostCny);
+        Assert.Null(span.CostCny);
         Assert.Equal("github-copilot", span.ServiceName);
     }
 
@@ -145,7 +144,7 @@ public sealed class OtlpTraceParserTests
         Assert.Equal(2000, span.CacheReadTokens);
         Assert.Equal(500, span.CacheCreationTokens);
         Assert.Equal(2000d / 3500d, span.HitRate!.Value, 6);
-        Assert.Equal(0.00388, span.CostCny!.Value, 8);
+        Assert.Null(span.CostCny);
     }
 
     [Fact]

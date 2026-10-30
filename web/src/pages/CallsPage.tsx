@@ -4,6 +4,7 @@ import { useRealtime } from '../useRealtime';
 import type { DashboardPayload } from '../types';
 import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
+import { tableHeight } from '../utils/tableHeight';
 
 interface CallsPageProps {
   range: number;
@@ -53,7 +54,7 @@ export function CallsPage({
           dataSource={data?.calls ?? []}
           loading={!data}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 1100, y: 560 }}
+          scroll={{ x: 1100, y: tableHeight(360) }}
         />
       </Card>
     </Space>

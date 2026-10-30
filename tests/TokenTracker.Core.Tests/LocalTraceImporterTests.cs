@@ -43,7 +43,7 @@ public sealed class LocalTraceImporterTests
             Assert.Equal(200, call.CacheReadTokens);
             Assert.Equal(1_500_000_000, call.NanoAiu);
             Assert.Equal("1.5 AIC", call.AiuText);
-            Assert.NotNull(call.CostCny);
+            Assert.Null(call.CostCny);
             Assert.Equal(startMs, call.StartTimeMs);
 
             var second = LocalTraceImporter.Import(store, new[] { sourcePath });

@@ -105,6 +105,94 @@ public sealed class SpanStoreTests
         }
     }
 
+    [Fact]
+    public void DeduplicatesCrossPipelineSpansAndKeepsRicherUsage()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            var start = 1793350721268L;
+            var agentHost = Span(
+                "trace-agent", "span-agent", "session-1", "deepseek-flash",
+                start, 27_473, 0, 30, null,
+                serviceName: "github-copilot",
+                reasoningTokens: 0);
+            var extension = Span(
+                "trace-extension", "span-extension", "session-1", "deepseek-flash",
+                start + 304, 27_473, 1_152, 30, null,
+                serviceName: "copilot-chat",
+                reasoningTokens: 28);
+
+            store.InsertMany(new[] { agentHost });
+            store.InsertMany(new[] { extension });
+
+            var call = Assert.Single(store.GetCalls(0, includeUtility: true));
+            Assert.Equal(1_152, call.CacheReadTokens);
+            Assert.Equal(28, call.ReasoningTokens);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void StartupDeduplicationRemovesExistingCrossPipelineDuplicates()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO spans (
+                        trace_id, span_id, name, start_time_ms, service_name,
+                        model, session_id, is_main, input_tokens, output_tokens,
+                        cache_read_tokens, reasoning_tokens, received_at_ms
+                    ) VALUES
+                        ('trace-a', 'span-a', 'chat', 1000, 'github-copilot',
+                         'DeepSeek/deepseek-flash', 'session-1', 1, 27473, 30, 0, 0, 1000),
+                        ('trace-b', 'span-b', 'chat', 1304, 'copilot-chat',
+                         'deepseek-flash', 'session-1', 1, 27473, 30, 1152, 28, 1304);
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Equal(1, store.DeduplicateSpans());
+
+            var call = Assert.Single(store.GetCalls(0, includeUtility: true));
+            Assert.Equal("deepseek-flash", call.Model);
+            Assert.Equal(1_152, call.CacheReadTokens);
+            Assert.Equal(28, call.ReasoningTokens);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
     private static OtlpSpanRecord Span(
         string traceId,
         string spanId,
@@ -114,7 +202,9 @@ public sealed class SpanStoreTests
         long inputTokens,
         long cacheReadTokens,
         long outputTokens,
-        double? cost) =>
+        double? cost,
+        string serviceName = "copilot-chat",
+        long reasoningTokens = 0) =>
         new()
         {
             TraceId = traceId,
@@ -122,13 +212,14 @@ public sealed class SpanStoreTests
             Name = "chat test",
             StartTimeMs = startMs,
             EndTimeMs = startMs + 100,
-            ServiceName = "copilot-chat",
+            ServiceName = serviceName,
             Model = model,
             SessionId = sessionId,
             IsMain = sessionId is not null,
             InputTokens = inputTokens,
             CacheReadTokens = cacheReadTokens,
             OutputTokens = outputTokens,
+            ReasoningTokens = reasoningTokens,
             HitRate = inputTokens > 0 ? (double)cacheReadTokens / inputTokens : null,
             CostCny = cost,
             PricingPeriod = "peak",

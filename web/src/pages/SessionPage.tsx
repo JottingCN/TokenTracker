@@ -6,6 +6,7 @@ import { useRealtime } from '../useRealtime';
 import type { SessionPayload } from '../types';
 import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
+import { tableHeight } from '../utils/tableHeight';
 
 interface SessionPageProps {
   sessionId: string;
@@ -67,7 +68,7 @@ export function SessionPage({ sessionId, range }: SessionPageProps) {
           dataSource={data?.calls ?? []}
           loading={!data}
           pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 900, y: 520 }}
+          scroll={{ x: 900, y: tableHeight(620) }}
         />
       </Card>
     </Space>

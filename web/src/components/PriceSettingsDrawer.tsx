@@ -19,6 +19,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { ModelPriceRow, SettingsPayload } from '../types';
 import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
+import { tableHeight } from '../utils/tableHeight';
 
 interface PriceSettingsDrawerProps {
   open: boolean;
@@ -252,15 +253,10 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         throw new Error(`HTTP ${response.status}`);
       }
       message.success(
-        row.hasDefault
-          ? tr(
-              `已恢复 ${row.model} 的内置价格`,
-              `Restored built-in pricing for ${row.model}`,
-            )
-          : tr(
-              `已删除 ${row.model} 的自定义价格`,
-              `Deleted custom pricing for ${row.model}`,
-            ),
+        tr(
+          `已删除 ${row.model} 的自定义价格`,
+          `Deleted custom pricing for ${row.model}`,
+        ),
       );
       await load();
     } catch (error) {
@@ -278,8 +274,18 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     if (!model) {
       return;
     }
-    if (rows.some((row) => row.model.toLowerCase() === model.toLowerCase())) {
-      message.info(tr('该模型已在列表中', 'Model is already in the list'));
+    const existing = rows.find(
+      (row) => row.model.toLowerCase() === model.toLowerCase(),
+    );
+    if (existing) {
+      message.info(
+        existing.calls > 0
+          ? tr(
+              `该模型已有 ${existing.calls} 次调用记录，可直接在列表中设置价格`,
+              `This model already has ${existing.calls} recorded calls; set its price in the list.`,
+            )
+          : tr('该模型已在列表中', 'Model is already in the list'),
+      );
       return;
     }
 
@@ -287,7 +293,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       {
         model,
         customized: false,
-        hasDefault: false,
+        calls: 0,
         peakAware: false,
         cachedInput: 0,
         uncachedInput: 0,
@@ -447,23 +453,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       <Button size="small" type="primary" onClick={() => void save(row)}>
         {tr('保存', 'Save')}
       </Button>
-      {row.hasDefault ? (
-        <Popconfirm
-          title={tr('恢复内置价格？', 'Restore built-in pricing?')}
-          description={tr(
-            '将删除该模型的自定义价格，并重算历史费用。',
-            'Custom pricing will be removed and historical costs recalculated.',
-          )}
-          okText={tr('恢复', 'Restore')}
-          cancelText={tr('取消', 'Cancel')}
-          disabled={!row.customized}
-          onConfirm={() => remove(row)}
-        >
-          <Button size="small" disabled={!row.customized}>
-            {tr('恢复默认', 'Restore')}
-          </Button>
-        </Popconfirm>
-      ) : (
+      {row.customized && (
         <Popconfirm
           title={tr(
             '删除该模型的自定义价格？',
@@ -475,10 +465,9 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           )}
           okText={tr('删除', 'Delete')}
           cancelText={tr('取消', 'Cancel')}
-          disabled={!row.customized}
           onConfirm={() => remove(row)}
         >
-          <Button size="small" danger disabled={!row.customized}>
+          <Button size="small" danger>
             {tr('删除', 'Delete')}
           </Button>
         </Popconfirm>
@@ -502,10 +491,6 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         const statusTag = row.customized ? (
           <Tag color="blue" bordered={false}>
             {tr('自定义', 'Custom')}
-          </Tag>
-        ) : row.hasDefault ? (
-          <Tag color="green" bordered={false}>
-            {tr('内置', 'Built-in')}
           </Tag>
         ) : (
           <Tag bordered={false}>{tr('未定价', 'Unpriced')}</Tag>
@@ -794,8 +779,8 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
 
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {tr(
-            '内置价格可直接修改；新增模型可修改或删除。保存后会立即重算该模型的历史费用并同步刷新看板。',
-            'Built-in prices can be edited; custom models can be edited or deleted. Saving recalculates historical costs for that model.',
+            '模型来自已有调用记录或手动新增；未定价模型可直接填写价格。保存后会立即重算该模型的历史费用并同步刷新看板。',
+            'Models come from existing call records or manual additions. Fill in a price for unpriced models; saving recalculates that model’s historical costs.',
           )}
         </Typography.Text>
 
@@ -807,7 +792,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           dataSource={displayRows}
           loading={loading}
           pagination={false}
-          scroll={{ x: 1230, y: 520 }}
+          scroll={{ x: 1230, y: tableHeight(340) }}
         />
 
         <Alert

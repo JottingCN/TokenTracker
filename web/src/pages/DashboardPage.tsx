@@ -4,6 +4,7 @@ import { modelColumns, sessionColumns } from '../components/columns';
 import type { DashboardPayload } from '../types';
 import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
+import { tableHeight } from '../utils/tableHeight';
 
 interface DashboardPageProps {
   data: DashboardPayload | null;
@@ -38,7 +39,7 @@ export function DashboardPage({
           dataSource={data?.models ?? []}
           loading={!data}
           pagination={false}
-          scroll={{ x: 660, y: 360 }}
+          scroll={{ x: 660, y: tableHeight(760) }}
         />
       </Card>
 
@@ -50,14 +51,14 @@ export function DashboardPage({
           dataSource={data?.sessions ?? []}
           loading={!data}
           pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          scroll={{ x: 1090, y: 420 }}
+          scroll={{ x: 1090, y: tableHeight(700) }}
         />
       </Card>
 
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {tr(
-          `费用为基于 DeepSeek、Kimi、小米 MiMo、MiniMax、智谱 GLM 公开价目表的估算（${money.unitLabel}），与 GitHub Copilot 订阅账单无关；命中率下降不一定代表缓存失效。数据来自 Copilot OTel，经本机 ${otlpHost} 接收后存入本地 SQLite，${retentionText}。`,
-          `Costs are estimated from public DeepSeek, Kimi, MiMo, MiniMax and GLM pricing (${money.unitLabel}) and are unrelated to GitHub Copilot billing. A lower hit rate does not necessarily mean the cache was invalidated. Data comes from Copilot OTel, is received on ${otlpHost} and stored in local SQLite, ${retentionText}.`,
+          `费用为按设置中配置的单价的估算（${money.unitLabel}），与 GitHub Copilot 订阅账单无关；命中率下降不一定代表缓存失效。数据来自 Copilot OTel，经本机 ${otlpHost} 接收后存入本地 SQLite，${retentionText}。`,
+          `Costs are estimated from the prices configured in Settings (${money.unitLabel}) and are unrelated to GitHub Copilot billing. A lower hit rate does not necessarily mean the cache was invalidated. Data comes from Copilot OTel, is received on ${otlpHost} and stored in local SQLite, ${retentionText}.`,
         )}
       </Typography.Text>
     </Space>

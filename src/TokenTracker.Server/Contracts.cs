@@ -10,10 +10,21 @@ public sealed record ReceiverInfo(
     long Spans,
     string? LastError);
 
+public sealed record AhpSessionPayload(
+    string Resource,
+    string Provider,
+    string Title,
+    string Status,
+    string? Activity,
+    string? WorkspacePath,
+    string ModifiedAt,
+    int Chats);
+
 public sealed record AhpStatusPayload(
     string State,
     bool Connected,
-    int Sessions);
+    int Sessions,
+    List<AhpSessionPayload> Items);
 
 public sealed record DashboardPayload(
     SummaryDto Summary,
@@ -63,7 +74,7 @@ public sealed record SubscribeMessage(
 public sealed record ModelPriceRowPayload(
     string Model,
     bool Customized,
-    bool HasDefault,
+    long Calls,
     bool PeakAware,
     double CachedInput,
     double UncachedInput,
@@ -130,6 +141,7 @@ public sealed record SessionMessage(string Type, SessionPayload Data);
 [JsonSerializable(typeof(LocalImportRequest))]
 [JsonSerializable(typeof(LocalImportPayload))]
 [JsonSerializable(typeof(AhpStatusPayload))]
+[JsonSerializable(typeof(AhpSessionPayload))]
 [JsonSerializable(typeof(SettingsPayload))]
 [JsonSerializable(typeof(SettingsUpdateRequest))]
 [JsonSerializable(typeof(ServerInfoPayload))]

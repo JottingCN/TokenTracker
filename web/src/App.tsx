@@ -8,14 +8,19 @@ import {
 import {
   Badge,
   DatePicker,
+  Descriptions,
   Layout,
   Menu,
+  Modal,
   Select,
   Space,
+  Table,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { PriceSettingsDrawer } from './components/PriceSettingsDrawer';
 import { CallsPage } from './pages/CallsPage';
@@ -23,7 +28,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { ModelPage } from './pages/ModelPage';
 import { SessionPage } from './pages/SessionPage';
 import { useRealtime } from './useRealtime';
-import type { DashboardPayload } from './types';
+import type { AhpSessionInfo, DashboardPayload } from './types';
 import { translate, useUi } from './ui';
 import { providerOf, shortModelName } from './utils/model';
 
@@ -111,6 +116,7 @@ export default function App() {
   const [customRange, setCustomRange] = useState<[number, number] | null>(null);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [ahpOpen, setAhpOpen] = useState(false);
 
   useEffect(() => {
     const handler = () => setRoute(parseRoute());
@@ -150,6 +156,85 @@ export default function App() {
           ? tr('AHP 不可用', 'AHP unavailable')
           : tr('AHP 未连接', 'AHP not connected')
     : null;
+  const ahpStateText = dashboard?.ahp
+    ? dashboard.ahp.connected
+      ? tr('已连接', 'Connected')
+      : dashboard.ahp.state === 'connecting'
+        ? tr('连接中', 'Connecting')
+        : dashboard.ahp.state === 'disabled'
+          ? tr('不可用', 'Unavailable')
+          : tr('未连接', 'Not connected')
+    : '-';
+  const ahpSessionColumns: ColumnsType<AhpSessionInfo> = [
+    {
+      title: tr('标题', 'Title'),
+      dataIndex: 'title',
+      key: 'title',
+      width: 220,
+      ellipsis: true,
+    },
+    {
+      title: tr('来源', 'Provider'),
+      dataIndex: 'provider',
+      key: 'provider',
+      width: 100,
+      ellipsis: true,
+    },
+    {
+      title: tr('状态', 'Status'),
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      render: (status: string) => {
+        if (status === 'in_progress') {
+          return <Tag color="processing">{tr('进行中', 'In progress')}</Tag>;
+        }
+        if (status === 'input_needed') {
+          return <Tag color="warning">{tr('等待输入', 'Needs input')}</Tag>;
+        }
+        if (status === 'error') {
+          return <Tag color="error">{tr('错误', 'Error')}</Tag>;
+        }
+        if (status === 'idle') {
+          return <Tag>{tr('空闲', 'Idle')}</Tag>;
+        }
+        return <Tag>{tr('未知', 'Unknown')}</Tag>;
+      },
+    },
+    {
+      title: tr('工作区', 'Workspace'),
+      dataIndex: 'workspacePath',
+      key: 'workspace',
+      width: 240,
+      ellipsis: true,
+      render: (workspacePath: string | null) => workspacePath || '-',
+    },
+    {
+      title: tr('活动', 'Activity'),
+      dataIndex: 'activity',
+      key: 'activity',
+      width: 140,
+      ellipsis: true,
+      render: (activity: string | null) => activity || '-',
+    },
+    {
+      title: tr('最近修改', 'Modified'),
+      dataIndex: 'modifiedAt',
+      key: 'modified',
+      width: 120,
+      render: (modifiedAt: string) => {
+        const parsed = dayjs(modifiedAt);
+        return parsed.isValid() ? parsed.format('MM-DD HH:mm') : '-';
+      },
+    },
+    {
+      title: tr('会话数', 'Chats'),
+      dataIndex: 'chats',
+      key: 'chats',
+      width: 70,
+      align: 'right',
+    },
+  ];
 
   const menuItems = useMemo(
     () => buildMenu(dashboard),
@@ -416,7 +501,19 @@ export default function App() {
                     'AHP syncs live Agent Host session titles; falls back to the local database when unavailable.',
                   )}
                 >
-                  <Badge status={ahpStatus} text={ahpText} />
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setAhpOpen(true)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        setAhpOpen(true);
+                      }
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <Badge status={ahpStatus} text={ahpText} />
+                  </span>
                 </Tooltip>
               )}
             </Space>
@@ -428,6 +525,66 @@ export default function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+
+      <Modal
+        title={tr('AHP 连接详情', 'AHP connection details')}
+        open={ahpOpen}
+        onCancel={() => setAhpOpen(false)}
+        footer={null}
+        width={980}
+      >
+        <Descriptions
+          column={1}
+          size="small"
+          bordered
+          items={[
+            {
+              key: 'state',
+              label: tr('状态', 'Status'),
+              children: ahpStateText,
+            },
+            {
+              key: 'sessions',
+              label: tr('会话数', 'Sessions'),
+              children: dashboard?.ahp?.sessions ?? '-',
+            },
+            {
+              key: 'transport',
+              label: tr('连接方式', 'Transport'),
+              children: tr(
+                '本地命名管道 / Unix Socket / TCP',
+                'Local named pipe / Unix socket / TCP',
+              ),
+            },
+            {
+              key: 'purpose',
+              label: tr('用途', 'Purpose'),
+              children: tr(
+                '同步 Agent Host 的实时会话标题与工作区；不读取对话内容。',
+                'Syncs live Agent Host session titles and workspaces; conversation content is not read.',
+              ),
+            },
+            {
+              key: 'fallback',
+              label: tr('降级', 'Fallback'),
+              children: tr(
+                'AHP 不可用时回退到 agent-host.db 与 ChatSessionStore 索引。',
+                'Falls back to agent-host.db and the ChatSessionStore index when unavailable.',
+              ),
+            },
+          ]}
+        />
+        <div style={{ marginTop: 16 }}>
+          <Table<AhpSessionInfo>
+            size="small"
+            rowKey="resource"
+            columns={ahpSessionColumns}
+            dataSource={dashboard?.ahp?.items ?? []}
+            pagination={false}
+            scroll={{ x: 990, y: 300 }}
+          />
+        </div>
+      </Modal>
     </>
   );
 }

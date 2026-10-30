@@ -239,9 +239,9 @@ public sealed class AhpTitleClientTests
             var method = methodElement.GetString();
             var result = method switch
             {
-                "initialize" => "{\"protocolVersion\":\"1.1.0\"}",
+                "initialize" => "{\"protocolVersion\":\"1.0.0\",\"serverSeq\":1,\"snapshots\":[]}",
                 "listSessions" => """
-                    {"items":[{"resource":"ahp-session:/session-1","title":"AHP live title","workingDirectories":["file:///d:/source/demo"]}]}
+                    {"items":[{"resource":"ahp-session:/session-1","provider":"copilot","title":"AHP live title","createdAt":"2026-10-30T00:00:00Z","modifiedAt":"2026-10-30T00:00:00Z","workingDirectories":["file:///d:/source/demo"]}]}
                     """,
                 _ => "{}",
             };
@@ -255,7 +255,7 @@ public sealed class AhpTitleClientTests
                 await SendTextAsync(
                     socket,
                     """
-                    {"jsonrpc":"2.0","method":"action","params":{"channel":"ahp-session:/session-1","action":{"type":"session/titleChanged","title":"AHP renamed title"},"serverSeq":2}}
+                    {"jsonrpc":"2.0","method":"root/sessionSummaryChanged","params":{"channel":"ahp-root://","session":"ahp-session:/session-1","changes":{"title":"AHP renamed title"}}}
                     """,
                     cancellationToken);
             }

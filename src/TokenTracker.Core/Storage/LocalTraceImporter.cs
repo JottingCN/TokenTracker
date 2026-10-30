@@ -162,6 +162,8 @@ public static class LocalTraceImporter
             return null;
         }
 
+        model = ModelPricing.NormalizeModel(model);
+
         var inputTokens = reader.GetInt64(9);
         var outputTokens = reader.IsDBNull(10) ? 0 : reader.GetInt64(10);
         var cacheReadTokens = reader.IsDBNull(11) ? 0 : reader.GetInt64(11);

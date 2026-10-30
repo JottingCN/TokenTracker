@@ -194,6 +194,20 @@ public sealed class SpanStore
             var inserted = 0;
             foreach (var span in spans)
             {
+                if (span.SessionId is not null && span.Model is not null)
+                {
+                    var duplicate = FindDuplicate(connection, transaction, span);
+                    if (duplicate is not null)
+                    {
+                        if (!IsRicher(span, duplicate))
+                        {
+                            continue;
+                        }
+
+                        DeleteSpan(connection, transaction, duplicate.TraceId, duplicate.SpanId);
+                    }
+                }
+
                 command.Parameters["@trace_id"].Value = span.TraceId;
                 command.Parameters["@span_id"].Value = span.SpanId;
                 command.Parameters["@name"].Value = (object?)span.Name ?? DBNull.Value;
@@ -263,6 +277,94 @@ public sealed class SpanStore
             """;
         command.Parameters.AddWithValue("@key", key);
         command.Parameters.AddWithValue("@value", value);
+        command.ExecuteNonQuery();
+    }
+
+    private static SpanDuplicate? FindDuplicate(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        OtlpSpanRecord span)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT trace_id, span_id, cache_read_tokens, reasoning_tokens,
+                   nano_aiu, service_name
+            FROM spans
+            WHERE session_id = @session
+              AND model = @model
+              AND input_tokens = @input
+              AND output_tokens = @output
+              AND start_time_ms BETWEEN @from AND @to
+              AND COALESCE(service_name, '') <> COALESCE(@service, '')
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@session", span.SessionId!);
+        command.Parameters.AddWithValue("@model", span.Model!);
+        command.Parameters.AddWithValue("@input", span.InputTokens);
+        command.Parameters.AddWithValue("@output", span.OutputTokens);
+        command.Parameters.AddWithValue("@from", span.StartTimeMs - 2_000);
+        command.Parameters.AddWithValue("@to", span.StartTimeMs + 2_000);
+        command.Parameters.AddWithValue("@service", (object?)span.ServiceName ?? DBNull.Value);
+
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new SpanDuplicate(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetInt64(2),
+            reader.GetInt64(3),
+            reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5));
+    }
+
+    private static bool IsRicher(OtlpSpanRecord span, SpanDuplicate existing)
+    {
+        if (span.CacheReadTokens != existing.CacheReadTokens)
+        {
+            return span.CacheReadTokens > existing.CacheReadTokens;
+        }
+
+        if (span.ReasoningTokens != existing.ReasoningTokens)
+        {
+            return span.ReasoningTokens > existing.ReasoningTokens;
+        }
+
+        var nano = span.NanoAiu ?? 0;
+        var existingNano = existing.NanoAiu ?? 0;
+        if (nano != existingNano)
+        {
+            return nano > existingNano;
+        }
+
+        return string.Equals(
+            span.ServiceName,
+            "copilot-chat",
+            StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(
+                existing.ServiceName,
+                "copilot-chat",
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void DeleteSpan(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string traceId,
+        string spanId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM spans
+            WHERE trace_id = @trace AND span_id = @span;
+            """;
+        command.Parameters.AddWithValue("@trace", traceId);
+        command.Parameters.AddWithValue("@span", spanId);
         command.ExecuteNonQuery();
     }
 
@@ -807,6 +909,227 @@ public sealed class SpanStore
         return rows;
     }
 
+    public int DeduplicateSpans()
+    {
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+
+            var spans = new List<DedupeSpan>();
+            using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = """
+                    SELECT trace_id, span_id, session_id, model, start_time_ms,
+                           input_tokens, output_tokens, cache_read_tokens,
+                           reasoning_tokens, nano_aiu, service_name
+                    FROM spans
+                    WHERE session_id IS NOT NULL AND model IS NOT NULL
+                    ORDER BY session_id, start_time_ms;
+                    """;
+                using var reader = select.ExecuteReader();
+                while (reader.Read())
+                {
+                    spans.Add(new DedupeSpan(
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.GetString(2),
+                        reader.GetString(3),
+                        reader.GetInt64(4),
+                        reader.GetInt64(5),
+                        reader.GetInt64(6),
+                        reader.GetInt64(7),
+                        reader.GetInt64(8),
+                        reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                        reader.IsDBNull(10) ? null : reader.GetString(10)));
+                }
+            }
+
+            using var delete = connection.CreateCommand();
+            delete.Transaction = transaction;
+            delete.CommandText = """
+                DELETE FROM spans
+                WHERE trace_id = @trace AND span_id = @span;
+                """;
+            delete.Parameters.AddWithValue("@trace", "");
+            delete.Parameters.AddWithValue("@span", "");
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE spans SET model = @model
+                WHERE trace_id = @trace AND span_id = @span;
+                """;
+            update.Parameters.AddWithValue("@model", "");
+            update.Parameters.AddWithValue("@trace", "");
+            update.Parameters.AddWithValue("@span", "");
+
+            var removed = 0;
+            var groups = new Dictionary<string, List<DedupeSpan>>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var span in spans)
+            {
+                var key =
+                    $"{span.SessionId}\u0001{ModelPricing.NormalizeModel(span.Model)}" +
+                    $"\u0001{span.InputTokens}\u0001{span.OutputTokens}";
+                if (!groups.TryGetValue(key, out var group))
+                {
+                    group = new List<DedupeSpan>();
+                    groups[key] = group;
+                }
+
+                group.Add(span);
+            }
+
+            foreach (var group in groups.Values)
+            {
+                var cluster = new List<DedupeSpan>();
+                foreach (var span in group.OrderBy(item => item.StartTimeMs))
+                {
+                    if (cluster.Count > 0 &&
+                        span.StartTimeMs - cluster[^1].StartTimeMs > 2_000)
+                    {
+                        removed += DeduplicateCluster(
+                            cluster,
+                            delete,
+                            update);
+                        cluster.Clear();
+                    }
+
+                    cluster.Add(span);
+                }
+
+                removed += DeduplicateCluster(cluster, delete, update);
+            }
+
+            transaction.Commit();
+            return removed;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private static int DeduplicateCluster(
+        List<DedupeSpan> cluster,
+        SqliteCommand delete,
+        SqliteCommand update)
+    {
+        if (cluster.Count == 0)
+        {
+            return 0;
+        }
+
+        var best = cluster[0];
+        foreach (var candidate in cluster.Skip(1))
+        {
+            if (IsRicher(candidate, best))
+            {
+                best = candidate;
+            }
+        }
+
+        var canonicalModel = ModelPricing.NormalizeModel(best.Model);
+        if (!string.Equals(best.Model, canonicalModel, StringComparison.Ordinal))
+        {
+            update.Parameters["@model"].Value = canonicalModel;
+            update.Parameters["@trace"].Value = best.TraceId;
+            update.Parameters["@span"].Value = best.SpanId;
+            update.ExecuteNonQuery();
+        }
+
+        if (cluster.Count < 2 ||
+            cluster.Select(item => item.ServiceName).Distinct(
+                StringComparer.OrdinalIgnoreCase).Count() < 2)
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        foreach (var span in cluster)
+        {
+            if (span.TraceId == best.TraceId && span.SpanId == best.SpanId)
+            {
+                continue;
+            }
+
+            delete.Parameters["@trace"].Value = span.TraceId;
+            delete.Parameters["@span"].Value = span.SpanId;
+            removed += delete.ExecuteNonQuery();
+        }
+
+        return removed;
+    }
+
+    private static bool IsRicher(DedupeSpan candidate, DedupeSpan existing)
+    {
+        if (candidate.CacheReadTokens != existing.CacheReadTokens)
+        {
+            return candidate.CacheReadTokens > existing.CacheReadTokens;
+        }
+
+        if (candidate.ReasoningTokens != existing.ReasoningTokens)
+        {
+            return candidate.ReasoningTokens > existing.ReasoningTokens;
+        }
+
+        var candidateNano = candidate.NanoAiu ?? 0;
+        var existingNano = existing.NanoAiu ?? 0;
+        if (candidateNano != existingNano)
+        {
+            return candidateNano > existingNano;
+        }
+
+        return string.Equals(
+            candidate.ServiceName,
+            "copilot-chat",
+            StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(
+                existing.ServiceName,
+                "copilot-chat",
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed record DedupeSpan(
+        string TraceId,
+        string SpanId,
+        string SessionId,
+        string Model,
+        long StartTimeMs,
+        long InputTokens,
+        long OutputTokens,
+        long CacheReadTokens,
+        long ReasoningTokens,
+        long? NanoAiu,
+        string? ServiceName);
+
+    public IReadOnlyDictionary<string, long> GetModelCallCounts()
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT model, COUNT(*)
+            FROM spans
+            WHERE model IS NOT NULL
+            GROUP BY model;
+            """;
+
+        var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var model = reader.GetString(0);
+            var count = reader.GetInt64(1);
+            counts[model] = counts.TryGetValue(model, out var existing)
+                ? existing + count
+                : count;
+        }
+
+        return counts;
+    }
+
     public IReadOnlyList<StoredModelPrice> GetModelPriceOverrides()
     {
         using var connection = OpenConnection();
@@ -1175,6 +1498,14 @@ public sealed class SpanStore
         string name,
         SqliteType type) =>
         command.Parameters.Add(name, type);
+
+    private sealed record SpanDuplicate(
+        string TraceId,
+        string SpanId,
+        long CacheReadTokens,
+        long ReasoningTokens,
+        long? NanoAiu,
+        string? ServiceName);
 
     private static void EnsureColumn(
         SqliteConnection connection,
