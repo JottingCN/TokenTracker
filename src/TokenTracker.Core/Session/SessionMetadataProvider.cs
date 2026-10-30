@@ -10,12 +10,16 @@ public sealed class SessionMetadataProvider
 {
     private readonly string _rootDirectory;
     private readonly AgentHostTitleReader _agentHost;
+    private readonly CopilotChatTitleReader _copilotChat;
+    private readonly AhpTitleClient _ahp;
     private readonly Dictionary<string, CacheEntry> _cache =
         new(StringComparer.OrdinalIgnoreCase);
 
     public SessionMetadataProvider(
         string? rootDirectory = null,
-        string? agentHostDatabasePath = null)
+        string? agentHostDatabasePath = null,
+        IEnumerable<string>? copilotUserDataDirectories = null,
+        IEnumerable<string>? ahpUserDataDirectories = null)
     {
         _rootDirectory = rootDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -24,7 +28,20 @@ public sealed class SessionMetadataProvider
         _agentHost = new AgentHostTitleReader(
             agentHostDatabasePath,
             resolveDefault: agentHostDatabasePath is null);
+        _copilotChat = new CopilotChatTitleReader(
+            copilotUserDataDirectories,
+            resolveDefault: copilotUserDataDirectories is null &&
+                agentHostDatabasePath is null);
+        _ahp = new AhpTitleClient(
+            ahpUserDataDirectories,
+            resolveDefault: ahpUserDataDirectories is null &&
+                agentHostDatabasePath is null);
+        _ahp.StatusChanged += () => AhpStatusChanged?.Invoke();
     }
+
+    public event Action? AhpStatusChanged;
+
+    public AhpConnectionStatus GetAhpStatus() => _ahp.GetStatus();
 
     public SessionMetadata? Get(string? sessionId)
     {
@@ -32,10 +49,12 @@ public sealed class SessionMetadataProvider
         {
             return null;
         }
-
         var workspace = GetWorkspaceMetadata(sessionId!);
         var agent = _agentHost.Get(sessionId!);
-        var workspacePath = agent?.WorkspacePath;
+        var ahp = _ahp.Get(sessionId!);
+        var copilotChat = _copilotChat.Get(sessionId!);
+        var workspacePath = agent?.WorkspacePath ?? ahp?.WorkspacePath ??
+            copilotChat?.WorkspacePath;
         if (string.IsNullOrWhiteSpace(workspacePath))
         {
             workspacePath = workspace?.WorkspacePath;
@@ -53,6 +72,24 @@ public sealed class SessionMetadataProvider
         if (workspace is { UserNamed: true, Title: not null })
         {
             return workspace with { WorkspacePath = workspacePath };
+        }
+
+        if (ahp?.Title is not null)
+        {
+            return new SessionMetadata(
+                sessionId!,
+                ahp.Title,
+                false,
+                workspacePath);
+        }
+
+        if (copilotChat?.Title is not null)
+        {
+            return new SessionMetadata(
+                sessionId!,
+                copilotChat.Title,
+                false,
+                workspacePath);
         }
 
         if (agent?.Title is not null)

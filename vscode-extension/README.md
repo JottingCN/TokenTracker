@@ -26,7 +26,7 @@
 - 首次激活从最新的服务端 Release 下载匹配平台的服务端（约 8 MB）；自动读取 VS Code `http.proxy` 或 `HTTPS_PROXY` / `HTTP_PROXY`
 - 已安装 GitHub Copilot 并在 VS Code 中开启 OpenTelemetry 导出
 
-在 VS Code `settings.json` 中加入：
+在命令面板运行 **`Token Tracker: 启用 OTel 上报`**，会同时写入扩展宿主与 Agent Host 两条管线；也可以手动在 `settings.json` 中加入：
 
 ```json
 {
@@ -34,9 +34,20 @@
   "github.copilot.chat.otel.exporterType": "otlp-http",
   "github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:4318",
   "github.copilot.chat.otel.protocol": "http/json",
-  "github.copilot.chat.otel.captureContent": false
+  "github.copilot.chat.otel.captureContent": false,
+
+  "chat.agentHost.otel.enabled": true,
+  "chat.agentHost.otel.exporterType": "otlp-http",
+  "chat.agentHost.otel.otlpEndpoint": "http://127.0.0.1:4318",
+  "chat.agentHost.otel.otlpProtocol": "http/json",
+  "chat.agentHost.otel.captureContent": false
 }
 ```
+
+- 扩展宿主管线覆盖本地 Copilot Chat；Agent Host 管线覆盖 Agent Host 中的 Copilot / Claude / Codex。
+- Agent Host 设置需要**完整退出并重新打开 VS Code** 才会生效；仅重载窗口可能复用旧 host。
+- `captureContent` 保持 `false`，统计 token 不需要对话内容。
+- 两个本地 span 库仅保留约 7 天 / 100 个会话；需要补录历史时运行 `Token Tracker: 导入本地 Copilot OTel 数据`。
 
 ## 安装
 
@@ -52,6 +63,8 @@ code --install-extension tokentracker-*.vsix --force
 | --- | --- |
 | `Token Tracker: 在浏览器中打开看板` | 用默认浏览器打开 `http://127.0.0.1:<port>` |
 | `Token Tracker: 服务信息` | 显示服务版本、地址、是否由本扩展启动 |
+| `Token Tracker: 启用 OTel 上报` | 同时配置扩展宿主与 Agent Host 的 OTel，指向本机 Token Tracker |
+| `Token Tracker: 导入本地 Copilot OTel 数据` | 从本地扩展 / Agent Host span 数据库导入历史调用，按 trace/span 去重 |
 | `Token Tracker: 刷新状态栏` | 重新订阅并刷新数据 |
 | `Token Tracker: 启动服务` | 启动共享服务 |
 | `Token Tracker: 停止服务` | 停止由扩展启动的服务（外部实例不会停止） |
@@ -69,10 +82,14 @@ code --install-extension tokentracker-*.vsix --force
 
 1. `agent-host.db` 中 `titleSource=user`（VS Code 内手动改名）
 2. `workspace.yaml` 中 `user_named: true`
-3. `agent-host.db` 的自动摘要（与 VS Code 会话列表一致）
-4. `workspace.yaml` 的自动名称
+3. Agent Host AHP `listSessions` / `session/titleChanged` 的实时标题（session id 可关联时）
+4. 扩展宿主 `chat.ChatSessionStore.index`（`state.vscdb`，只读）中的有效标题
+5. `agent-host.db` 的自动摘要（与 VS Code 会话列表一致）
+6. `workspace.yaml` 的自动名称
 
-工作区路径优先取 `agent-host.db` 记录的工作目录，缺失时回退到 `workspace.yaml` 的 `cwd`。
+工作区路径优先取 `agent-host.db` 记录的工作目录，其次 AHP `workingDirectories`、`ChatSessionStore` 索引的 `workingDirectory`，缺失时回退到 `workspace.yaml` 的 `cwd`。
+
+AHP 仅适用于桌面本地 Agent Host；远程窗口或 Web 扩展宿主不会发布本地端点，此时自动回退到数据库/索引标题。
 
 刷新机制：
 

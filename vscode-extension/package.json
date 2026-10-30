@@ -16,6 +16,14 @@
         "title": "%command.showServerInfo%"
       },
       {
+        "command": "tokentracker.configureOtel",
+        "title": "%command.configureOtel%"
+      },
+      {
+        "command": "tokentracker.importLocalTraces",
+        "title": "%command.importLocalTraces%"
+      },
+      {
         "command": "tokentracker.refreshStatus",
         "title": "%command.refreshStatus%"
       },
@@ -127,5 +135,5 @@
     "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
     "sync-server": "node scripts/sync-server.mjs"
   },
-  "version": "0.1.3"
+  "version": "0.1.4"
 }

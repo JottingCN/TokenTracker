@@ -269,11 +269,29 @@ export function callColumns(
       align: 'right',
     },
     {
-      title: translate('估算费用', 'Estimated cost'),
+      title: (
+        <Tooltip
+          title={translate(
+            '上方为按价格表估算的费用；下方为 Copilot 返回的实际 AIC（仅扩展管线提供）',
+            'Top is the estimated cost from the price table; bottom is the actual AIC reported by Copilot (extension pipeline only).',
+          )}
+        >
+          {translate('估算费用', 'Estimated cost')}
+        </Tooltip>
+      ),
       key: 'cost',
-      width: 120,
+      width: 130,
       align: 'right',
-      render: (_, row) => formatCost(row.costCny),
+      render: (_, row) => (
+        <div style={{ lineHeight: 1.25 }}>
+          <div>{formatCost(row.costCny)}</div>
+          {row.aiuText && (
+            <div className="tt-secondary" style={{ fontSize: 11 }}>
+              {row.aiuText}
+            </div>
+          )}
+        </div>
+      ),
     },
     {
       title: translate('时段', 'Period'),

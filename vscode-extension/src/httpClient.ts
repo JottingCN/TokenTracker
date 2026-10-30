@@ -40,23 +40,41 @@ export async function httpGetJson<T>(
   }
 }
 
-export function httpPost(url: string, timeoutMs: number): Promise<HttpResponse> {
+export function httpPost(
+  url: string,
+  timeoutMs: number,
+  payload?: unknown,
+): Promise<HttpResponse> {
+  const body = payload === undefined ? undefined : JSON.stringify(payload);
   return new Promise((resolve, reject) => {
-    const request = http.request(url, { method: 'POST' }, (response) => {
-      let body = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk: string) => {
-        body += chunk;
-      });
-      response.on('end', () => {
-        resolve({ status: response.statusCode ?? 0, body });
-      });
-    });
+    const request = http.request(
+      url,
+      {
+        method: 'POST',
+        headers:
+          body === undefined
+            ? undefined
+            : {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+              },
+      },
+      (response) => {
+        let responseBody = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          responseBody += chunk;
+        });
+        response.on('end', () => {
+          resolve({ status: response.statusCode ?? 0, body: responseBody });
+        });
+      },
+    );
 
     request.setTimeout(timeoutMs, () => {
       request.destroy(new Error('request timeout'));
     });
     request.on('error', reject);
-    request.end();
+    request.end(body);
   });
 }

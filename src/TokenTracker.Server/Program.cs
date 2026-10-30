@@ -34,7 +34,7 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.7",
+    "1.0.8",
     1,
     port,
     startedAt,
@@ -86,6 +86,7 @@ var endpoint = $"http://127.0.0.1:{port}";
 var service = new DashboardService(store, metadata, counters, settings, endpoint);
 service.ApplyOverrides();
 var hub = new RealtimeHub();
+metadata.AhpStatusChanged += hub.NotifyChanged;
 var idleExitSeconds = 0;
 if (int.TryParse(
         Environment.GetEnvironmentVariable("TOKENTRACKER_IDLE_EXIT_SECONDS"),
@@ -268,6 +269,24 @@ app.MapPost("/api/settings", (SettingsUpdateRequest request) =>
     return Results.Json(
         new SettingsPayload(days),
         AppJsonContext.Default.SettingsPayload);
+});
+
+app.MapPost("/api/import-local", (LocalImportRequest request) =>
+{
+    var result = LocalTraceImporter.Import(store, request.Paths ?? []);
+    if (result.Inserted > 0)
+    {
+        hub.NotifyChanged();
+    }
+
+    return Results.Json(
+        new LocalImportPayload(
+            result.Scanned,
+            result.Matched,
+            result.Inserted,
+            result.Skipped,
+            result.Errors.ToArray()),
+        AppJsonContext.Default.LocalImportPayload);
 });
 
 app.MapPost("/v1/traces", async (HttpContext context) =>

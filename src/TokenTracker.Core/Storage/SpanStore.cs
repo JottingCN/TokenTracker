@@ -61,6 +61,7 @@ public sealed class SpanStore
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                nano_aiu INTEGER,
                 cache_cost_cny REAL,
                 uncached_cost_cny REAL,
                 output_cost_cny REAL,
@@ -94,6 +95,10 @@ public sealed class SpanStore
                 long_peak_cached_input REAL,
                 long_peak_uncached_input REAL,
                 long_peak_output REAL,
+                cache_write REAL,
+                peak_cache_write REAL,
+                long_cache_write REAL,
+                long_peak_cache_write REAL,
                 updated_at_ms INTEGER NOT NULL
             );
 
@@ -114,6 +119,7 @@ public sealed class SpanStore
         EnsureColumn(connection, "spans", "uncached_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "output_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "reasoning_cost_cny", "REAL");
+        EnsureColumn(connection, "spans", "nano_aiu", "INTEGER");
 
         EnsureColumn(connection, "model_prices", "long_threshold_tokens", "INTEGER");
         EnsureColumn(connection, "model_prices", "long_cached_input", "REAL");
@@ -122,6 +128,10 @@ public sealed class SpanStore
         EnsureColumn(connection, "model_prices", "long_peak_cached_input", "REAL");
         EnsureColumn(connection, "model_prices", "long_peak_uncached_input", "REAL");
         EnsureColumn(connection, "model_prices", "long_peak_output", "REAL");
+        EnsureColumn(connection, "model_prices", "cache_write", "REAL");
+        EnsureColumn(connection, "model_prices", "peak_cache_write", "REAL");
+        EnsureColumn(connection, "model_prices", "long_cache_write", "REAL");
+        EnsureColumn(connection, "model_prices", "long_peak_cache_write", "REAL");
     }
 
     public int InsertMany(IReadOnlyList<OtlpSpanRecord> spans)
@@ -143,14 +153,14 @@ public sealed class SpanStore
                     trace_id, span_id, name, start_time_ms, end_time_ms,
                     service_name, model, session_id, is_main,
                     input_tokens, output_tokens, cache_read_tokens,
-                    cache_creation_tokens, reasoning_tokens,
+                    cache_creation_tokens, reasoning_tokens, nano_aiu,
                     cache_cost_cny, uncached_cost_cny, output_cost_cny, reasoning_cost_cny,
                     hit_rate, cost_cny, pricing_period, attributes, received_at_ms
                 ) VALUES (
                     @trace_id, @span_id, @name, @start_time_ms, @end_time_ms,
                     @service_name, @model, @session_id, @is_main,
                     @input_tokens, @output_tokens, @cache_read_tokens,
-                    @cache_creation_tokens, @reasoning_tokens,
+                    @cache_creation_tokens, @reasoning_tokens, @nano_aiu,
                     @cache_cost_cny, @uncached_cost_cny, @output_cost_cny, @reasoning_cost_cny,
                     @hit_rate, @cost_cny, @pricing_period, @attributes, @received_at_ms
                 );
@@ -170,6 +180,7 @@ public sealed class SpanStore
             AddParameter(command, "@cache_read_tokens", SqliteType.Integer);
             AddParameter(command, "@cache_creation_tokens", SqliteType.Integer);
             AddParameter(command, "@reasoning_tokens", SqliteType.Integer);
+            AddParameter(command, "@nano_aiu", SqliteType.Integer);
             AddParameter(command, "@cache_cost_cny", SqliteType.Real);
             AddParameter(command, "@uncached_cost_cny", SqliteType.Real);
             AddParameter(command, "@output_cost_cny", SqliteType.Real);
@@ -201,6 +212,8 @@ public sealed class SpanStore
                 command.Parameters["@cache_creation_tokens"].Value =
                     span.CacheCreationTokens;
                 command.Parameters["@reasoning_tokens"].Value = span.ReasoningTokens;
+                command.Parameters["@nano_aiu"].Value =
+                    span.NanoAiu is null ? DBNull.Value : span.NanoAiu.Value;
                 command.Parameters["@cache_cost_cny"].Value =
                     span.CacheCostCny is null ? DBNull.Value : span.CacheCostCny.Value;
                 command.Parameters["@uncached_cost_cny"].Value =
@@ -410,7 +423,8 @@ public sealed class SpanStore
                 uncached_cost_cny,
                 output_cost_cny,
                 reasoning_tokens,
-                reasoning_cost_cny
+                reasoning_cost_cny,
+                nano_aiu
             FROM spans
             WHERE start_time_ms >= @from
               AND start_time_ms < @to{utilityFilter}
@@ -448,7 +462,8 @@ public sealed class SpanStore
                 uncached_cost_cny,
                 output_cost_cny,
                 reasoning_tokens,
-                reasoning_cost_cny
+                reasoning_cost_cny,
+                nano_aiu
             FROM spans
             WHERE model = @model
               AND start_time_ms >= @from
@@ -487,7 +502,8 @@ public sealed class SpanStore
                 uncached_cost_cny,
                 output_cost_cny,
                 reasoning_tokens,
-                reasoning_cost_cny
+                reasoning_cost_cny,
+                nano_aiu
             FROM spans
             WHERE session_id = @session_id AND start_time_ms >= @from
             ORDER BY start_time_ms DESC
@@ -523,6 +539,7 @@ public sealed class SpanStore
                 OutputCostCny = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
                 ReasoningTokens = reader.GetInt64(13),
                 ReasoningCostCny = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
+                NanoAiu = reader.IsDBNull(15) ? null : reader.GetInt64(15),
             });
         }
 
@@ -799,7 +816,8 @@ public sealed class SpanStore
                 model, cached_input, uncached_input, output, peak_aware,
                 peak_cached_input, peak_uncached_input, peak_output, updated_at_ms,
                 long_threshold_tokens, long_cached_input, long_uncached_input, long_output,
-                long_peak_cached_input, long_peak_uncached_input, long_peak_output
+                long_peak_cached_input, long_peak_uncached_input, long_peak_output,
+                cache_write, peak_cache_write, long_cache_write, long_peak_cache_write
             FROM model_prices;
             """;
 
@@ -810,13 +828,15 @@ public sealed class SpanStore
             var idle = new PriceTier(
                 (decimal)reader.GetDouble(1),
                 (decimal)reader.GetDouble(2),
-                (decimal)reader.GetDouble(3));
+                (decimal)reader.GetDouble(3),
+                reader.IsDBNull(16) ? null : (decimal)reader.GetDouble(16));
             var peakAware = reader.GetInt64(4) != 0;
             var peak = peakAware
                 ? new PriceTier(
                     reader.IsDBNull(5) ? idle.CachedInput : (decimal)reader.GetDouble(5),
                     reader.IsDBNull(6) ? idle.UncachedInput : (decimal)reader.GetDouble(6),
-                    reader.IsDBNull(7) ? idle.Output : (decimal)reader.GetDouble(7))
+                    reader.IsDBNull(7) ? idle.Output : (decimal)reader.GetDouble(7),
+                    reader.IsDBNull(17) ? null : (decimal)reader.GetDouble(17))
                 : idle;
 
             LongContextPrice? longContext = null;
@@ -825,12 +845,14 @@ public sealed class SpanStore
                 var longIdle = new PriceTier(
                     reader.IsDBNull(10) ? idle.CachedInput : (decimal)reader.GetDouble(10),
                     reader.IsDBNull(11) ? idle.UncachedInput : (decimal)reader.GetDouble(11),
-                    reader.IsDBNull(12) ? idle.Output : (decimal)reader.GetDouble(12));
+                    reader.IsDBNull(12) ? idle.Output : (decimal)reader.GetDouble(12),
+                    reader.IsDBNull(18) ? null : (decimal)reader.GetDouble(18));
                 var longPeak = peakAware
                     ? new PriceTier(
                         reader.IsDBNull(13) ? longIdle.CachedInput : (decimal)reader.GetDouble(13),
                         reader.IsDBNull(14) ? longIdle.UncachedInput : (decimal)reader.GetDouble(14),
-                        reader.IsDBNull(15) ? longIdle.Output : (decimal)reader.GetDouble(15))
+                        reader.IsDBNull(15) ? longIdle.Output : (decimal)reader.GetDouble(15),
+                        reader.IsDBNull(19) ? null : (decimal)reader.GetDouble(19))
                     : longIdle;
                 longContext = new LongContextPrice(
                     reader.GetInt64(9),
@@ -859,12 +881,14 @@ public sealed class SpanStore
                     model, cached_input, uncached_input, output, peak_aware,
                     peak_cached_input, peak_uncached_input, peak_output, updated_at_ms,
                     long_threshold_tokens, long_cached_input, long_uncached_input, long_output,
-                    long_peak_cached_input, long_peak_uncached_input, long_peak_output
+                    long_peak_cached_input, long_peak_uncached_input, long_peak_output,
+                    cache_write, peak_cache_write, long_cache_write, long_peak_cache_write
                 ) VALUES (
                     @model, @cached, @uncached, @output, @peak_aware,
                     @peak_cached, @peak_uncached, @peak_output, @updated,
                     @long_threshold, @long_cached, @long_uncached, @long_output,
-                    @long_peak_cached, @long_peak_uncached, @long_peak_output
+                    @long_peak_cached, @long_peak_uncached, @long_peak_output,
+                    @cache_write, @peak_cache_write, @long_cache_write, @long_peak_cache_write
                 )
                 ON CONFLICT(model) DO UPDATE SET
                     cached_input = excluded.cached_input,
@@ -881,7 +905,11 @@ public sealed class SpanStore
                     long_output = excluded.long_output,
                     long_peak_cached_input = excluded.long_peak_cached_input,
                     long_peak_uncached_input = excluded.long_peak_uncached_input,
-                    long_peak_output = excluded.long_peak_output;
+                    long_peak_output = excluded.long_peak_output,
+                    cache_write = excluded.cache_write,
+                    peak_cache_write = excluded.peak_cache_write,
+                    long_cache_write = excluded.long_cache_write,
+                    long_peak_cache_write = excluded.long_peak_cache_write;
                 """;
             command.Parameters.AddWithValue("@model", model);
             command.Parameters.AddWithValue("@cached", (double)price.Idle.CachedInput);
@@ -927,6 +955,28 @@ public sealed class SpanStore
                 longContext is null || !price.PeakAware
                     ? DBNull.Value
                     : (object)(double)longContext.Value.Peak.Output);
+            command.Parameters.AddWithValue(
+                "@cache_write",
+                price.Idle.CacheWrite is null
+                    ? DBNull.Value
+                    : (object)(double)price.Idle.CacheWrite.Value);
+            command.Parameters.AddWithValue(
+                "@peak_cache_write",
+                !price.PeakAware || price.Peak.CacheWrite is null
+                    ? DBNull.Value
+                    : (object)(double)price.Peak.CacheWrite.Value);
+            command.Parameters.AddWithValue(
+                "@long_cache_write",
+                longContext is null || longContext.Value.Idle.CacheWrite is null
+                    ? DBNull.Value
+                    : (object)(double)longContext.Value.Idle.CacheWrite.Value);
+            command.Parameters.AddWithValue(
+                "@long_peak_cache_write",
+                longContext is null ||
+                !price.PeakAware ||
+                longContext.Value.Peak.CacheWrite is null
+                    ? DBNull.Value
+                    : (object)(double)longContext.Value.Peak.CacheWrite.Value);
             command.ExecuteNonQuery();
         }
         finally
@@ -983,6 +1033,7 @@ public sealed class SpanStore
                 long StartMs,
                 long Input,
                 long Cached,
+                long CacheCreation,
                 long Output,
                 long Reasoning)>();
             using (var select = connection.CreateCommand())
@@ -990,7 +1041,8 @@ public sealed class SpanStore
                 select.Transaction = transaction;
                 select.CommandText = $"""
                     SELECT model, trace_id, span_id, start_time_ms,
-                           input_tokens, cache_read_tokens, output_tokens, reasoning_tokens
+                           input_tokens, cache_read_tokens, cache_creation_tokens,
+                           output_tokens, reasoning_tokens
                     FROM spans
                     {whereClause};
                     """;
@@ -1006,7 +1058,8 @@ public sealed class SpanStore
                         reader.GetInt64(4),
                         reader.GetInt64(5),
                         reader.GetInt64(6),
-                        reader.GetInt64(7)));
+                        reader.GetInt64(7),
+                        reader.GetInt64(8)));
                 }
             }
 
@@ -1044,7 +1097,8 @@ public sealed class SpanStore
                     span.Cached,
                     span.Output,
                     span.Reasoning,
-                    timestamp);
+                    timestamp,
+                    span.CacheCreation);
 
                 update.Parameters["@cost"].Value =
                     detail.CostCny is null ? (object)DBNull.Value : (double)detail.CostCny.Value;

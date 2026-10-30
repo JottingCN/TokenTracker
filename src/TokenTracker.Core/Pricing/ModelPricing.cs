@@ -3,7 +3,11 @@ namespace TokenTracker.Core.Pricing;
 public readonly record struct PriceTier(
     decimal CachedInput,
     decimal UncachedInput,
-    decimal Output);
+    decimal Output,
+    decimal? CacheWrite = null)
+{
+    public decimal EffectiveCacheWrite => CacheWrite ?? UncachedInput;
+}
 
 public readonly record struct LongContextPrice(
     long ThresholdTokens,
@@ -168,7 +172,8 @@ public static class ModelPricing
         long cacheReadTokens,
         long outputTokens,
         long reasoningTokens,
-        DateTimeOffset timestamp)
+        DateTimeOffset timestamp,
+        long cacheCreationTokens = 0)
     {
         if (price is null)
         {
@@ -192,11 +197,16 @@ public static class ModelPricing
         }
 
         var cached = Math.Max(0, cacheReadTokens);
-        var uncached = Math.Max(0, inputTokens - cached);
+        var cacheWrite = Math.Clamp(
+            cacheCreationTokens,
+            0,
+            Math.Max(0, inputTokens - cached));
+        var uncached = Math.Max(0, inputTokens - cached - cacheWrite);
         var output = Math.Max(0, outputTokens);
         var reasoning = Math.Clamp(reasoningTokens, 0, Math.Max(0, outputTokens));
 
-        var cacheCost = cached / 1_000_000m * tier.CachedInput;
+        var cacheCost = cached / 1_000_000m * tier.CachedInput +
+            cacheWrite / 1_000_000m * tier.EffectiveCacheWrite;
         var uncachedCost = uncached / 1_000_000m * tier.UncachedInput;
         var outputCost = output / 1_000_000m * tier.Output;
         var reasoningCost = reasoning / 1_000_000m * tier.Output;

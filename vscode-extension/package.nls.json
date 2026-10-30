@@ -2,6 +2,8 @@
   "description": "Copilot token hit-rate and cost dashboard backed by a shared local Token Tracker server.",
   "command.openDashboard": "Token Tracker: Open dashboard in browser",
   "command.showServerInfo": "Token Tracker: Server information",
+  "command.configureOtel": "Token Tracker: Enable OTel reporting",
+  "command.importLocalTraces": "Token Tracker: Import local Copilot OTel data",
   "command.refreshStatus": "Token Tracker: Refresh status bar",
   "command.startServer": "Token Tracker: Start server",
   "command.stopServer": "Token Tracker: Stop server",

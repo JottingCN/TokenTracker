@@ -10,6 +10,11 @@ public sealed record ReceiverInfo(
     long Spans,
     string? LastError);
 
+public sealed record AhpStatusPayload(
+    string State,
+    bool Connected,
+    int Sessions);
+
 public sealed record DashboardPayload(
     SummaryDto Summary,
     List<ModelRow> Models,
@@ -17,7 +22,8 @@ public sealed record DashboardPayload(
     List<CallRow> Calls,
     ReceiverInfo Receiver,
     string UpdatedAt,
-    int RetentionDays);
+    int RetentionDays,
+    AhpStatusPayload Ahp);
 
 public sealed record SettingsPayload(int RetentionDays);
 
@@ -71,7 +77,11 @@ public sealed record ModelPriceRowPayload(
     double? LongOutput,
     double? LongPeakCachedInput,
     double? LongPeakUncachedInput,
-    double? LongPeakOutput);
+    double? LongPeakOutput,
+    double? CacheWrite,
+    double? PeakCacheWrite,
+    double? LongCacheWrite,
+    double? LongPeakCacheWrite);
 
 public sealed record PriceUpdateRequest(
     string? Model,
@@ -88,7 +98,20 @@ public sealed record PriceUpdateRequest(
     double? LongOutput,
     double? LongPeakCachedInput,
     double? LongPeakUncachedInput,
-    double? LongPeakOutput);
+    double? LongPeakOutput,
+    double? CacheWrite,
+    double? PeakCacheWrite,
+    double? LongCacheWrite,
+    double? LongPeakCacheWrite);
+
+public sealed record LocalImportRequest(string[]? Paths);
+
+public sealed record LocalImportPayload(
+    long Scanned,
+    long Matched,
+    long Inserted,
+    long Skipped,
+    string[] Errors);
 
 public sealed record DashboardMessage(string Type, DashboardPayload Data);
 
@@ -104,6 +127,9 @@ public sealed record SessionMessage(string Type, SessionPayload Data);
 [JsonSerializable(typeof(List<ModelPriceRowPayload>))]
 [JsonSerializable(typeof(ModelPriceRowPayload))]
 [JsonSerializable(typeof(PriceUpdateRequest))]
+[JsonSerializable(typeof(LocalImportRequest))]
+[JsonSerializable(typeof(LocalImportPayload))]
+[JsonSerializable(typeof(AhpStatusPayload))]
 [JsonSerializable(typeof(SettingsPayload))]
 [JsonSerializable(typeof(SettingsUpdateRequest))]
 [JsonSerializable(typeof(ServerInfoPayload))]

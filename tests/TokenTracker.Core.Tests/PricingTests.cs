@@ -99,6 +99,31 @@ public sealed class PricingTests
     }
 
     [Fact]
+    public void CacheWriteRateFallsBackToUncachedInput()
+    {
+        var idle = Utc("2026-10-27T04:00:00Z");
+        var fallback = new ModelPrice(
+            new PriceTier(1m, 10m, 50m),
+            new PriceTier(1m, 10m, 50m),
+            PeakAware: false);
+        var explicitRate = new ModelPrice(
+            new PriceTier(1m, 10m, 50m, 12.5m),
+            new PriceTier(1m, 10m, 50m, 12.5m),
+            PeakAware: false);
+
+        var fallbackDetail = ModelPricing.EvaluateDetailed(
+            fallback, 1_000_000, 0, 0, 0, idle, cacheCreationTokens: 1_000_000);
+        Assert.Equal(10m, fallbackDetail.CacheCost);
+        Assert.Equal(0m, fallbackDetail.UncachedCost);
+        Assert.Equal(10m, fallbackDetail.CostCny);
+
+        var explicitDetail = ModelPricing.EvaluateDetailed(
+            explicitRate, 1_000_000, 0, 0, 0, idle, cacheCreationTokens: 1_000_000);
+        Assert.Equal(12.5m, explicitDetail.CacheCost);
+        Assert.Equal(12.5m, explicitDetail.CostCny);
+    }
+
+    [Fact]
     public void LongContextThresholdSwitchesEntireRequest()
     {
         var price = new ModelPrice(

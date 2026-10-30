@@ -92,8 +92,8 @@ public static class OtlpTraceParser
         }
 
         var model =
-            GetString(attributes, "gen_ai.request.model") ??
-            GetString(attributes, "gen_ai.response.model");
+            GetString(attributes, "gen_ai.response.model") ??
+            GetString(attributes, "gen_ai.request.model");
         if (string.IsNullOrWhiteSpace(model))
         {
             return null;
@@ -112,9 +112,20 @@ public static class OtlpTraceParser
             GetLong(attributes, "gen_ai.usage.cache_creation.input_tokens") ?? 0;
         var reasoningTokens =
             GetLong(attributes, "gen_ai.usage.reasoning_tokens") ?? 0;
+        var nanoAiu =
+            GetLong(attributes, "copilot_chat.copilot_usage_nano_aiu");
+
+        var provider =
+            GetString(attributes, "gen_ai.provider.name") ?? serviceName;
+        var totalInputTokens = TokenSemantics.TotalInputTokens(
+            provider,
+            inputTokens.Value,
+            cacheReadTokens,
+            cacheCreationTokens);
 
         var sessionId =
             GetString(attributes, "copilot_chat.session_id") ??
+            GetString(attributes, "copilot_chat.chat_session_id") ??
             GetString(attributes, "gen_ai.conversation.id");
         if (string.IsNullOrWhiteSpace(sessionId))
         {
@@ -130,16 +141,17 @@ public static class OtlpTraceParser
             : (long?)null;
 
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(startMs);
-        var hitRate = inputTokens.Value > 0
-            ? (double)cacheReadTokens / inputTokens.Value
+        var hitRate = totalInputTokens > 0
+            ? (double)cacheReadTokens / totalInputTokens
             : (double?)null;
         var breakdown = ModelPricing.EvaluateDetailed(
             ModelPricing.GetPrice(model),
-            inputTokens.Value,
+            totalInputTokens,
             cacheReadTokens,
             outputTokens,
             reasoningTokens,
-            timestamp);
+            timestamp,
+            cacheCreationTokens);
 
         return new OtlpSpanRecord
         {
@@ -152,11 +164,12 @@ public static class OtlpTraceParser
             Model = model,
             SessionId = sessionId,
             IsMain = sessionId is not null,
-            InputTokens = inputTokens.Value,
+            InputTokens = totalInputTokens,
             OutputTokens = outputTokens,
             CacheReadTokens = cacheReadTokens,
             CacheCreationTokens = cacheCreationTokens,
             ReasoningTokens = reasoningTokens,
+            NanoAiu = nanoAiu,
             HitRate = hitRate,
             CostCny = (double?)breakdown.CostCny,
             CacheCostCny = (double?)breakdown.CacheCost,
@@ -338,12 +351,22 @@ public static class OtlpTraceParser
             return null;
         }
 
-        return long.TryParse(
-            text,
-            NumberStyles.Integer,
-            CultureInfo.InvariantCulture,
-            out var value)
-            ? value
+        if (long.TryParse(
+                text,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var value))
+        {
+            return value;
+        }
+
+        return double.TryParse(
+                text,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var number) &&
+            double.IsFinite(number)
+            ? (long)Math.Round(number)
             : null;
     }
 

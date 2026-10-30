@@ -77,6 +77,7 @@ export interface CallRow {
   inputTokens: number;
   cacheReadTokens: number;
   outputTokens: number;
+  nanoAiu: number | null;
   hitRate: number | null;
   costCny: number | null;
   cacheCostCny: number;
@@ -91,6 +92,7 @@ export interface CallRow {
   outputText: string;
   hitRateText: string;
   costText: string;
+  aiuText: string | null;
   cacheCostText: string;
   uncachedCostText: string;
   outputCostText: string;
@@ -106,6 +108,12 @@ export interface ReceiverInfo {
   lastError: string | null;
 }
 
+export interface AhpStatus {
+  state: 'disabled' | 'searching' | 'connecting' | 'connected' | string;
+  connected: boolean;
+  sessions: number;
+}
+
 export interface DashboardPayload {
   summary: Summary;
   models: ModelRow[];
@@ -114,6 +122,7 @@ export interface DashboardPayload {
   receiver: ReceiverInfo;
   updatedAt: string;
   retentionDays: number;
+  ahp?: AhpStatus;
 }
 
 export interface SettingsPayload {
@@ -161,4 +170,8 @@ export interface ModelPriceRow {
   longPeakCachedInput: number | null;
   longPeakUncachedInput: number | null;
   longPeakOutput: number | null;
+  cacheWrite: number | null;
+  peakCacheWrite: number | null;
+  longCacheWrite: number | null;
+  longPeakCacheWrite: number | null;
 }

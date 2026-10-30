@@ -27,7 +27,7 @@ interface PriceSettingsDrawerProps {
 
 type PeriodKind = 'idle' | 'peak' | 'flat';
 type PriceSegment = 'default' | 'long';
-type PriceField = 'cachedInput' | 'uncachedInput' | 'output';
+type PriceField = 'cachedInput' | 'uncachedInput' | 'output' | 'cacheWrite';
 
 interface PriceDisplayRow {
   key: string;
@@ -184,6 +184,26 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
             longEnabled && draft.peakAware
               ? (draft.longPeakOutput ?? draft.longOutput ?? draft.peakOutput ?? draft.output)
               : null,
+          cacheWrite: draft.cacheWrite ?? draft.uncachedInput,
+          peakCacheWrite: draft.peakAware
+            ? (draft.peakCacheWrite ??
+              draft.cacheWrite ??
+              draft.peakUncachedInput ??
+              draft.uncachedInput)
+            : null,
+          longCacheWrite: longEnabled
+            ? (draft.longCacheWrite ??
+              draft.longUncachedInput ??
+              draft.uncachedInput)
+            : null,
+          longPeakCacheWrite:
+            longEnabled && draft.peakAware
+              ? (draft.longPeakCacheWrite ??
+                draft.longCacheWrite ??
+                draft.longUncachedInput ??
+                draft.peakUncachedInput ??
+                draft.uncachedInput)
+              : null,
         }),
       });
       if (response.status === 404) {
@@ -282,6 +302,10 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         longPeakCachedInput: null,
         longPeakUncachedInput: null,
         longPeakOutput: null,
+        cacheWrite: null,
+        peakCacheWrite: null,
+        longCacheWrite: null,
+        longPeakCacheWrite: null,
       },
       ...current,
     ]);
@@ -321,25 +345,28 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     peak: boolean,
   ): keyof ModelPriceRow => {
     if (segment === 'long') {
-      return peak
-        ? field === 'cachedInput'
-          ? 'longPeakCachedInput'
-          : field === 'uncachedInput'
-            ? 'longPeakUncachedInput'
-            : 'longPeakOutput'
-        : field === 'cachedInput'
-          ? 'longCachedInput'
-          : field === 'uncachedInput'
-            ? 'longUncachedInput'
-            : 'longOutput';
+      if (field === 'cachedInput') {
+        return peak ? 'longPeakCachedInput' : 'longCachedInput';
+      }
+      if (field === 'uncachedInput') {
+        return peak ? 'longPeakUncachedInput' : 'longUncachedInput';
+      }
+      if (field === 'cacheWrite') {
+        return peak ? 'longPeakCacheWrite' : 'longCacheWrite';
+      }
+      return peak ? 'longPeakOutput' : 'longOutput';
     }
-    return peak
-      ? field === 'cachedInput'
-        ? 'peakCachedInput'
-        : field === 'uncachedInput'
-          ? 'peakUncachedInput'
-          : 'peakOutput'
-      : field;
+
+    if (field === 'cachedInput') {
+      return peak ? 'peakCachedInput' : 'cachedInput';
+    }
+    if (field === 'uncachedInput') {
+      return peak ? 'peakUncachedInput' : 'uncachedInput';
+    }
+    if (field === 'cacheWrite') {
+      return peak ? 'peakCacheWrite' : 'cacheWrite';
+    }
+    return peak ? 'peakOutput' : 'output';
   };
 
   const toggleLongContext = (row: ModelPriceRow, enabled: boolean) => {
@@ -374,10 +401,26 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     const draft = draftOf(row);
     const baseField = priceField(segment, field, false);
     const peakField = priceField(segment, field, true);
+    const baseFallback =
+      field === 'cacheWrite'
+        ? segment === 'long'
+          ? (draft.longUncachedInput ?? draft.uncachedInput ?? 0)
+          : (draft.uncachedInput ?? 0)
+        : 0;
+    const peakFallback =
+      field === 'cacheWrite'
+        ? segment === 'long'
+          ? (draft.longPeakUncachedInput ??
+            draft.longUncachedInput ??
+            draft.peakUncachedInput ??
+            draft.uncachedInput ??
+            0)
+          : (draft.peakUncachedInput ?? draft.uncachedInput ?? 0)
+        : 0;
     const cnyValue = Number(
       kind === 'peak'
-        ? (draft[peakField] ?? draft[baseField] ?? 0)
-        : (draft[baseField] ?? 0),
+        ? (draft[peakField] ?? draft[baseField] ?? peakFallback)
+        : (draft[baseField] ?? baseFallback),
     );
 
     return (
@@ -447,7 +490,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('模型', 'Model'),
       key: 'model',
-      width: 230,
+      width: 190,
       fixed: 'left',
       onCell: (record) => ({ rowSpan: record.rowSpan }),
       render: (_, record) => {
@@ -485,7 +528,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('区分峰谷', 'Peak aware'),
       key: 'peakAware',
-      width: 90,
+      width: 78,
       align: 'center',
       onCell: (record) => ({ rowSpan: record.rowSpan }),
       render: (_, record) => {
@@ -506,7 +549,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('分档计费', 'Tiered'),
       key: 'longContext',
-      width: 90,
+      width: 78,
       align: 'center',
       onCell: (record) => ({ rowSpan: record.rowSpan }),
       render: (_, record) => {
@@ -528,7 +571,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('输入阈值', 'Input threshold'),
       key: 'longContextThreshold',
-      width: 150,
+      width: 128,
       align: 'right',
       onCell: (record) => ({ rowSpan: record.rowSpan }),
       render: (_, record) => {
@@ -565,7 +608,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('档位', 'Tier'),
       key: 'segment',
-      width: 110,
+      width: 78,
       align: 'center',
       onCell: (record) => ({ rowSpan: record.segmentRowSpan }),
       render: (_, record) =>
@@ -578,7 +621,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('时段', 'Period'),
       key: 'period',
-      width: 100,
+      width: 76,
       align: 'center',
       render: (_, record) => {
         if (record.period === 'idle') {
@@ -593,7 +636,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('缓存命中', 'Cached input'),
       key: 'cachedInput',
-      width: 130,
+      width: 104,
       align: 'right',
       render: (_, record) => {
         const row = rowByModel.get(record.model);
@@ -603,9 +646,21 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
+      title: tr('缓存写入', 'Cache write'),
+      key: 'cacheWrite',
+      width: 108,
+      align: 'right',
+      render: (_, record) => {
+        const row = rowByModel.get(record.model);
+        return row
+          ? numberInput(row, record.period, 'cacheWrite', record.segment)
+          : null;
+      },
+    },
+    {
       title: tr('输入（未命中）', 'Uncached input'),
       key: 'uncachedInput',
-      width: 150,
+      width: 112,
       align: 'right',
       render: (_, record) => {
         const row = rowByModel.get(record.model);
@@ -617,7 +672,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('输出', 'Output'),
       key: 'output',
-      width: 130,
+      width: 104,
       align: 'right',
       render: (_, record) => {
         const row = rowByModel.get(record.model);
@@ -629,7 +684,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     {
       title: tr('操作', 'Actions'),
       key: 'actions',
-      width: 190,
+      width: 166,
       fixed: 'right',
       onCell: (record) => ({ rowSpan: record.rowSpan }),
       render: (_, record) => {
@@ -752,7 +807,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           dataSource={displayRows}
           loading={loading}
           pagination={false}
-          scroll={{ x: 1380, y: 520 }}
+          scroll={{ x: 1230, y: 520 }}
         />
 
         <Alert
@@ -760,8 +815,8 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           showIcon
           message={tr('峰谷与节假日规则', 'Peak and holiday rules')}
           description={tr(
-            '开启「区分峰谷」后，该模型显示空闲/高峰两行价格；未开启时只有一行固定价格。开启「分档计费」后，按单次调用的输入 token 总数（含缓存命中）判断：不超过阈值使用「默认」档，超过阈值整次调用按「长上下文」档计价（两档价格可分别设置）。峰谷按北京时间判定：工作日 9:00–12:00、14:00–18:00 为高峰，其余时间为空闲；周末与中国法定节假日全天按空闲（调休上班的周末仍按周末处理）。节假日数据优先读取本地数据库，缺失时自动从 apisbo.com 获取并缓存（内置 2025–2026 年数据兜底）。',
-            'When peak-aware is enabled, two rows are shown (idle/peak); otherwise one flat price is used. Tiered pricing compares the total input tokens of each call (including cache reads) with the threshold: calls at or below it use Default rates, while the entire call is priced with Long context rates when it exceeds the threshold. Peak hours follow Beijing time: weekdays 9:00–12:00 and 14:00–18:00; all other times, weekends and Chinese public holidays are idle. Holiday data is read from the local database first, then fetched from apisbo.com and cached.',
+            '开启「区分峰谷」后，该模型显示空闲/高峰两行价格；未开启时只有一行固定价格。开启「分档计费」后，按单次调用的输入 token 总数（含缓存命中）判断：不超过阈值使用「默认」档，超过阈值整次调用按「长上下文」档计价（两档价格可分别设置）。缓存写入价留空时按未命中输入价计算。峰谷按北京时间判定：工作日 9:00–12:00、14:00–18:00 为高峰，其余时间为空闲；周末与中国法定节假日全天按空闲（调休上班的周末仍按周末处理）。节假日数据优先读取本地数据库，缺失时自动从 apisbo.com 获取并缓存（内置 2025–2026 年数据兜底）。',
+            'When peak-aware is enabled, two rows are shown (idle/peak); otherwise one flat price is used. Tiered pricing compares the total input tokens of each call (including cache reads) with the threshold: calls at or below it use Default rates, while the entire call is priced with Long context rates when it exceeds the threshold. Cache write falls back to the uncached input rate when left empty. Peak hours follow Beijing time: weekdays 9:00–12:00 and 14:00–18:00; all other times, weekends and Chinese public holidays are idle. Holiday data is read from the local database first, then fetched from apisbo.com and cached.',
           )}
         />
               </div>

@@ -37,6 +37,58 @@ public sealed class SessionMetadataProviderTests
     }
 
     [Fact]
+    public void ReadsCopilotChatSessionStoreTitle()
+    {
+        var root = CreateRoot();
+        var userData = System.IO.Path.Combine(root, "user-data");
+        var workspaceStorage = System.IO.Path.Combine(
+            userData,
+            "workspaceStorage",
+            "workspace-1");
+        var stateDatabase = System.IO.Path.Combine(workspaceStorage, "state.vscdb");
+
+        try
+        {
+            Directory.CreateDirectory(workspaceStorage);
+            using (var connection = new SqliteConnection($"Data Source={stateDatabase}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
+                    INSERT INTO ItemTable (key, value) VALUES (@key, @value);
+                    """;
+                command.Parameters.AddWithValue("@key", "chat.ChatSessionStore.index");
+                command.Parameters.AddWithValue(
+                    "@value",
+                    """
+                    {"version":1,"entries":{"chat-session":{"sessionId":"chat-session","title":"Extension chat title","lastMessageDate":123,"workingDirectory":"file:///d:/source/demo"}}}
+                    """);
+                command.ExecuteNonQuery();
+            }
+
+            var provider = new SessionMetadataProvider(
+                root,
+                System.IO.Path.Combine(root, "missing-agent-host.db"),
+                new[] { userData });
+            var metadata = provider.Get("chat-session");
+
+            Assert.NotNull(metadata);
+            Assert.Equal("Extension chat title", metadata!.Title);
+            Assert.False(metadata.UserNamed);
+            Assert.EndsWith(
+                "demo",
+                metadata.WorkspacePath,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SupportsQuotedTitlesAndRefreshAfterChange()
     {
         var root = CreateRoot();

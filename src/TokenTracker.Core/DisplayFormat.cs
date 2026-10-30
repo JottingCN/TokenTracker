@@ -23,6 +23,11 @@ public static class DisplayFormat
     public static string Price(double? value) =>
         value is null ? "-" : $"¥{value.Value:0.000000}";
 
+    public static string Aic(long? nanoAiu) =>
+        nanoAiu is null
+            ? "-"
+            : $"{nanoAiu.Value / 1_000_000_000d:0.####} AIC";
+
     public static string Period(string? period) =>
         period switch
         {

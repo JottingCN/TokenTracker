@@ -12,6 +12,7 @@ import {
   Menu,
   Select,
   Space,
+  Tooltip,
   Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
@@ -128,6 +129,27 @@ export default function App() {
     fromMs: customFrom,
     toMs: customTo,
   });
+
+  const ahpStatus: 'success' | 'processing' | 'default' | 'warning' =
+    dashboard?.ahp?.connected
+    ? 'success'
+    : dashboard?.ahp?.state === 'connecting'
+      ? 'processing'
+      : dashboard?.ahp?.state === 'disabled'
+        ? 'default'
+        : 'warning';
+  const ahpText = dashboard?.ahp
+    ? dashboard.ahp.connected
+      ? tr(
+          `AHP 已连接 · ${dashboard.ahp.sessions} 会话`,
+          `AHP connected · ${dashboard.ahp.sessions} sessions`,
+        )
+      : dashboard.ahp.state === 'connecting'
+        ? tr('AHP 连接中', 'AHP connecting')
+        : dashboard.ahp.state === 'disabled'
+          ? tr('AHP 不可用', 'AHP unavailable')
+          : tr('AHP 未连接', 'AHP not connected')
+    : null;
 
   const menuItems = useMemo(
     () => buildMenu(dashboard),
@@ -386,6 +408,16 @@ export default function App() {
                     `Listening ${dashboard.receiver.endpoint} · ${dashboard.receiver.batches} batches / ${dashboard.receiver.spans} spans`,
                   )}
                 </Typography.Text>
+              )}
+              {ahpText && (
+                <Tooltip
+                  title={tr(
+                    'AHP 用于同步 Agent Host 的实时会话标题；不可用时回退到本地数据库。',
+                    'AHP syncs live Agent Host session titles; falls back to the local database when unavailable.',
+                  )}
+                >
+                  <Badge status={ahpStatus} text={ahpText} />
+                </Tooltip>
               )}
             </Space>
           </Footer>

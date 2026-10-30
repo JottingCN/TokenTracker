@@ -2,6 +2,8 @@
   "description": "基于本地共享 Token Tracker 服务的 Copilot Token 命中率与费用看板。",
   "command.openDashboard": "Token Tracker: 在浏览器中打开看板",
   "command.showServerInfo": "Token Tracker: 服务信息",
+  "command.configureOtel": "Token Tracker: 启用 OTel 上报",
+  "command.importLocalTraces": "Token Tracker: 导入本地 Copilot OTel 数据",
   "command.refreshStatus": "Token Tracker: 刷新状态栏",
   "command.startServer": "Token Tracker: 启动服务",
   "command.stopServer": "Token Tracker: 停止服务",

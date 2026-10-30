@@ -72,6 +72,7 @@ public sealed partial record CallRow
     public long CacheReadTokens { get; init; }
     public long OutputTokens { get; init; }
     public long ReasoningTokens { get; init; }
+    public long? NanoAiu { get; init; }
     public double? HitRate { get; init; }
     public double? CostCny { get; init; }
     public double CacheCostCny { get; init; }
@@ -90,6 +91,8 @@ public sealed partial record CallRow
     public string OutputText => DisplayFormat.Number(OutputTokens);
     public string HitRateText => DisplayFormat.Rate(HitRate);
     public string CostText => CostCny is null ? "-" : DisplayFormat.Cost(CostCny.Value);
+    public string? AiuText =>
+        NanoAiu is null ? null : DisplayFormat.Aic(NanoAiu.Value);
     public string CacheCostText => DisplayFormat.Price(CacheCostCny);
     public string UncachedCostText => DisplayFormat.Price(UncachedCostCny);
     public string OutputCostText => DisplayFormat.Price(OutputCostCny);

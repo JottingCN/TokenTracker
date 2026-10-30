@@ -47,6 +47,108 @@ public sealed class OtlpTraceParserTests
     }
 
     [Fact]
+    public void ParsesAgentHostResponseModelAndChatSessionId()
+    {
+        var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
+        var json = $$"""
+        {
+          "resourceSpans": [
+            {
+              "resource": {
+                "attributes": [
+                  { "key": "service.name", "value": { "stringValue": "github-copilot" } },
+                  { "key": "service.namespace", "value": { "stringValue": "vscode.agent-host" } }
+                ]
+              },
+              "scopeSpans": [
+                {
+                  "spans": [
+                    {
+                      "traceId": "agent-trace",
+                      "spanId": "agent-span",
+                      "name": "chat",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                        { "key": "gen_ai.request.model", "value": { "stringValue": "auto" } },
+                        { "key": "gen_ai.response.model", "value": { "stringValue": "deepseek-flash" } },
+                        { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "1000" } },
+                        { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "10" } },
+                        { "key": "copilot_chat.copilot_usage_nano_aiu", "value": { "intValue": "1250000000" } },
+                        { "key": "copilot_chat.chat_session_id", "value": { "stringValue": "agent-chat-1" } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var document = JsonDocument.Parse(json);
+        var span = Assert.Single(
+            OtlpTraceParser.ParseTraces(document, PeakUtc.ToUnixTimeMilliseconds()));
+
+        Assert.Equal("deepseek-flash", span.Model);
+        Assert.Equal("agent-chat-1", span.SessionId);
+        Assert.Equal(1_250_000_000, span.NanoAiu);
+        Assert.True(span.IsMain);
+        Assert.NotNull(span.CostCny);
+        Assert.Equal("github-copilot", span.ServiceName);
+    }
+
+    [Fact]
+    public void MergesAnthropicCacheTokensIntoTotalInput()
+    {
+        var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
+        var json = $$"""
+        {
+          "resourceSpans": [
+            {
+              "resource": {
+                "attributes": [
+                  { "key": "service.name", "value": { "stringValue": "claude-code" } }
+                ]
+              },
+              "scopeSpans": [
+                {
+                  "spans": [
+                    {
+                      "traceId": "claude-trace",
+                      "spanId": "claude-span",
+                      "name": "chat",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                        { "key": "gen_ai.provider.name", "value": { "stringValue": "anthropic" } },
+                        { "key": "gen_ai.request.model", "value": { "stringValue": "deepseek-flash" } },
+                        { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "1000" } },
+                        { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "2000" } },
+                        { "key": "gen_ai.usage.cache_creation.input_tokens", "value": { "intValue": "500" } },
+                        { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "100" } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var document = JsonDocument.Parse(json);
+        var span = Assert.Single(
+            OtlpTraceParser.ParseTraces(document, PeakUtc.ToUnixTimeMilliseconds()));
+
+        Assert.Equal(3500, span.InputTokens);
+        Assert.Equal(2000, span.CacheReadTokens);
+        Assert.Equal(500, span.CacheCreationTokens);
+        Assert.Equal(2000d / 3500d, span.HitRate!.Value, 6);
+        Assert.Equal(0.00388, span.CostCny!.Value, 8);
+    }
+
+    [Fact]
     public void SkipsNonChatAndIncompleteSpans()
     {
         var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;

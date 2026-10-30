@@ -101,6 +101,33 @@ function defaultAgentHostDirectories(): string[] {
 const METADATA_DEBOUNCE_MS = 500;
 const AGENT_HOST_THROTTLE_MS = 15_000;
 
+interface LocalImportResult {
+  scanned: number;
+  matched: number;
+  inserted: number;
+  skipped: number;
+  errors: string[];
+}
+
+function localTraceDatabases(): string[] {
+  const storageDirectories = defaultAgentHostDirectories();
+  const candidates = [
+    ...storageDirectories.map((directory) =>
+      path.join(directory, 'GitHub.copilot-chat', 'agent-traces.db'),
+    ),
+    ...storageDirectories.map((directory) =>
+      path.join(
+        path.dirname(path.dirname(directory)),
+        'agent-host',
+        'otel',
+        'agent-host-traces.db',
+      ),
+    ),
+  ];
+
+  return [...new Set(candidates)].filter((candidate) => fs.existsSync(candidate));
+}
+
 async function notifyMetadataChanged(): Promise<void> {
   const url = server?.url;
   if (url) {
@@ -414,6 +441,117 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
           `${version} @ ${server.url}, started by extension=${server.startedHere}`,
         ),
       );
+    }),
+    vscode.commands.registerCommand('tokentracker.configureOtel', async () => {
+      const currentPort = vscode.workspace
+        .getConfiguration('tokentracker')
+        .get<number>('port', port);
+      const endpoint = `http://127.0.0.1:${currentPort}`;
+      const updates: Array<[string, string, string | boolean]> = [
+        ['github.copilot.chat.otel', 'enabled', true],
+        ['github.copilot.chat.otel', 'exporterType', 'otlp-http'],
+        ['github.copilot.chat.otel', 'protocol', 'http/json'],
+        ['github.copilot.chat.otel', 'otlpEndpoint', endpoint],
+        ['github.copilot.chat.otel', 'captureContent', false],
+        ['chat.agentHost.otel', 'enabled', true],
+        ['chat.agentHost.otel', 'exporterType', 'otlp-http'],
+        ['chat.agentHost.otel', 'otlpProtocol', 'http/json'],
+        ['chat.agentHost.otel', 'otlpEndpoint', endpoint],
+        ['chat.agentHost.otel', 'captureContent', false],
+      ];
+
+      try {
+        for (const [section, key, value] of updates) {
+          await vscode.workspace
+            .getConfiguration(section)
+            .update(key, value, vscode.ConfigurationTarget.Global);
+        }
+
+        log('copilot OTel settings written for extension host and agent host');
+        void vscode.window.showInformationMessage(
+          tr(
+            '已写入 Token Tracker 的 Copilot OTel 配置（扩展宿主 + Agent Host）。请完整退出并重新打开 VS Code，Agent Host 设置才会生效。',
+            'Copilot OTel settings for both the extension host and Agent Host were written. Fully quit and reopen VS Code so Agent Host picks them up.',
+          ),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`write OTel settings failed: ${message}`);
+        void vscode.window.showErrorMessage(
+          tr(
+            `写入 OTel 设置失败：${message}`,
+            `Failed to write OTel settings: ${message}`,
+          ),
+        );
+      }
+    }),
+    vscode.commands.registerCommand('tokentracker.importLocalTraces', async () => {
+      if (!server) {
+        void vscode.window.showWarningMessage(
+          tr('Token Tracker 服务未运行', 'Token Tracker server is not running'),
+        );
+        return;
+      }
+
+      const paths = localTraceDatabases();
+      if (paths.length === 0) {
+        void vscode.window.showInformationMessage(
+          tr(
+            '未找到本地 Copilot OTel 数据库。请先开启 Copilot 或 Agent Host 的 OTel，并产生一次调用。',
+            'No local Copilot OTel database was found. Enable OTel for Copilot or Agent Host and run a call first.',
+          ),
+        );
+        return;
+      }
+
+      try {
+        const response = await httpPost(
+          `${server.url}/api/import-local`,
+          120_000,
+          { paths },
+        );
+        if (response.status === 404) {
+          throw new Error(
+            tr(
+              '服务端版本过旧，请更新并重启 Token Tracker 服务',
+              'The server is too old. Update and restart Token Tracker.',
+            ),
+          );
+        }
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(response.body || `HTTP ${response.status}`);
+        }
+
+        const result = JSON.parse(response.body) as LocalImportResult;
+        log(
+          `local import: files=${paths.length} scanned=${result.scanned} ` +
+            `matched=${result.matched} inserted=${result.inserted} skipped=${result.skipped}`,
+        );
+        void vscode.window.showInformationMessage(
+          tr(
+            `已导入 ${result.inserted} 条调用（扫描 ${result.scanned}，匹配 ${result.matched}，跳过重复 ${result.skipped}）。`,
+            `Imported ${result.inserted} calls (scanned ${result.scanned}, matched ${result.matched}, skipped ${result.skipped} duplicates).`,
+          ),
+        );
+        if (result.errors.length > 0) {
+          void vscode.window.showWarningMessage(
+            tr(
+              `部分数据库导入失败：${result.errors.join('; ')}`,
+              `Some databases could not be imported: ${result.errors.join('; ')}`,
+            ),
+          );
+        }
+        statusBar?.refresh();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`local import failed: ${message}`);
+        void vscode.window.showErrorMessage(
+          tr(
+            `导入本地 OTel 数据失败：${message}`,
+            `Failed to import local OTel data: ${message}`,
+          ),
+        );
+      }
     }),
     vscode.commands.registerCommand('tokentracker.startServer', async () => {
       try {

@@ -16,6 +16,7 @@ public sealed class OtlpSpanRecord
     public long CacheReadTokens { get; init; }
     public long CacheCreationTokens { get; init; }
     public long ReasoningTokens { get; init; }
+    public long? NanoAiu { get; init; }
     public double? HitRate { get; init; }
     public double? CostCny { get; init; }
     public double? CacheCostCny { get; init; }

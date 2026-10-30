@@ -56,17 +56,21 @@ npm run package        # 生成 tokentracker-*.vsix
 
 1. `agent-host.db` 中 `titleSource=user`
 2. `workspace.yaml` 中 `user_named: true`
-3. `agent-host.db` 自动 / agent 摘要
-4. `workspace.yaml` 自动名称
+3. Agent Host AHP `listSessions` / `session/titleChanged`（session id 可关联时）
+4. 扩展宿主 `chat.ChatSessionStore.index`（`state.vscdb`，只读）
+5. `agent-host.db` 自动 / agent 摘要
+6. `workspace.yaml` 自动名称
 
 ### 工作区路径
 
 优先使用 `agent-host.db` 的 `working_directories` / `launch_working_directories`，
-缺失时回退到 `workspace.yaml` 的 `cwd`。状态栏按该路径匹配当前 VS Code 工作区。
+其次 AHP `workingDirectories` 与 `ChatSessionStore` 索引的 `workingDirectory`，缺失时回退到 `workspace.yaml` 的 `cwd`。状态栏按该路径匹配当前 VS Code 工作区。
 
 ### 元数据刷新
 
 - 扩展监听 `workspace.yaml`（500ms 去抖）和 `agent-host.db*`（500ms 去抖、15 秒节流）。
+- Agent Host AHP 客户端后台读取 `local-endpoint/entries`，通过命名管道/UDS/TCP 连接，订阅根通道并处理 `listSessions`、`session/titleChanged`、`root/sessionSummaryChanged`；断线 30 秒重连，仅用于标题，不读取对话内容。
+- DashboardPayload 的 `ahp` 字段返回 `state / connected / sessions`；状态变化触发实时推送，页脚展示 AHP 连接情况。
 - 变化后调用 `POST /api/metadata-changed`，服务向所有 WS 客户端广播新快照。
 - 旧服务不支持该接口时，扩展回退为本地重新订阅。
 
@@ -80,6 +84,16 @@ npm run package        # 生成 tokentracker-*.vsix
 
 - 当前实现把没有 `session_id` 的 span 视为辅助调用（`is_main = 0`）。该分类是推断，不是 Copilot 显式标记。
 - 辅助调用并入 Dashboard 汇总与按模型统计；会话列表仅含主调用；“最近调用”独立菜单展示全部调用（含辅助调用）。辅助调用通常无法可靠归属具体会话。
+
+### OpenTelemetry 数据源
+
+- 同时支持扩展宿主 `github.copilot.chat.otel.*` 与 Agent Host `chat.agentHost.otel.*`；命令 `Token Tracker: 启用 OTel 上报` 写入两套设置并保持 `captureContent=false`。
+- Agent Host 设置需完整退出并重新打开 VS Code 才生效；仅重载窗口可能复用旧 host。
+- 模型归因优先 `gen_ai.response.model`（Auto 模式下 request model 可能是 `auto`）；会话 ID 依次取 `copilot_chat.session_id`、`copilot_chat.chat_session_id`、`gen_ai.conversation.id`。
+- Anthropic/Claude 的 `input_tokens` 不含缓存：解析时把 cache read + cache creation 合并为总输入；cache creation 按缓存写入价计费，未配置时回退到未缓存输入价。
+- 扩展管线若带 `copilot_chat.copilot_usage_nano_aiu`，调用列表在估算费用下方显示实际 AIC（nano-AIU / 1e9）；Agent Host 无该字段。
+- 两个本地 span 库（扩展 `agent-traces.db`、Agent Host `agent-host-traces.db`）只保留约 7 天/100 会话；`POST /api/import-local` 只读导入并按 `(trace_id, span_id)` 去重，扩展命令为 `Token Tracker: 导入本地 Copilot OTel 数据`。
+- 只统计 `gen_ai.operation.name=chat` 的 span，避免与 `invoke_agent` / `execute_tool` 重复计数。
 
 ### 费用与定价
 

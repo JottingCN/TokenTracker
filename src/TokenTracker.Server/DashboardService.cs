@@ -65,15 +65,21 @@ public sealed class DashboardService
                 .ToLocalTime()
                 .ToString("HH:mm:ss")
             : "-";
+        var metadataCache = new Dictionary<string, SessionMetadata?>(
+            StringComparer.OrdinalIgnoreCase);
+        var ahp = _metadata.GetAhpStatus();
 
         return new DashboardPayload(
             _store.GetSummary(fromMs, includeUtility: true, toMs),
             _store.GetModels(fromMs, toMs, includeUtility: true).ToList(),
-            _store.GetSessions(fromMs, toMs: toMs).Select(WithTitle).ToList(),
-            _store.GetCalls(fromMs, includeUtility: true, toMs: toMs).Select(WithTitle).ToList(),
+            _store.GetSessions(fromMs, toMs: toMs)
+                .Select(row => WithTitle(row, metadataCache)).ToList(),
+            _store.GetCalls(fromMs, includeUtility: true, toMs: toMs)
+                .Select(row => WithTitle(row, metadataCache)).ToList(),
             _counters.Snapshot(_endpoint, running: true),
             updatedAt,
-            _settings.RetentionDays);
+            _settings.RetentionDays,
+            new AhpStatusPayload(ahp.State, ahp.Connected, ahp.Sessions));
     }
 
     public ModelPayload GetModel(string model, int range)
@@ -84,10 +90,14 @@ public sealed class DashboardService
 
     public ModelPayload GetModel(string model, long fromMs, long toMs)
     {
+        var metadataCache = new Dictionary<string, SessionMetadata?>(
+            StringComparer.OrdinalIgnoreCase);
         return new ModelPayload(
             _store.GetModelSummary(model, fromMs, toMs, includeUtility: true),
-            _store.GetSessionsForModel(model, fromMs, toMs: toMs).Select(WithTitle).ToList(),
-            _store.GetCallsForModel(model, fromMs, toMs).Select(WithTitle).ToList(),
+            _store.GetSessionsForModel(model, fromMs, toMs: toMs)
+                .Select(row => WithTitle(row, metadataCache)).ToList(),
+            _store.GetCallsForModel(model, fromMs, toMs: toMs)
+                .Select(row => WithTitle(row, metadataCache)).ToList(),
             model);
     }
 
@@ -180,15 +190,28 @@ public sealed class DashboardService
         }
 
         var model = request.Model.Trim();
+        var cacheWrite = request.CacheWrite ?? request.UncachedInput;
+        var peakCacheWrite = request.PeakCacheWrite ??
+            request.CacheWrite ??
+            request.PeakUncachedInput ??
+            request.UncachedInput;
+        if (!IsValidPrice(cacheWrite) ||
+            (request.PeakAware && !IsValidPrice(peakCacheWrite)))
+        {
+            return null;
+        }
+
         var idle = new PriceTier(
             (decimal)request.CachedInput,
             (decimal)request.UncachedInput,
-            (decimal)request.Output);
+            (decimal)request.Output,
+            (decimal)cacheWrite);
         var peak = request.PeakAware
             ? new PriceTier(
                 (decimal)(request.PeakCachedInput ?? request.CachedInput),
                 (decimal)(request.PeakUncachedInput ?? request.UncachedInput),
-                (decimal)(request.PeakOutput ?? request.Output))
+                (decimal)(request.PeakOutput ?? request.Output),
+                (decimal)peakCacheWrite)
             : idle;
 
         LongContextPrice? longContext = null;
@@ -198,9 +221,11 @@ public sealed class DashboardService
             var longCached = request.LongCachedInput ?? request.CachedInput;
             var longUncached = request.LongUncachedInput ?? request.UncachedInput;
             var longOutput = request.LongOutput ?? request.Output;
+            var longCacheWrite = request.LongCacheWrite ?? longUncached;
             if (!IsValidPrice(longCached) ||
                 !IsValidPrice(longUncached) ||
-                !IsValidPrice(longOutput))
+                !IsValidPrice(longOutput) ||
+                !IsValidPrice(longCacheWrite))
             {
                 return null;
             }
@@ -208,7 +233,8 @@ public sealed class DashboardService
             if (request.PeakAware &&
                 ((request.LongPeakCachedInput is { } peakCached && !IsValidPrice(peakCached)) ||
                  (request.LongPeakUncachedInput is { } peakUncached && !IsValidPrice(peakUncached)) ||
-                 (request.LongPeakOutput is { } peakOutput && !IsValidPrice(peakOutput))))
+                 (request.LongPeakOutput is { } peakOutput && !IsValidPrice(peakOutput)) ||
+                 (request.LongPeakCacheWrite is { } peakWrite && !IsValidPrice(peakWrite))))
             {
                 return null;
             }
@@ -216,12 +242,14 @@ public sealed class DashboardService
             var longIdle = new PriceTier(
                 (decimal)longCached,
                 (decimal)longUncached,
-                (decimal)longOutput);
+                (decimal)longOutput,
+                (decimal)longCacheWrite);
             var longPeak = request.PeakAware
                 ? new PriceTier(
                     (decimal)(request.LongPeakCachedInput ?? longCached),
                     (decimal)(request.LongPeakUncachedInput ?? longUncached),
-                    (decimal)(request.LongPeakOutput ?? longOutput))
+                    (decimal)(request.LongPeakOutput ?? longOutput),
+                    (decimal)(request.LongPeakCacheWrite ?? longCacheWrite))
                 : longIdle;
 
             longContext = new LongContextPrice(threshold, longIdle, longPeak);
@@ -286,15 +314,41 @@ public sealed class DashboardService
             longContext is null ? null : (double)longContext.Value.Idle.Output,
             longContext is null || !peakAware ? null : (double)longContext.Value.Peak.CachedInput,
             longContext is null || !peakAware ? null : (double)longContext.Value.Peak.UncachedInput,
-            longContext is null || !peakAware ? null : (double)longContext.Value.Peak.Output);
+            longContext is null || !peakAware ? null : (double)longContext.Value.Peak.Output,
+            (double)idle.EffectiveCacheWrite,
+            peakAware ? (double)peak.EffectiveCacheWrite : null,
+            longContext is null ? null : (double)longContext.Value.Idle.EffectiveCacheWrite,
+            longContext is null || !peakAware
+                ? null
+                : (double)longContext.Value.Peak.EffectiveCacheWrite);
     }
 
     private static bool IsValidPrice(double value) =>
         double.IsFinite(value) && value >= 0 && value <= 1_000_000;
 
-    private SessionRow WithTitle(SessionRow row)
+    private SessionMetadata? GetCachedMetadata(
+        string? sessionId,
+        Dictionary<string, SessionMetadata?> cache)
     {
-        var metadata = _metadata.Get(row.SessionId);
+        if (sessionId is null)
+        {
+            return null;
+        }
+
+        if (!cache.TryGetValue(sessionId, out var metadata))
+        {
+            metadata = _metadata.Get(sessionId);
+            cache[sessionId] = metadata;
+        }
+
+        return metadata;
+    }
+
+    private SessionRow WithTitle(
+        SessionRow row,
+        Dictionary<string, SessionMetadata?> cache)
+    {
+        var metadata = GetCachedMetadata(row.SessionId, cache);
         return row with
         {
             Title = metadata?.Title,
@@ -302,9 +356,11 @@ public sealed class DashboardService
         };
     }
 
-    private CallRow WithTitle(CallRow row) =>
+    private CallRow WithTitle(
+        CallRow row,
+        Dictionary<string, SessionMetadata?> cache) =>
         row with
         {
-            Title = row.SessionId is null ? null : _metadata.Get(row.SessionId)?.Title,
+            Title = GetCachedMetadata(row.SessionId, cache)?.Title,
         };
 }
