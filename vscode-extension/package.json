@@ -135,5 +135,5 @@
     "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
     "sync-server": "node scripts/sync-server.mjs"
   },
-  "version": "0.1.4"
+  "version": "0.1.5"
 }

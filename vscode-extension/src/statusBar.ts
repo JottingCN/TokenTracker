@@ -440,7 +440,18 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   private breakdownKey(session: SessionSummary): string {
-    return `${session.sessionId}|${session.lastSeenMs}|${this.rangeIndex}`;
+    return [
+      session.sessionId,
+      session.lastSeenMs,
+      this.rangeIndex,
+      session.calls,
+      session.inputTokens,
+      session.cacheReadTokens,
+      session.outputTokens,
+      session.reasoningTokens,
+      session.costCny,
+      session.unpricedCalls,
+    ].join('|');
   }
 
   private resolveLatest(data: DashboardSnapshot): LatestScope {

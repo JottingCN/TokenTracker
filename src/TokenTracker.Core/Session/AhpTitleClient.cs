@@ -421,14 +421,20 @@ internal sealed class AhpTitleClient
 
     private void RemoveTitle(string resource)
     {
+        var changed = false;
         lock (_gate)
         {
-            _titles.Remove(resource);
+            changed = _titles.Remove(resource);
             var canonical = CanonicalSessionId(resource);
             if (canonical is not null)
             {
-                _titles.Remove(canonical);
+                changed |= _titles.Remove(canonical);
             }
+        }
+
+        if (changed)
+        {
+            StatusChanged?.Invoke();
         }
     }
 
@@ -443,6 +449,7 @@ internal sealed class AhpTitleClient
             return;
         }
 
+        var changed = false;
         lock (_gate)
         {
             if (_titles.TryGetValue(resource, out var existing))
@@ -451,12 +458,19 @@ internal sealed class AhpTitleClient
             }
 
             var value = new AhpTitle(title.Trim(), workspacePath);
+            changed = !_titles.TryGetValue(resource, out var current) ||
+                current != value;
             _titles[resource] = value;
             var canonical = CanonicalSessionId(resource);
             if (canonical is not null)
             {
                 _titles[canonical] = value;
             }
+        }
+
+        if (changed)
+        {
+            StatusChanged?.Invoke();
         }
     }
 
@@ -470,9 +484,10 @@ internal sealed class AhpTitleClient
 
         var workspace = GetWorkingDirectory(summary.WorkingDirectories);
         UpdateTitle(summary.Resource, summary.Title, workspace);
+        var changed = false;
         lock (_gate)
         {
-            _sessions[summary.Resource] = new AhpSessionInfo(
+            var info = new AhpSessionInfo(
                 summary.Resource,
                 summary.Provider ?? string.Empty,
                 summary.Title.Trim(),
@@ -481,6 +496,14 @@ internal sealed class AhpTitleClient
                 workspace,
                 summary.ModifiedAt ?? string.Empty,
                 summary.Chats?.Count ?? 0);
+            changed = !_sessions.TryGetValue(summary.Resource, out var current) ||
+                current != info;
+            _sessions[summary.Resource] = info;
+        }
+
+        if (changed)
+        {
+            StatusChanged?.Invoke();
         }
     }
 
@@ -491,6 +514,7 @@ internal sealed class AhpTitleClient
             return;
         }
 
+        var changed = false;
         lock (_gate)
         {
             _sessions.TryGetValue(resource, out var existing);
@@ -514,19 +538,30 @@ internal sealed class AhpTitleClient
                 workspace,
                 changes.ModifiedAt ?? existing?.ModifiedAt ?? string.Empty,
                 changes.Chats?.Count ?? existing?.Chats ?? 0);
+            changed = existing is null || existing != info;
             _sessions[resource] = info;
             UpdateTitle(resource, info.Title, info.WorkspacePath);
+        }
+
+        if (changed)
+        {
+            StatusChanged?.Invoke();
         }
     }
 
     private void RemoveSession(string resource)
     {
+        var changed = false;
         lock (_gate)
         {
-            _sessions.Remove(resource);
+            changed = _sessions.Remove(resource);
         }
 
         RemoveTitle(resource);
+        if (changed)
+        {
+            StatusChanged?.Invoke();
+        }
     }
 
     private static string MapSessionStatus(SessionStatus status)
