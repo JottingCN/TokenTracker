@@ -25,7 +25,7 @@ $(pulse) 82.35% · 155 ms · 30.5 tok/s · ¥0.012345
 - 多于一个模型时在末尾给出合计
 - 事件统计与工具调用 Top 5（次数、平均耗时、失败数）
 
-**浏览器看板**：主页 / 调用明细 / 模型 / 会话 / 系统信息 / 设置，包含趋势图、Trace 拓扑与价格配置，详见 [根说明](../README.md#看板导览)。
+**浏览器看板**：主页 / 调用明细 / 模型 / 会话 / 系统信息 / 设置，包含趋势图、Trace 拓扑与价格配置，详见 [项目说明](https://github.com/JottingCN/TokenTracker#看板导览)。
 
 ## 前置条件
 
@@ -134,5 +134,5 @@ code --install-extension tokentracker-*.vsix --force
 
 ## 相关文档
 
-- [Token Tracker 总说明](../README.md)
-- [开发者与自动化代理约定](../AGENTS.md)
+- [Token Tracker 总说明](https://github.com/JottingCN/TokenTracker)
+- [开发者与自动化代理约定](https://github.com/JottingCN/TokenTracker/blob/main/AGENTS.md)
