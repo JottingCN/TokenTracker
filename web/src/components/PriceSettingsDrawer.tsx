@@ -670,7 +670,6 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       title: tr('操作', 'Actions'),
       key: 'actions',
       width: 166,
-      fixed: 'right',
       onCell: (record) => ({ rowSpan: record.rowSpan }),
       render: (_, record) => {
         const row = rowByModel.get(record.model);

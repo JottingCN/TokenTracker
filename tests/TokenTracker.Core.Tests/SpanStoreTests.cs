@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Models;
+using TokenTracker.Core.Pricing;
 using TokenTracker.Core.Storage;
 
 namespace TokenTracker.Core.Tests;
@@ -106,7 +107,7 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void DeduplicatesCrossPipelineSpansAndKeepsRicherUsage()
+    public void KeepsCrossSourceSpansSeparate()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -122,7 +123,8 @@ public sealed class SpanStoreTests
                 "trace-agent", "span-agent", "session-1", "deepseek-flash",
                 start, 27_473, 0, 30, null,
                 serviceName: "github-copilot",
-                reasoningTokens: 0);
+                reasoningTokens: 0,
+                source: "agent-host");
             var extension = Span(
                 "trace-extension", "span-extension", "session-1", "deepseek-flash",
                 start + 304, 27_473, 1_152, 30, null,
@@ -132,9 +134,10 @@ public sealed class SpanStoreTests
             store.InsertMany(new[] { agentHost });
             store.InsertMany(new[] { extension });
 
-            var call = Assert.Single(store.GetCalls(0, includeUtility: true));
-            Assert.Equal(1_152, call.CacheReadTokens);
-            Assert.Equal(28, call.ReasoningTokens);
+            var calls = store.GetCalls(0, includeUtility: true);
+            Assert.Equal(2, calls.Count);
+            Assert.Contains(calls, call => call.Source == "agent-host");
+            Assert.Contains(calls, call => call.Source == "copilot-chat");
         }
         finally
         {
@@ -147,7 +150,300 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void StartupDeduplicationRemovesExistingCrossPipelineDuplicates()
+    public void DeduplicatesToolEventsByCallIdWithinSource()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertEvents(new[]
+            {
+                Event("e1", "s1", "agent-host", "call-1", "read_file", 1_000),
+                Event("e2", "s2", "agent-host", "call-1", "read_file", 1_100),
+                Event("e3", "s3", "copilot-chat", "call-1", "read_file", 1_200),
+            });
+
+            var events = store.GetSessionEvents("session-1");
+            Assert.Contains(
+                events,
+                row => row.Source == "agent-host" && row.Count == 1);
+            Assert.Contains(
+                events,
+                row => row.Source == "copilot-chat" && row.Count == 1);
+
+            var tools = store.GetSessionTools("session-1");
+            Assert.Equal(2, tools.Count);
+            Assert.Contains(
+                tools,
+                row => row.Source == "agent-host" && row.Calls == 1);
+            Assert.Contains(
+                tools,
+                row => row.Source == "copilot-chat" && row.Calls == 1);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void MergesCrossSourceCallsForCombinedSource()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t-copilot", "s-copilot", "session-1", "deepseek-flash",
+                    1_000, 1_000, 50, 100, 0.2,
+                    ttftMs: 100,
+                    source: "copilot-chat"),
+                Span(
+                    "t-agent", "s-agent", "session-1", "deepseek-flash",
+                    1_050, 1_000, 0, 100, null,
+                    serviceName: "github-copilot",
+                    source: "agent-host"),
+            });
+
+            store.EnsureCombinedSpans();
+
+            var combined = Assert.Single(store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Source = "combined",
+            }));
+            Assert.Equal("combined", combined.Source);
+            Assert.Equal(100, combined.TtftMs);
+            Assert.Equal(50, combined.CacheReadTokens);
+            Assert.Null(combined.CostCny);
+            Assert.Single(store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Source = "copilot-chat",
+            }));
+            Assert.Single(store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Source = "agent-host",
+            }));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CombinedMergeUsesIntervalOverlapAndRecomputesCost()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+        var price = new ModelPrice(
+            new PriceTier(0.02m, 1m, 4m),
+            new PriceTier(0.02m, 1m, 4m),
+            PeakAware: false);
+
+        ModelPricing.SetOverrides(new[]
+        {
+            new KeyValuePair<string, ModelPrice>("deepseek-flash", price),
+        });
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO spans (
+                        trace_id, span_id, name, start_time_ms, end_time_ms,
+                        service_name, otel_source, model, session_id, is_main,
+                        input_tokens, output_tokens, cache_read_tokens,
+                        reasoning_tokens, received_at_ms
+                    ) VALUES
+                        ('trace-a', 'span-a', 'chat', 1000, 5010,
+                         'github-copilot', 'agent-host', 'deepseek-flash',
+                         'session-1', 1, 29726, 61, 0, 0, 1000),
+                        ('trace-b', 'span-b', 'chat', 3956, 4969,
+                         'copilot-chat', 'copilot-chat', 'deepseek-flash',
+                         'session-1', 1, 29726, 61, 8576, 12, 3956);
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            store.EnsureCombinedSpans();
+
+            var combined = Assert.Single(store.GetCallsForSession(
+                "session-1",
+                source: "combined"));
+            Assert.Equal(8576, combined.CacheReadTokens);
+            Assert.Equal(
+                0.02156552,
+                Assert.IsType<double>(combined.CostCny),
+                8);
+
+            Assert.Single(store.GetCallsForSession(
+                "session-1",
+                source: "copilot-chat"));
+            Assert.Single(store.GetCallsForSession(
+                "session-1",
+                source: "agent-host"));
+        }
+        finally
+        {
+            ModelPricing.SetOverrides(
+                Array.Empty<KeyValuePair<string, ModelPrice>>());
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CallTextQueryMatchesModelSessionAndSessionList()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1", "s1", "session-abc", "deepseek-flash",
+                    1_000, 100, 0, 10, null,
+                    source: "copilot-chat"),
+                Span(
+                    "t2", "s2", "session-def", "gpt-4o-mini-2024-07-18",
+                    2_000, 100, 0, 10, null,
+                    source: "copilot-chat"),
+            });
+
+            Assert.Single(store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Query = "deepseek",
+            }));
+            Assert.Single(store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Query = "abc",
+            }));
+            Assert.Single(store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Query = "not-in-model",
+                SessionIds = new[] { "session-def" },
+            }));
+            Assert.Equal(2, store.CountCalls(new CallQuery
+            {
+                FromMs = 0,
+                Query = "session",
+            }));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CombinedRebuildsOnlyDirtySessions()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "ta-1", "sa-1", "session-a", "deepseek-flash",
+                    1_000, 100, 50, 10, 0.1,
+                    ttftMs: 100,
+                    source: "copilot-chat"),
+                Span(
+                    "ta-2", "sa-2", "session-a", "deepseek-flash",
+                    1_050, 100, 50, 10, 0.2,
+                    serviceName: "github-copilot",
+                    source: "agent-host"),
+            });
+            store.EnsureCombinedSpans();
+            Assert.Single(store.GetCallsForSession(
+                "session-a",
+                source: "combined"));
+
+            store.InsertMany(new[]
+            {
+                Span(
+                    "tb-1", "sb-1", "session-b", "deepseek-flash",
+                    2_000, 100, 0, 10, 0.3,
+                    source: "copilot-chat"),
+            });
+            store.EnsureCombinedSpans();
+
+            Assert.Single(store.GetCallsForSession(
+                "session-a",
+                source: "combined"));
+            Assert.Single(store.GetCallsForSession(
+                "session-b",
+                source: "combined"));
+            Assert.Equal(2, store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Source = "combined",
+            }).Count);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TraceNodesMergeCrossSourceCallsAndDropCombinedRows()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -164,24 +460,37 @@ public sealed class SpanStoreTests
                 using var command = connection.CreateCommand();
                 command.CommandText = """
                     INSERT INTO spans (
-                        trace_id, span_id, name, start_time_ms, service_name,
-                        model, session_id, is_main, input_tokens, output_tokens,
-                        cache_read_tokens, reasoning_tokens, received_at_ms
+                        trace_id, span_id, parent_span_id, name, start_time_ms,
+                        service_name, otel_source, model, session_id, is_main,
+                        input_tokens, output_tokens, received_at_ms
                     ) VALUES
-                        ('trace-a', 'span-a', 'chat', 1000, 'github-copilot',
-                         'DeepSeek/deepseek-flash', 'session-1', 1, 27473, 30, 0, 0, 1000),
-                        ('trace-b', 'span-b', 'chat', 1304, 'copilot-chat',
-                         'deepseek-flash', 'session-1', 1, 27473, 30, 1152, 28, 1304);
+                        ('trace-c', 'span-c', NULL, 'chat', 1000, 'copilot-chat',
+                         'copilot-chat', 'deepseek-flash', 'session-1', 1,
+                         100, 10, 1000),
+                        ('trace-a', 'span-a', NULL, 'chat', 1304, 'github-copilot',
+                         'agent-host', 'deepseek-flash', 'session-1', 1,
+                         100, 10, 1304),
+                        ('combined', 'span-x', NULL, 'chat', 1000, 'combined',
+                         'combined', 'deepseek-flash', 'session-1', 1,
+                         100, 10, 1000);
+                    INSERT INTO session_events (
+                        trace_id, span_id, parent_span_id, operation, session_id,
+                        service_name, otel_source, start_time_ms, received_at_ms
+                    ) VALUES
+                        ('trace-a', 'span-e', 'span-a', 'execute_tool',
+                         'session-1', 'github-copilot', 'agent-host', 1400, 1400);
                     """;
                 command.ExecuteNonQuery();
             }
 
-            Assert.Equal(1, store.DeduplicateSpans());
+            var nodes = store.GetTraceNodes("session-1");
+            Assert.Equal(2, nodes.Count);
+            var chat = Assert.Single(nodes, node => node.Kind == "chat");
+            var tool = Assert.Single(nodes, node => node.Kind == "event");
+            Assert.Equal(chat.Id, tool.ParentId);
 
-            var call = Assert.Single(store.GetCalls(0, includeUtility: true));
-            Assert.Equal("deepseek-flash", call.Model);
-            Assert.Equal(1_152, call.CacheReadTokens);
-            Assert.Equal(28, call.ReasoningTokens);
+            var copilotOnly = store.GetTraceNodes("session-1", "copilot-chat");
+            Assert.Single(copilotOnly);
         }
         finally
         {
@@ -192,6 +501,469 @@ public sealed class SpanStoreTests
             }
         }
     }
+
+    [Fact]
+    public void AggregatesSourcesLatencyAndToolEvents()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1", "s1", "session-1", "deepseek-flash",
+                    1_000, 1_000, 0, 500, 0.1,
+                    ttftMs: 200,
+                    durationMs: 1_000),
+                Span(
+                    "t2", "s2", "session-2", "deepseek-flash",
+                    3_000, 1_000, 0, 500, 0.1,
+                    serviceName: "github-copilot",
+                    source: "agent-host"),
+            });
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = "t3",
+                    SpanId = "s3",
+                    Operation = "execute_tool",
+                    ToolName = "read_file",
+                    ToolType = "function",
+                    EditType = "create",
+                    SkillName = "review",
+                    SessionId = "session-1",
+                    ServiceName = "copilot-chat",
+                    StartTimeMs = 1_500,
+                    EndTimeMs = 2_000,
+                    ReceivedAtMs = 2_000,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t4",
+                    SpanId = "s4",
+                    Operation = "execute_tool",
+                    ToolName = "read_file",
+                    ToolType = "extension",
+                    EditType = "update",
+                    SessionId = "session-1",
+                    ServiceName = "copilot-chat",
+                    StartTimeMs = 2_500,
+                    EndTimeMs = 3_500,
+                    IsError = true,
+                    ReceivedAtMs = 3_500,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t5",
+                    SpanId = "s5",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "copilot-chat",
+                    Source = "agent-host",
+                    StartTimeMs = 4_000,
+                    EndTimeMs = 5_000,
+                    ReceivedAtMs = 5_000,
+                },
+            });
+
+            var calls = store.GetCalls(new CallQuery { FromMs = 0 });
+            Assert.Equal(2, calls.Count);
+            Assert.Equal("agent-host", calls[0].Source);
+            Assert.Equal("copilot-chat", calls[1].Source);
+            Assert.Equal(200L, calls[1].TtftMs!.Value);
+            Assert.Equal(625d, calls[1].TokensPerSecond!.Value, 3);
+
+            Assert.Equal(
+                1,
+                store.GetSummary(
+                    0,
+                    includeUtility: true,
+                    source: "agent-host").Calls);
+            Assert.Equal(2, store.CountCalls(new CallQuery { FromMs = 0 }));
+            var page = store.GetCalls(new CallQuery
+            {
+                FromMs = 0,
+                Source = "copilot-chat",
+                Limit = 1,
+                Offset = 0,
+            });
+            Assert.Single(page);
+            Assert.Equal("copilot-chat", page[0].Source);
+
+            var events = store.GetSessionEvents("session-1");
+            var tools = Assert.Single(
+                events,
+                row => row.Operation == "execute_tool");
+            Assert.Equal(2, tools.Count);
+            Assert.Equal(1, tools.ErrorCount);
+            Assert.Equal(750d, tools.AvgDurationMs!.Value, 3);
+            Assert.Contains(
+                events,
+                row => row.Operation == "invoke_agent" &&
+                       row.Count == 1 &&
+                       row.Source == "agent-host");
+
+            var toolRows = store.GetSessionTools("session-1");
+            var tool = Assert.Single(toolRows);
+            Assert.Equal("read_file", tool.Tool);
+            Assert.Equal(2, tool.Calls);
+            Assert.Equal(1_000d, tool.MaxDurationMs!.Value, 3);
+            Assert.Equal(1, tool.ErrorCount);
+            Assert.Contains("function", tool.ToolTypes);
+            Assert.Contains("extension", tool.ToolTypes);
+            Assert.Contains("create", tool.EditTypes);
+            Assert.Contains("update", tool.EditTypes);
+            Assert.Equal(new[] { "review" }, tool.SkillNames);
+
+            store.InsertAgentRuns(new[]
+            {
+                new AgentRunRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "s1",
+                    IsRoot = true,
+                    SessionId = "session-1",
+                    AgentName = "copilot",
+                    AgentType = "builtin",
+                    ProviderName = "github",
+                    Source = "copilot-chat",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 2_000,
+                    InputTokens = 100,
+                    OutputTokens = 50,
+                    CacheReadTokens = 20,
+                    ReceivedAtMs = 2_000,
+                },
+            });
+            var agentRun = Assert.Single(store.GetAgentRuns("session-1"));
+            Assert.Equal("copilot", agentRun.AgentName);
+            Assert.Equal(100, agentRun.InputTokens);
+            Assert.Equal(20, agentRun.CacheReadTokens);
+
+            var trace = store.GetTraceNodes("session-1");
+            Assert.Contains(trace, node => node.Kind == "chat");
+            Assert.Contains(
+                trace,
+                node => node.Kind == "event" && node.Tool == "read_file");
+
+            var agentEvents = store.GetSessionEventAggregates(
+                0,
+                long.MaxValue,
+                "agent-host");
+            Assert.Contains(
+                agentEvents,
+                row => row.SessionId == "session-1" && row.Events == 1);
+            var extensionEvents = store.GetSessionEventAggregates(
+                0,
+                long.MaxValue,
+                "copilot-chat");
+            Assert.Contains(
+                extensionEvents,
+                row => row.SessionId == "session-1" && row.Events == 2);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ResolvesSubagentToolSessionsFromParents()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "trace-sub", "chat", "call_00_sub", "deepseek-flash",
+                    1_150, 100, 0, 10, null,
+                    parentSpanId: "sub"),
+            });
+            store.InsertEvents(new[]
+            {
+                EventRecord("root", null, "invoke_agent", null, "root-session", 1_000),
+                EventRecord("sub", "root", "invoke_agent", null, "call_00_sub", 1_100, "Explore"),
+                EventRecord("tool", "sub", "execute_tool", "read_file", "call_00_sub", 1_200),
+                EventRecord("root-tool", "root", "execute_tool", "runSubagent", "root-session", 1_300),
+            });
+
+            Assert.Equal(0, store.ResolveSubagentSessions());
+
+            var events = store.GetSessionEvents("root-session");
+            Assert.Equal(2, events.Count);
+            Assert.Equal(4, events.Sum(row => row.Count));
+            Assert.Empty(store.GetSessionEvents("call_00_sub"));
+
+            var chat = Assert.Single(store.GetCallsForSession(
+                "root-session",
+                source: "copilot-chat"));
+            Assert.Equal("Explore", chat.SubagentName);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ResolveSubagentSessionsRepairsStoredRows()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO session_events (
+                        trace_id, span_id, parent_span_id, operation, session_id,
+                        service_name, otel_source, start_time_ms, received_at_ms
+                    ) VALUES
+                        ('trace-sub', 'root', NULL, 'invoke_agent',
+                         'root-session', 'copilot-chat', 'copilot-chat', 1000, 1000),
+                        ('trace-sub', 'sub', 'root', 'invoke_agent',
+                         'call_00_sub', 'copilot-chat', 'copilot-chat', 1100, 1100),
+                        ('trace-sub', 'tool', 'sub', 'execute_tool',
+                         'call_00_sub', 'copilot-chat', 'copilot-chat', 1200, 1200);
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Equal(2, store.ResolveSubagentSessions());
+
+            var events = store.GetSessionEvents("root-session");
+            Assert.Equal(3, events.Sum(row => row.Count));
+            Assert.Empty(store.GetSessionEvents("call_00_sub"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CountsEditAcceptanceOutcomeMetrics()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            Assert.Equal(3, store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 3, 0, 0),
+                MetricPoint("accepted", 5, 60_000, 0),
+                MetricPoint("accepted", 1, 120_000, 120_000),
+            }));
+
+            var summary = store.GetOutcomeSummary(0, long.MaxValue);
+            Assert.True(summary.HasData);
+            Assert.Equal(6, summary.EditAccepted);
+            Assert.Equal(0, summary.EditRejected);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void AttributesWindowMetricsOnlyWhenSessionIsUnique()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1", "s1", "session-1", "deepseek-flash",
+                    1_000, 100, 0, 10, null,
+                    windowSessionId: "win-1"),
+                Span(
+                    "t2", "s2", "session-2", "deepseek-flash",
+                    1_000, 100, 0, 10, null,
+                    windowSessionId: "win-1"),
+            });
+            store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 4, 2_000, 0, "win-1"),
+            });
+
+            Assert.Equal(
+                0,
+                store.GetOutcomeSummary(0, long.MaxValue, null, "session-1")
+                    .EditAccepted);
+            Assert.Equal(
+                0,
+                store.GetOutcomeSummary(0, long.MaxValue, null, "session-2")
+                    .EditAccepted);
+            Assert.Equal(
+                4,
+                store.GetOutcomeSummary(0, long.MaxValue).EditAccepted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void AttributesWindowMetricToUniqueSession()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1", "s1", "session-1", "deepseek-flash",
+                    1_000, 100, 0, 10, null,
+                    windowSessionId: "win-1"),
+            });
+            store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 2, 2_000, 0, "win-1"),
+            });
+
+            Assert.Equal(
+                2,
+                store.GetOutcomeSummary(0, long.MaxValue, null, "session-1")
+                    .EditAccepted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static OtlpMetricPointRecord MetricPoint(
+        string outcome,
+        double value,
+        long endMs,
+        long startMs,
+        string? windowSessionId = null,
+        string? toolCallId = null,
+        string metricName = "copilot_chat.edit.acceptance.count",
+        string? attributes = null) =>
+        new()
+        {
+            Source = "copilot-chat",
+            SeriesKey = $"{metricName}-{outcome}-{windowSessionId}",
+            MetricName = metricName,
+            MetricKind = "sum",
+            Attributes = attributes ?? $"copilot_chat.edit.outcome={outcome}",
+            WindowSessionId = windowSessionId,
+            ToolCallId = toolCallId,
+            StartTimeMs = startMs,
+            EndTimeMs = endMs,
+            Value = value,
+            ReceivedAtMs = endMs,
+        };
+
+    private static OtlpEventRecord EventRecord(
+        string spanId,
+        string? parentSpanId,
+        string operation,
+        string? toolName,
+        string sessionId,
+        long startMs,
+        string? agentName = null) =>
+        new()
+        {
+            TraceId = "trace-sub",
+            SpanId = spanId,
+            ParentSpanId = parentSpanId,
+            Operation = operation,
+            ToolName = toolName,
+            SessionId = sessionId,
+            AgentName = agentName,
+            Source = "copilot-chat",
+            StartTimeMs = startMs,
+            EndTimeMs = startMs + 100,
+            ReceivedAtMs = startMs,
+        };
+
+    private static OtlpEventRecord Event(
+        string traceId,
+        string spanId,
+        string source,
+        string callId,
+        string toolName,
+        long startMs) =>
+        new()
+        {
+            TraceId = traceId,
+            SpanId = spanId,
+            Operation = "execute_tool",
+            ToolName = toolName,
+            CallId = callId,
+            SessionId = "session-1",
+            Source = source,
+            StartTimeMs = startMs,
+            EndTimeMs = startMs + 100,
+            ReceivedAtMs = startMs,
+        };
 
     private static OtlpSpanRecord Span(
         string traceId,
@@ -204,15 +976,23 @@ public sealed class SpanStoreTests
         long outputTokens,
         double? cost,
         string serviceName = "copilot-chat",
-        long reasoningTokens = 0) =>
+        long reasoningTokens = 0,
+        long? ttftMs = null,
+        string source = "copilot-chat",
+        long durationMs = 100,
+        string? parentSpanId = null,
+        string? windowSessionId = null) =>
         new()
         {
             TraceId = traceId,
             SpanId = spanId,
+            ParentSpanId = parentSpanId,
+            WindowSessionId = windowSessionId,
             Name = "chat test",
             StartTimeMs = startMs,
-            EndTimeMs = startMs + 100,
+            EndTimeMs = startMs + durationMs,
             ServiceName = serviceName,
+            Source = source,
             Model = model,
             SessionId = sessionId,
             IsMain = sessionId is not null,
@@ -220,6 +1000,7 @@ public sealed class SpanStoreTests
             CacheReadTokens = cacheReadTokens,
             OutputTokens = outputTokens,
             ReasoningTokens = reasoningTokens,
+            TtftMs = ttftMs,
             HitRate = inputTokens > 0 ? (double)cacheReadTokens / inputTokens : null,
             CostCny = cost,
             PricingPeriod = "peak",

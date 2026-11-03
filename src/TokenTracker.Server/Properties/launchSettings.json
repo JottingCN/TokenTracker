@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "TokenTracker.Server": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:11199;http://localhost:11200"
+    }
+  }
+}

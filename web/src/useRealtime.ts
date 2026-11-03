@@ -12,7 +12,23 @@ export function useRealtime<T>(subscription: Subscription): {
   const subRef = useRef(subscription);
   subRef.current = subscription;
 
-  const { view, id, range, utility, fromMs, toMs } = subscription;
+  const {
+    view,
+    id,
+    range,
+    utility,
+    fromMs,
+    toMs,
+    model,
+    query,
+    kind,
+    priced,
+    period,
+    hasError,
+    agent,
+    offset,
+    limit,
+  } = subscription;
 
   useEffect(() => {
     let disposed = false;
@@ -70,7 +86,23 @@ export function useRealtime<T>(subscription: Subscription): {
     if (socket && socket.readyState === WebSocket.OPEN) {
       send(socket, subscription);
     }
-  }, [view, id, range, utility, fromMs, toMs]);
+  }, [
+    view,
+    id,
+    range,
+    utility,
+    fromMs,
+    toMs,
+    model,
+    query,
+    kind,
+    priced,
+    period,
+    hasError,
+    agent,
+    offset,
+    limit,
+  ]);
 
   useEffect(() => {
     setData(null);
@@ -96,6 +128,15 @@ function send(socket: WebSocket, subscription: Subscription) {
       utility: subscription.utility,
       fromMs: subscription.fromMs,
       toMs: subscription.toMs,
+      model: subscription.model,
+      query: subscription.query,
+      kind: subscription.kind,
+      priced: subscription.priced,
+      period: subscription.period,
+      hasError: subscription.hasError,
+      agent: subscription.agent,
+      offset: subscription.offset,
+      limit: subscription.limit,
       client: 'web',
     }),
   );

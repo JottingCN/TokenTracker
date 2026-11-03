@@ -31,26 +31,50 @@ public static class ModelPricing
         var map = new Dictionary<string, ModelPrice>(StringComparer.OrdinalIgnoreCase);
         foreach (var (model, price) in overrides)
         {
-            map[NormalizeModel(model)] = price;
+            var trimmed = model.Trim();
+            map[trimmed] = price;
+            map[NormalizeModel(trimmed)] = price;
         }
 
         Volatile.Write(ref _overrides, map);
     }
 
-    public static string NormalizeModel(string model)
+    // Copilot Chat emits canonical model IDs (gpt-4o-mini-2024-07-18);
+    // Agent Host prefixes the upstream vendor or gateway (DeepSeek/x,
+    // openrouter/vendor/x). Keep the dated canonical ID, strip only the
+    // outermost routing segment, and never trim version/date suffixes.
+    public static string NormalizeModel(string model, string? source = null)
     {
-        var slash = model.LastIndexOf('/');
-        var leaf = slash >= 0 ? model[(slash + 1)..] : model;
-        return StripAnnotation(leaf.Trim()).ToLowerInvariant();
+        var normalized = StripAnnotation(model.Trim()).ToLowerInvariant();
+        if (string.IsNullOrEmpty(normalized) || IsCopilotChatSource(source))
+        {
+            return normalized;
+        }
+
+        var slash = normalized.IndexOf('/');
+        return slash > 0 && slash < normalized.Length - 1
+            ? normalized[(slash + 1)..]
+            : normalized;
     }
 
     public static ModelPrice? GetPrice(string model)
     {
-        var normalized = NormalizeModel(model);
-        return Volatile.Read(ref _overrides).TryGetValue(normalized, out var custom)
+        var overrides = Volatile.Read(ref _overrides);
+        var trimmed = model.Trim();
+        if (overrides.TryGetValue(trimmed, out var exact))
+        {
+            return exact;
+        }
+
+        var normalized = NormalizeModel(trimmed);
+        return overrides.TryGetValue(normalized, out var custom)
             ? custom
             : null;
     }
+
+    private static bool IsCopilotChatSource(string? source) =>
+        string.Equals(source, "copilot-chat", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(source, "extension-host", StringComparison.OrdinalIgnoreCase);
 
     public static decimal? ComputeCostCny(
         string model,

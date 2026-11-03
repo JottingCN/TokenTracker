@@ -1,76 +1,695 @@
-import { ReloadOutlined } from '@ant-design/icons';
-import { Button, Card, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import {
+  FullscreenOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
+import {
+  Button,
+  Card,
+  Col,
+  Empty,
+  Modal,
+  Row,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import { OutcomeCard } from '../components/OutcomeCard';
 import { SummaryCards } from '../components/SummaryCards';
-import { callColumns, callRowKey } from '../components/columns';
+import { TraceTree } from '../components/TraceTree';
 import { useRealtime } from '../useRealtime';
-import type { SessionPayload } from '../types';
+import type {
+  AgentRunRow,
+  HookSummaryRow,
+  SessionEventRow,
+  SessionPayload,
+  ToolCallRow,
+} from '../types';
 import { useUi } from '../ui';
+import {
+  formatLatency,
+  formatSpeed,
+  formatTime,
+  operationLabel,
+} from '../utils/labels';
 import { useMoney } from '../utils/money';
-import { tableHeight } from '../utils/tableHeight';
+import { useViewportHeight } from '../utils/useViewportHeight';
 
 interface SessionPageProps {
   sessionId: string;
   range: number;
+  onMeta?: (meta: { title: string; subtitle?: string }) => void;
 }
 
-export function SessionPage({ sessionId, range }: SessionPageProps) {
+export function SessionPage({
+  sessionId,
+  range,
+  onMeta,
+}: SessionPageProps) {
   useMoney();
-  const { tr } = useUi();
+  const { lang, tr } = useUi();
+  const number = new Intl.NumberFormat(lang === 'zh' ? 'zh-CN' : 'en-US');
   const shortId =
     sessionId.length > 20 ? `${sessionId.slice(0, 8)}…` : sessionId;
-  const { data, connected, refresh } = useRealtime<SessionPayload>({
+  const listHeight = useViewportHeight(0.3, 240, 420);
+  const [traceExpanded, setTraceExpanded] = useState(false);
+  const { data, refresh } = useRealtime<SessionPayload>({
     view: 'session',
     id: sessionId,
     range,
     utility: false,
   });
+  const eventTotal =
+    data?.events.reduce((total, row) => total + row.count, 0) ?? 0;
+  const toolTotal =
+    data?.tools.reduce((total, row) => total + row.calls, 0) ?? 0;
+  const summary = data?.summary;
+  const pageTitle =
+    data?.title?.trim() || `${tr('未命名', 'Unnamed')} · ${shortId}`;
+  const pageSubtitle = data?.workspacePath || sessionId;
+
+  useEffect(() => {
+    onMeta?.({ title: pageTitle, subtitle: pageSubtitle });
+  }, [onMeta, pageTitle, pageSubtitle]);
+
+  const eventColumns: ColumnsType<SessionEventRow> = [
+    {
+      title: tr('事件类型', 'Event'),
+      key: 'operation',
+      width: 130,
+      render: (_, row) => operationLabel(row.operation),
+    },
+    {
+      title: tr('次数', 'Count'),
+      key: 'count',
+      width: 80,
+      align: 'right',
+      render: (_, row) => number.format(row.count),
+    },
+    {
+      title: tr('平均耗时', 'Avg duration'),
+      key: 'avgDuration',
+      width: 110,
+      align: 'right',
+      render: (_, row) => formatLatency(row.avgDurationMs),
+    },
+    {
+      title: tr('失败', 'Errors'),
+      key: 'errors',
+      width: 70,
+      align: 'right',
+      render: (_, row) =>
+        row.errorCount > 0 ? (
+          <Typography.Text type="danger">
+            {number.format(row.errorCount)}
+          </Typography.Text>
+        ) : (
+          '0'
+        ),
+    },
+    {
+      title: tr('最近', 'Last seen'),
+      key: 'lastSeen',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatTime(row.lastSeenMs),
+    },
+  ];
+
+  const toolColumns: ColumnsType<ToolCallRow> = [
+    {
+      title: tr('工具', 'Tool'),
+      dataIndex: 'tool',
+      key: 'tool',
+      width: 180,
+      ellipsis: true,
+    },
+    {
+      title: tr('类型', 'Type'),
+      key: 'toolType',
+      width: 110,
+      ellipsis: true,
+      render: (_, row) => row.toolTypeText,
+    },
+    {
+      title: tr('细分', 'Details'),
+      key: 'toolDetail',
+      width: 190,
+      render: (_, row) => {
+        const tags = [
+          ...row.editTypes.map((value) => ({
+            key: `edit:${value}`,
+            color: 'blue',
+            label: `${tr('编辑', 'Edit')}: ${value}`,
+          })),
+          ...row.skillNames.map((value) => ({
+            key: `skill:${value}`,
+            color: 'purple',
+            label: `${tr('技能', 'Skill')}: ${value}`,
+          })),
+        ];
+        return tags.length === 0 ? (
+          '-'
+        ) : (
+          <Space size={4} wrap>
+            {tags.map((tag) => (
+              <Tag key={tag.key} color={tag.color}>
+                {tag.label}
+              </Tag>
+            ))}
+          </Space>
+        );
+      },
+    },
+    {
+      title: tr('MCP Server', 'MCP server'),
+      key: 'mcpServer',
+      width: 160,
+      ellipsis: true,
+      render: (_, row) => row.mcpServerHashText,
+    },
+    {
+      title: tr('MCP 工具', 'MCP tool'),
+      key: 'mcpTool',
+      width: 160,
+      ellipsis: true,
+      render: (_, row) => row.mcpToolNameText,
+    },
+    {
+      title: tr('错误', 'Error'),
+      key: 'errorType',
+      width: 130,
+      ellipsis: true,
+      render: (_, row) => row.errorTypeText,
+    },
+    {
+      title: tr('Agent', 'Agent'),
+      key: 'agentName',
+      width: 150,
+      ellipsis: true,
+      render: (_, row) => row.agentNameText,
+    },
+    {
+      title: tr('调用次数', 'Calls'),
+      key: 'calls',
+      width: 90,
+      align: 'right',
+      render: (_, row) => number.format(row.calls),
+    },
+    {
+      title: tr('平均耗时', 'Avg duration'),
+      key: 'avgDuration',
+      width: 110,
+      align: 'right',
+      render: (_, row) => formatLatency(row.avgDurationMs),
+    },
+    {
+      title: tr('最长耗时', 'Max duration'),
+      key: 'maxDuration',
+      width: 110,
+      align: 'right',
+      render: (_, row) => formatLatency(row.maxDurationMs),
+    },
+    {
+      title: tr('失败', 'Errors'),
+      key: 'errors',
+      width: 70,
+      align: 'right',
+      render: (_, row) =>
+        row.errorCount > 0 ? (
+          <Typography.Text type="danger">
+            {number.format(row.errorCount)}
+          </Typography.Text>
+        ) : (
+          '0'
+        ),
+    },
+    {
+      title: tr('最近', 'Last seen'),
+      key: 'lastSeen',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatTime(row.lastSeenMs),
+    },
+  ];
+
+  const agentRunColumns: ColumnsType<AgentRunRow> = [
+    {
+      title: tr('层级', 'Scope'),
+      key: 'scope',
+      width: 90,
+      render: (_, row) =>
+        row.isRoot ? (
+          <Tag>{tr('根', 'Root')}</Tag>
+        ) : (
+          <Tag color="purple">{tr('子代理', 'Subagent')}</Tag>
+        ),
+    },
+    {
+      title: tr('Agent', 'Agent'),
+      key: 'agent',
+      width: 160,
+      ellipsis: true,
+      render: (_, row) => row.agentText,
+    },
+    {
+      title: tr('类型', 'Type'),
+      key: 'agentType',
+      width: 100,
+      ellipsis: true,
+      render: (_, row) => row.agentTypeText,
+    },
+    {
+      title: tr('提供商', 'Provider'),
+      key: 'provider',
+      width: 120,
+      ellipsis: true,
+      render: (_, row) => row.providerText,
+    },
+    {
+      title: tr('模型', 'Model'),
+      key: 'model',
+      width: 180,
+      ellipsis: true,
+      render: (_, row) => row.modelText,
+    },
+    {
+      title: tr('轮次', 'Turns'),
+      key: 'turns',
+      width: 70,
+      align: 'right',
+      render: (_, row) => row.turnText,
+    },
+    {
+      title: tr('输入 / 缓存 / 输出', 'Input / Cache / Output'),
+      key: 'tokens',
+      width: 190,
+      align: 'right',
+      render: (_, row) =>
+        `${row.inputText} / ${row.cacheText} / ${row.outputText}`,
+    },
+    {
+      title: tr('仓库 / 分支', 'Repo / Branch'),
+      key: 'repo',
+      width: 220,
+      ellipsis: true,
+      render: (_, row) => {
+        const parts = [row.gitRepository, row.gitBranch].filter(
+          (value): value is string => Boolean(value),
+        );
+        if (parts.length === 0) {
+          return '-';
+        }
+
+        const details = [
+          row.gitRepository ? `repo: ${row.gitRepository}` : null,
+          row.gitBranch ? `branch: ${row.gitBranch}` : null,
+          row.gitCommit ? `commit: ${row.gitCommit}` : null,
+          row.githubOrg ? `org: ${row.githubOrg}` : null,
+        ].filter((value): value is string => Boolean(value));
+        return (
+          <Tooltip
+            title={
+              <span style={{ whiteSpace: 'pre-line' }}>
+                {details.join('\n')}
+              </span>
+            }
+          >
+            <span>{parts.join(' / ')}</span>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: tr('耗时', 'Duration'),
+      key: 'duration',
+      width: 100,
+      align: 'right',
+      render: (_, row) => row.durationText,
+    },
+    {
+      title: tr('开始', 'Start'),
+      key: 'start',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatTime(row.startTimeMs),
+    },
+    {
+      title: tr('错误', 'Error'),
+      key: 'error',
+      width: 120,
+      ellipsis: true,
+      render: (_, row) =>
+        row.isError ? (
+          <Typography.Text type="danger">{row.errorText}</Typography.Text>
+        ) : (
+          '-'
+        ),
+    },
+  ];
+
+  const hookColumns: ColumnsType<HookSummaryRow> = [
+    {
+      title: tr('Hook', 'Hook'),
+      key: 'hookType',
+      width: 160,
+      ellipsis: true,
+      render: (_, row) => row.hookTypeText,
+    },
+    {
+      title: tr('决策', 'Decision'),
+      key: 'decision',
+      width: 100,
+      render: (_, row) => row.decisionText,
+    },
+    {
+      title: tr('结果', 'Result'),
+      key: 'result',
+      width: 140,
+      ellipsis: true,
+      render: (_, row) => row.resultKindText,
+    },
+    {
+      title: tr('次数', 'Calls'),
+      key: 'count',
+      width: 80,
+      align: 'right',
+      render: (_, row) => row.countText,
+    },
+    {
+      title: tr('平均耗时', 'Avg duration'),
+      key: 'avgDuration',
+      width: 110,
+      align: 'right',
+      render: (_, row) => row.avgDurationText,
+    },
+    {
+      title: tr('失败', 'Errors'),
+      key: 'errors',
+      width: 70,
+      align: 'right',
+      render: (_, row) =>
+        row.errorCount > 0 ? (
+          <Typography.Text type="danger">
+            {number.format(row.errorCount)}
+          </Typography.Text>
+        ) : (
+          '0'
+        ),
+    },
+    {
+      title: tr('作用工具', 'Tools'),
+      key: 'tools',
+      width: 220,
+      ellipsis: true,
+      render: (_, row) => row.toolNamesText,
+    },
+    {
+      title: tr('最近', 'Last seen'),
+      key: 'lastSeen',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatTime(row.lastSeenMs),
+    },
+  ];
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Space size="middle" align="center">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <Space size={6} align="center">
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              {data?.title?.trim() ||
-                `${tr('未命名', 'Unnamed')} · ${shortId}`}
-            </Typography.Title>
-            <Tooltip title={tr('刷新名称', 'Refresh title')}>
-              <Button
-                size="small"
-                type="text"
-                icon={<ReloadOutlined />}
-                onClick={refresh}
-              />
-            </Tooltip>
-          </Space>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <Space size={6}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {tr('会话 ID', 'Session ID')}：
+          </Typography.Text>
+          <Typography.Text code copyable style={{ fontSize: 12 }}>
             {sessionId}
           </Typography.Text>
-        </div>
-        {!connected && (
-          <Tag color="error">{tr('连接断开', 'Disconnected')}</Tag>
-        )}
-      </Space>
+        </Space>
+        <Tooltip title={tr('刷新标题和元数据', 'Refresh title and metadata')}>
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            onClick={refresh}
+          >
+            {tr('刷新', 'Refresh')}
+          </Button>
+        </Tooltip>
+      </div>
 
       <SummaryCards
-        summary={data?.summary ?? null}
+        summary={summary ?? null}
         lastCard={{
-          label: tr('明细条数', 'Call rows'),
-          value: data ? data.calls.length : '-',
+          label: tr('事件数', 'Events'),
+          value: data ? number.format(eventTotal) : '-',
         }}
       />
 
-      <Card size="small" title={tr('调用明细', 'Call details')}>
-        <Table
-          size="small"
-          rowKey={callRowKey}
-          columns={callColumns(false)}
-          dataSource={data?.calls ?? []}
-          loading={!data}
-          pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: 900, y: tableHeight(620) }}
-        />
+      <OutcomeCard outcomes={data?.outcomes} />
+
+      <Card size="small" title={tr('响应与速度', 'Latency and speed')}>
+        <Row gutter={[12, 12]}>
+          <Col xs={24} md={8}>
+            <Card size="small" style={{ height: '100%' }}>
+              <Tooltip
+                title={tr(
+                  '首次响应时间（TTFT）：请求发出到收到首个输出 token 的平均耗时',
+                  'Average time from request to the first output token.',
+                )}
+              >
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {tr('平均首次响应', 'Average TTFT')}
+                </Typography.Text>
+              </Tooltip>
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 500,
+                  fontVariantNumeric: 'tabular-nums',
+                  lineHeight: 1.3,
+                }}
+              >
+                {formatLatency(summary?.avgTtftMs)}
+              </div>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {summary
+                  ? tr(
+                      `${number.format(summary.ttftSamples)} 次调用包含 TTFT 数据`,
+                      `${number.format(summary.ttftSamples)} calls include TTFT data`,
+                    )
+                  : '-'}
+              </Typography.Text>
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" style={{ height: '100%' }}>
+              <Tooltip
+                title={tr(
+                  '生成速度 = 输出 token 总数 / 生成耗时（总耗时减首 token 等待）',
+                  'Generation speed = total output tokens / generation time (duration minus TTFT).',
+                )}
+              >
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {tr('平均生成速度', 'Average generation speed')}
+                </Typography.Text>
+              </Tooltip>
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 500,
+                  fontVariantNumeric: 'tabular-nums',
+                  lineHeight: 1.3,
+                }}
+              >
+                {formatSpeed(summary?.tokensPerSecond)}
+              </div>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {tr(
+                  '有效样本优先；不足时按总耗时',
+                  'Valid samples first; falls back to total duration',
+                )}
+              </Typography.Text>
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" style={{ height: '100%' }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {tr('工具调用', 'Tool calls')}
+              </Typography.Text>
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 500,
+                  fontVariantNumeric: 'tabular-nums',
+                  lineHeight: 1.3,
+                }}
+              >
+                {data ? number.format(toolTotal) : '-'}
+              </div>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {data
+                  ? tr(
+                      `${number.format(data.tools.length)} 种工具`,
+                      `${number.format(data.tools.length)} tools`,
+                    )
+                  : '-'}
+              </Typography.Text>
+            </Card>
+          </Col>
+        </Row>
       </Card>
+
+      <Card
+        size="small"
+        title={`${tr('Agent 运行', 'Agent runs')}(${data?.agentRuns.length ?? 0})`}
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {tr('root tokens 不计入合计', 'Root tokens excluded from totals')}
+          </Typography.Text>
+        }
+      >
+        {data && data.agentRuns.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={tr('暂无 Agent 运行数据', 'No agent runs yet')}
+          />
+        ) : (
+          <Table
+            size="small"
+            rowKey={(row) => `${row.traceId}:${row.spanId}`}
+            columns={agentRunColumns}
+            dataSource={data?.agentRuns ?? []}
+            loading={!data}
+            pagination={false}
+            scroll={{ x: 1500, y: listHeight }}
+          />
+        )}
+      </Card>
+
+      <Card
+        size="small"
+        title={`${tr('Hook 执行', 'Hook executions')}(${data?.hooks.length ?? 0})`}
+      >
+        {data && data.hooks.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={tr('暂无 Hook 数据', 'No hook data yet')}
+          />
+        ) : (
+          <Table
+            size="small"
+            rowKey={(row) =>
+              `${row.hookType}:${row.decision}:${row.resultKind}`
+            }
+            columns={hookColumns}
+            dataSource={data?.hooks ?? []}
+            loading={!data}
+            pagination={false}
+            scroll={{ x: 1200, y: listHeight }}
+          />
+        )}
+      </Card>
+
+      <Card
+        size="small"
+        title={
+          <Space size={2}>
+            <Tooltip title={tr('全页查看', 'Open full page')}>
+              <Button
+                size="small"
+                type="text"
+                icon={<FullscreenOutlined />}
+                onClick={() => setTraceExpanded(true)}
+              />
+            </Tooltip>
+            <span>{tr('Trace 拓扑', 'Trace topology')}</span>
+          </Space>
+        }
+        extra={
+          data ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${tr('指标点', 'Metrics')} ${number.format(
+                data.signalHealth.metricPoints,
+              )}`}
+            </Typography.Text>
+          ) : null
+        }
+      >
+        <TraceTree sessionId={sessionId} />
+      </Card>
+
+      <Modal
+        title={tr('Trace 拓扑', 'Trace topology')}
+        open={traceExpanded}
+        onCancel={() => setTraceExpanded(false)}
+        footer={null}
+        width="100vw"
+        style={{ top: 0, maxWidth: '100vw', padding: 0 }}
+        styles={{ body: { height: 'calc(100vh - 55px)', padding: 20 } }}
+      >
+        <TraceTree sessionId={sessionId} expanded />
+      </Modal>
+
+      <Row gutter={[16, 16]}>
+        <Col xs={24}>
+          <Card
+            size="small"
+            title={`${tr('事件统计', 'Event statistics')}(${eventTotal})`}
+          >
+            {data && data.events.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={tr('暂无数据', 'No data')}
+              />
+            ) : (
+              <Table
+                size="small"
+                rowKey="operation"
+                columns={eventColumns}
+                dataSource={data?.events ?? []}
+                loading={!data}
+                pagination={false}
+                scroll={{ x: 630, y: listHeight }}
+              />
+            )}
+          </Card>
+        </Col>
+        <Col xs={24}>
+          <Card
+            size="small"
+            title={`${tr('工具调用统计', 'Tool call statistics')}(${toolTotal})`}
+          >
+            {data && data.tools.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={tr(
+                  '暂无工具调用数据（需接收 execute_tool span）',
+                  'No tool call data yet (requires execute_tool spans)',
+                )}
+              />
+            ) : (
+              <Table
+                size="small"
+                rowKey={(row) => row.tool}
+                columns={toolColumns}
+                dataSource={data?.tools ?? []}
+                loading={!data}
+                pagination={false}
+                scroll={{ x: 1800, y: listHeight }}
+              />
+            )}
+          </Card>
+        </Col>
+      </Row>
     </Space>
   );
 }

@@ -3,10 +3,14 @@ import {
   FolderOutlined,
   HistoryOutlined,
   HomeOutlined,
+  InfoCircleOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import {
   Badge,
+  Button,
   DatePicker,
   Descriptions,
   Layout,
@@ -17,22 +21,36 @@ import {
   Table,
   Tag,
   Tooltip,
-  Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
+import { ModelIcon } from './components/ModelIcon';
 import { PriceSettingsDrawer } from './components/PriceSettingsDrawer';
+import { SystemInfoDrawer } from './components/SystemInfoDrawer';
 import { CallsPage } from './pages/CallsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ModelPage } from './pages/ModelPage';
 import { SessionPage } from './pages/SessionPage';
 import { useRealtime } from './useRealtime';
-import type { AhpSessionInfo, DashboardPayload } from './types';
+import type {
+  AhpSessionInfo,
+  DashboardPayload,
+} from './types';
 import { translate, useUi } from './ui';
 import { providerOf, shortModelName } from './utils/model';
 
-const { Header, Sider, Content, Footer } = Layout;
+const { Header, Sider, Content } = Layout;
+const SIDER_KEY = 'tokentracker.siderCollapsed';
+
+function loadSiderCollapsed(): boolean {
+  try {
+    const value = localStorage.getItem(SIDER_KEY);
+    return value === null ? true : value === '1';
+  } catch {
+    return true;
+  }
+}
 
 type Route =
   | { view: 'dashboard' }
@@ -65,7 +83,7 @@ function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
     {
       key: 'calls',
       icon: <HistoryOutlined />,
-      label: translate('最近调用', 'Recent calls'),
+      label: translate('调用明细', 'Call details'),
     },
   ];
   if (!dashboard) {
@@ -83,16 +101,37 @@ function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
   for (const [provider, models] of [...groups.entries()].sort((a, b) =>
     a[0].localeCompare(b[0]),
   )) {
+    const sortedModels = models.sort((a, b) => a.localeCompare(b));
     items.push({
       key: `provider:${provider}`,
-      icon: <FolderOutlined />,
-      label: provider,
-      children: models
-        .sort((a, b) => a.localeCompare(b))
-        .map((model) => ({
-          key: `model:${model}`,
-          label: shortModelName(model),
-        })),
+      icon: sortedModels[0] ? (
+        <span
+          style={{
+            display: 'inline-flex',
+            marginInlineEnd: 6,
+          }}
+        >
+          <ModelIcon model={sortedModels[0]} size={16} tooltip={false} />
+        </span>
+      ) : (
+        <FolderOutlined />
+      ),
+      label: <span style={{ marginInlineStart: 2 }}>{provider}</span>,
+      children: sortedModels.map((model) => ({
+        key: `model:${model}`,
+        label: (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <ModelIcon model={model} size={14} />
+            <span>{shortModelName(model)}</span>
+          </span>
+        ),
+      })),
     });
   }
 
@@ -105,7 +144,6 @@ export default function App() {
   const {
     lang,
     tr,
-    isDark,
     themeMode,
     setThemeMode,
     languageMode,
@@ -113,16 +151,31 @@ export default function App() {
   } = useUi();
   const [route, setRoute] = useState<Route>(parseRoute);
   const [rangeMode, setRangeMode] = useState<RangeMode>(2);
+  const [siderCollapsed, setSiderCollapsed] =
+    useState<boolean>(loadSiderCollapsed);
   const [customRange, setCustomRange] = useState<[number, number] | null>(null);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [systemOpen, setSystemOpen] = useState(false);
   const [ahpOpen, setAhpOpen] = useState(false);
+  const [sessionMeta, setSessionMeta] = useState<{
+    title?: string;
+    subtitle?: string;
+  } | null>(null);
 
   useEffect(() => {
     const handler = () => setRoute(parseRoute());
     window.addEventListener('hashchange', handler);
     return () => window.removeEventListener('hashchange', handler);
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDER_KEY, siderCollapsed ? '1' : '0');
+    } catch {
+      // Storage is best-effort.
+    }
+  }, [siderCollapsed]);
 
   const numericRange = typeof rangeMode === 'number' ? rangeMode : 2;
   const customFrom = rangeMode === 'custom' ? customRange?.[0] : undefined;
@@ -242,7 +295,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!dashboard) {
+    if (siderCollapsed || !dashboard) {
       return;
     }
 
@@ -251,7 +304,7 @@ export default function App() {
         ? current
         : [...new Set(dashboard.models.map((row) => `provider:${providerOf(row.model)}`))],
     );
-  }, [dashboard]);
+  }, [dashboard, siderCollapsed]);
 
   const selectedKeys =
     route.view === 'dashboard'
@@ -292,6 +345,42 @@ export default function App() {
     location.hash = `#/session/${encodeURIComponent(sessionId)}${params}`;
   };
 
+  const activeSessionId = route.view === 'session' ? route.id : null;
+
+  useEffect(() => {
+    setSessionMeta(null);
+  }, [activeSessionId]);
+
+  const pageMeta =
+    route.view === 'dashboard'
+      ? {
+          title: tr('主页', 'Home'),
+          subtitle: tr('汇总与趋势', 'Overview'),
+        }
+      : route.view === 'calls'
+        ? {
+            title: tr('调用明细', 'Call details'),
+            subtitle: tr('多维度检索', 'Search and filters'),
+          }
+        : route.view === 'model'
+          ? {
+              title: `${providerOf(route.id)} · ${shortModelName(route.id)}`,
+              subtitle: route.id,
+            }
+          : {
+              title:
+                sessionMeta?.title ??
+                `${tr('会话', 'Session')} · ${
+                  route.id.length > 12 ? `${route.id.slice(0, 8)}…` : route.id
+                }`,
+              subtitle: sessionMeta?.subtitle ?? route.id,
+            };
+  const pageTitle = pageMeta.title;
+
+  useEffect(() => {
+    document.title = `${pageTitle} · Token Tracker`;
+  }, [pageTitle]);
+
   return (
     <>
       <Layout
@@ -302,26 +391,134 @@ export default function App() {
         }}
       >
         <Sider
-          theme={isDark ? 'dark' : 'light'}
+          theme="light"
           width={230}
+          collapsedWidth={64}
+          collapsed={siderCollapsed}
+          trigger={null}
           style={{
+            background: 'var(--ant-color-bg-container)',
             borderRight: '1px solid var(--ant-color-border-secondary)',
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <div style={{ padding: '18px 20px 12px', fontSize: 16, fontWeight: 600 }}>
-              Token Tracker
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: siderCollapsed ? 'center' : 'space-between',
+                minHeight: 52,
+                padding: siderCollapsed ? '12px 0' : '18px 16px 12px',
+              }}
+            >
+              {!siderCollapsed && (
+                <span
+                  style={{
+                    fontSize: 16,
+                    fontWeight: 600,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Token Tracker
+                </span>
+              )}
+              <Tooltip
+                title={
+                  siderCollapsed
+                    ? tr('展开导航', 'Expand navigation')
+                    : tr('收起导航', 'Collapse navigation')
+                }
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  icon={
+                    siderCollapsed ? (
+                      <MenuUnfoldOutlined />
+                    ) : (
+                      <MenuFoldOutlined />
+                    )
+                  }
+                  onClick={() => setSiderCollapsed((value) => !value)}
+                />
+              </Tooltip>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               <Menu
                 mode="inline"
+                inlineCollapsed={siderCollapsed}
+                triggerSubMenuAction="click"
                 items={menuItems}
                 selectedKeys={selectedKeys}
-                openKeys={openKeys}
+                openKeys={siderCollapsed ? undefined : openKeys}
                 onOpenChange={(keys) => setOpenKeys(keys)}
                 onClick={onMenuClick}
-                style={{ borderInlineEnd: 'none' }}
+                style={{
+                  borderInlineEnd: 'none',
+                  flex: 1,
+                  minHeight: 0,
+                  overflow: 'auto',
+                }}
               />
+            </div>
+            <div
+              style={{
+                padding: siderCollapsed ? '8px 0' : '8px 8px 8px 28px',
+                borderTop: '1px solid var(--ant-color-border-secondary)',
+                display: 'flex',
+                flexDirection: siderCollapsed ? 'row' : 'column',
+                alignItems: siderCollapsed ? 'center' : 'flex-start',
+                justifyContent: siderCollapsed ? 'center' : 'flex-start',
+                gap: siderCollapsed ? 12 : 8,
+              }}
+            >
+              <Tooltip
+                placement="right"
+                title={
+                  connected
+                    ? tr('实时连接', 'Live')
+                    : tr('连接断开', 'Disconnected')
+                }
+              >
+                <span>
+                  <Badge
+                    status={connected ? 'processing' : 'error'}
+                    text={
+                      siderCollapsed
+                        ? undefined
+                        : connected
+                          ? tr('实时连接', 'Live')
+                          : tr('连接断开', 'Disconnected')
+                    }
+                  />
+                </span>
+              </Tooltip>
+              {ahpText && (
+                <Tooltip
+                  placement="right"
+                  title={tr(
+                    'AHP 用于同步 Agent Host 的实时会话标题；点击查看详情。',
+                    'AHP syncs live Agent Host session titles; click for details.',
+                  )}
+                >
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setAhpOpen(true)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        setAhpOpen(true);
+                      }
+                    }}
+                    style={{ cursor: 'pointer', textAlign: 'left' }}
+                  >
+                    <Badge
+                      status={ahpStatus}
+                      text={siderCollapsed ? undefined : ahpText}
+                    />
+                  </span>
+                </Tooltip>
+              )}
             </div>
             <div
               style={{
@@ -331,8 +528,14 @@ export default function App() {
             >
               <Menu
                 mode="inline"
+                inlineCollapsed={siderCollapsed}
                 selectable={false}
                 items={[
+                  {
+                    key: 'system',
+                    icon: <InfoCircleOutlined />,
+                    label: tr('系统信息', 'System info'),
+                  },
                   {
                     key: 'settings',
                     icon: <SettingOutlined />,
@@ -342,6 +545,8 @@ export default function App() {
                 onClick={({ key }) => {
                   if (key === 'settings') {
                     setSettingsOpen(true);
+                  } else if (key === 'system') {
+                    setSystemOpen(true);
                   }
                 }}
                 style={{ borderInlineEnd: 'none' }}
@@ -350,9 +555,17 @@ export default function App() {
           </div>
         </Sider>
 
-        <Layout style={{ height: '100vh', overflow: 'hidden' }}>
+        <Layout
+          style={{
+            height: '100vh',
+            overflow: 'hidden',
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
           <Header
             style={{
+              position: 'relative',
               background: 'var(--ant-color-bg-container)',
               borderBottom: '1px solid var(--ant-color-border-secondary)',
               padding: '8px 20px',
@@ -366,6 +579,46 @@ export default function App() {
               flex: '0 0 auto',
             }}
           >
+            <div
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                maxWidth: '52%',
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 8,
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                pointerEvents: 'none',
+              }}
+            >
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  fontSize: 15,
+                  fontWeight: 600,
+                }}
+              >
+                {pageMeta.title}
+              </span>
+              {pageMeta.subtitle && (
+                <span
+                  style={{
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    fontSize: 11,
+                    color: 'var(--ant-color-text-secondary)',
+                  }}
+                >
+                  {pageMeta.subtitle}
+                </span>
+              )}
+            </div>
             <Space size="middle">
               <Select<RangeMode>
                 value={rangeMode}
@@ -423,8 +676,16 @@ export default function App() {
             </Space>
           </Header>
 
-          <Content style={{ padding: 20, overflow: 'auto', minHeight: 0 }}>
-            <div style={{ maxWidth: 1600, margin: '0 auto' }}>
+          <Content
+            style={{
+              padding: 20,
+              overflow: 'auto',
+              minHeight: 0,
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            <div style={{ width: '100%' }}>
               {route.view === 'dashboard' && (
                 <DashboardPage
                   data={dashboard}
@@ -436,6 +697,7 @@ export default function App() {
                   range={numericRange}
                   fromMs={customFrom}
                   toMs={customTo}
+                  dashboard={dashboard}
                   onOpenSession={openSessionFromDashboard}
                 />
               )}
@@ -450,80 +712,28 @@ export default function App() {
                 />
               )}
               {route.view === 'session' && (
-                <SessionPage key={route.id} sessionId={route.id} range={numericRange} />
+                <SessionPage
+                  key={route.id}
+                  sessionId={route.id}
+                  range={numericRange}
+                  onMeta={setSessionMeta}
+                />
               )}
             </div>
           </Content>
 
-          <Footer
-            style={{
-              padding: '6px 20px',
-              background: 'var(--ant-color-bg-container)',
-              borderTop: '1px solid var(--ant-color-border-secondary)',
-              flex: '0 0 auto',
-            }}
-          >
-            <Space
-              size="large"
-              wrap
-              style={{ width: '100%', justifyContent: 'flex-end' }}
-            >
-              <Badge
-                status={connected ? 'processing' : 'error'}
-                text={
-                  connected
-                    ? tr('实时连接', 'Live')
-                    : tr('连接断开', 'Disconnected')
-                }
-              />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {dashboard
-                  ? dashboard.updatedAt === '-'
-                    ? tr('暂无数据更新', 'No data yet')
-                    : tr(
-                        `数据更新于 ${dashboard.updatedAt}`,
-                        `Updated at ${dashboard.updatedAt}`,
-                      )
-                  : tr('等待数据', 'Waiting for data')}
-              </Typography.Text>
-              {dashboard && (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {tr(
-                    `监听 ${dashboard.receiver.endpoint} · ${dashboard.receiver.batches} 批 / ${dashboard.receiver.spans} span`,
-                    `Listening ${dashboard.receiver.endpoint} · ${dashboard.receiver.batches} batches / ${dashboard.receiver.spans} spans`,
-                  )}
-                </Typography.Text>
-              )}
-              {ahpText && (
-                <Tooltip
-                  title={tr(
-                    'AHP 用于同步 Agent Host 的实时会话标题；不可用时回退到本地数据库。',
-                    'AHP syncs live Agent Host session titles; falls back to the local database when unavailable.',
-                  )}
-                >
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setAhpOpen(true)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        setAhpOpen(true);
-                      }
-                    }}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <Badge status={ahpStatus} text={ahpText} />
-                  </span>
-                </Tooltip>
-              )}
-            </Space>
-          </Footer>
+
         </Layout>
       </Layout>
 
       <PriceSettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+
+      <SystemInfoDrawer
+        open={systemOpen}
+        onClose={() => setSystemOpen(false)}
       />
 
       <Modal

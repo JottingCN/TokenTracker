@@ -11,12 +11,17 @@ export interface Summary {
   outputCostCny: number;
   reasoningCostCny: number;
   unpricedCalls: number;
+  avgTtftMs: number | null;
+  ttftSamples: number;
+  tokensPerSecond: number | null;
   hitRate: number | null;
   cacheCostText: string;
   uncachedCostText: string;
   outputCostText: string;
   reasoningCostText: string;
   reasoningTokensText: string;
+  avgTtftText: string;
+  tokensPerSecondText: string;
 }
 
 export interface ModelRow {
@@ -28,11 +33,16 @@ export interface ModelRow {
   hitRate: number | null;
   costCny: number;
   unpricedCalls: number;
+  avgTtftMs: number | null;
+  ttftSamples: number;
+  tokensPerSecond: number | null;
   callsText: string;
   tokensText: string;
   hitRateText: string;
   costText: string;
   hitRatePercent: number;
+  avgTtftText: string;
+  tokensPerSecondText: string;
 }
 
 export interface SessionRow {
@@ -52,6 +62,12 @@ export interface SessionRow {
   reasoningCostCny: number;
   unpricedCalls: number;
   lastSeenMs: number;
+  firstSeenMs: number;
+  events: number;
+  avgDurationMs: number | null;
+  avgTtftMs: number | null;
+  ttftSamples: number;
+  tokensPerSecond: number | null;
   sessionShort: string;
   sessionDisplay: string;
   callsText: string;
@@ -66,6 +82,10 @@ export interface SessionRow {
   outputCostText: string;
   reasoningCostText: string;
   lastSeenText: string;
+  timeRangeText: string;
+  avgDurationText: string;
+  avgTtftText: string;
+  tokensPerSecondText: string;
 }
 
 export interface CallRow {
@@ -78,6 +98,16 @@ export interface CallRow {
   cacheReadTokens: number;
   outputTokens: number;
   nanoAiu: number | null;
+  source: string | null;
+  durationMs: number | null;
+  ttftMs: number | null;
+  traceId: string | null;
+  parentSpanId: string | null;
+  errorType: string | null;
+  agentName: string | null;
+  subagentName: string | null;
+  finishReasons: string | null;
+  tokensPerSecond: number | null;
   hitRate: number | null;
   costCny: number | null;
   cacheCostCny: number;
@@ -98,6 +128,182 @@ export interface CallRow {
   outputCostText: string;
   periodText: string;
   kindText: string;
+  sourceText: string;
+  ttftText: string;
+  tokensPerSecondText: string;
+  errorText: string;
+  agentText: string;
+  finishReasonsText: string;
+}
+
+
+export interface SessionEventRow {
+  operation: string;
+  source: string | null;
+  count: number;
+  avgDurationMs: number | null;
+  errorCount: number;
+  lastSeenMs: number;
+  operationText: string;
+  countText: string;
+  avgDurationText: string;
+  lastSeenText: string;
+}
+
+export interface ToolCallRow {
+  tool: string;
+  source: string | null;
+  calls: number;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+  errorCount: number;
+  lastSeenMs: number;
+  toolTypes: string[];
+  editTypes: string[];
+  skillNames: string[];
+  mcpServerHashes: string[];
+  mcpToolNames: string[];
+  errorTypes: string[];
+  agentNames: string[];
+  callsText: string;
+  avgDurationText: string;
+  maxDurationText: string;
+  lastSeenText: string;
+  toolTypeText: string;
+  editTypeText: string;
+  skillNameText: string;
+  mcpServerHashText: string;
+  mcpToolNameText: string;
+  errorTypeText: string;
+  agentNameText: string;
+}
+
+export interface AgentRunRow {
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  isRoot: boolean;
+  sessionId: string | null;
+  agentName: string | null;
+  agentType: string | null;
+  providerName: string | null;
+  requestModel: string | null;
+  responseModel: string | null;
+  source: string | null;
+  gitRepository: string | null;
+  gitBranch: string | null;
+  gitCommit: string | null;
+  githubOrg: string | null;
+  turnCount: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  startTimeMs: number;
+  endTimeMs: number | null;
+  isError: boolean;
+  errorType: string | null;
+  agentText: string;
+  agentTypeText: string;
+  providerText: string;
+  modelText: string;
+  sourceText: string;
+  repoText: string;
+  branchText: string;
+  turnText: string;
+  inputText: string;
+  cacheText: string;
+  outputText: string;
+  timeText: string;
+  durationText: string;
+  errorText: string;
+}
+
+export interface HookSummaryRow {
+  hookType: string | null;
+  decision: string | null;
+  resultKind: string | null;
+  source: string | null;
+  count: number;
+  avgDurationMs: number | null;
+  errorCount: number;
+  toolNames: string[];
+  lastSeenMs: number;
+  hookTypeText: string;
+  decisionText: string;
+  resultKindText: string;
+  sourceText: string;
+  countText: string;
+  avgDurationText: string;
+  toolNamesText: string;
+  lastSeenText: string;
+}
+
+export interface SignalHealth {
+  agentRuns: number;
+  hookEvents: number;
+  metricPoints: number;
+  lastSignalMs: number;
+  lastSignalText: string;
+}
+
+export interface OutcomeSummary {
+  editAccepted: number;
+  editRejected: number;
+  chatEditAccepted: number;
+  chatEditRejected: number;
+  chatEditSaved: number;
+  linesAdded: number;
+  linesRemoved: number;
+  survivalFourGram: number | null;
+  survivalNoRevert: number | null;
+  userCopy: number;
+  userInsert: number;
+  userApply: number;
+  userFollowup: number;
+  feedbackPositive: number;
+  feedbackNegative: number;
+  agentEditSuccess: number;
+  agentEditError: number;
+  summarizationApplied: number;
+  summarizationFailed: number;
+  pullRequests: number;
+  cloudSessions: number;
+  cloudPrReady: number;
+  toolMetricCalls: number;
+  toolMetricAvgMs: number | null;
+  editAcceptRate: number | null;
+  hasData: boolean;
+  editAcceptRateText: string;
+  survivalFourGramText: string;
+  survivalNoRevertText: string;
+  toolMetricAvgText: string;
+}
+
+export interface TraceNode {
+  id: string;
+  parentId: string | null;
+  kind: string;
+  operation: string;
+  name: string | null;
+  tool: string | null;
+  source: string | null;
+  startTimeMs: number;
+  durationMs: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  isError: boolean;
+  errorType: string | null;
+  depth: number;
+  label: string;
+  sourceText: string;
+  durationText: string;
+}
+
+export interface TracePayload {
+  nodes: TraceNode[];
 }
 
 export interface ReceiverInfo {
@@ -130,10 +336,11 @@ export interface DashboardPayload {
   summary: Summary;
   models: ModelRow[];
   sessions: SessionRow[];
-  calls: CallRow[];
   receiver: ReceiverInfo;
   updatedAt: string;
   retentionDays: number;
+  signalHealth: SignalHealth;
+  outcomes: OutcomeSummary;
   ahp?: AhpStatus;
 }
 
@@ -144,24 +351,46 @@ export interface SettingsPayload {
 export interface ModelPayload {
   summary: Summary;
   sessions: SessionRow[];
-  calls: CallRow[];
   model: string;
 }
 
 export interface SessionPayload {
   summary: Summary;
   calls: CallRow[];
+  events: SessionEventRow[];
+  tools: ToolCallRow[];
+  agentRuns: AgentRunRow[];
+  hooks: HookSummaryRow[];
+  signalHealth: SignalHealth;
+  outcomes: OutcomeSummary;
   sessionId: string;
   title: string | null;
+  workspacePath: string | null;
+}
+
+export interface CallsPayload {
+  calls: CallRow[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface Subscription {
-  view: 'dashboard' | 'model' | 'session';
+  view: 'dashboard' | 'model' | 'session' | 'calls';
   id?: string;
   range: number;
   utility: boolean;
   fromMs?: number;
   toMs?: number;
+  model?: string;
+  query?: string;
+  kind?: 'main' | 'utility';
+  priced?: boolean;
+  period?: string;
+  hasError?: boolean;
+  agent?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface ModelPriceRow {
@@ -186,4 +415,68 @@ export interface ModelPriceRow {
   peakCacheWrite: number | null;
   longCacheWrite: number | null;
   longPeakCacheWrite: number | null;
+}
+
+export interface StorageTableInfo {
+  name: string;
+  rows: number;
+}
+
+export interface StorageStats {
+  databasePath: string;
+  sizeBytes: number;
+  walBytes: number;
+  shmBytes: number;
+  pageSize: number;
+  pageCount: number;
+  journalMode: string;
+  rawSpans: number;
+  combinedSpans: number;
+  outcomeMetricPoints: number;
+  tables: StorageTableInfo[];
+}
+
+export interface SystemInfo {
+  server: {
+    name: string;
+    version: string;
+    protocol: number;
+    port: number;
+    startedAt: string;
+    buildId: string | null;
+    features: string[];
+  };
+  storage: StorageStats;
+  receiver: {
+    endpoint: string;
+    running: boolean;
+    batches: number;
+    spans: number;
+    lastError: string | null;
+  };
+  retentionDays: number;
+  dataDirectory: string;
+  lastReceivedText: string;
+  ahp: {
+    state: string;
+    connected: boolean;
+    sessions: number;
+  };
+  watchedPaths: SystemPathInfo[];
+  accesses: SystemAccessInfo[];
+}
+
+export interface SystemPathInfo {
+  label: string;
+  path: string;
+  kind: string;
+  exists: boolean;
+  lastModifiedText: string | null;
+  purpose: string;
+}
+
+export interface SystemAccessInfo {
+  label: string;
+  target: string;
+  kind: string;
 }

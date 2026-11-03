@@ -22,6 +22,8 @@ internal sealed class AgentHostTitleReader
             : databasePath;
     }
 
+    public string? DatabasePath => _databasePath;
+
     public AgentHostTitle? Get(string sessionId)
     {
         var path = _databasePath;

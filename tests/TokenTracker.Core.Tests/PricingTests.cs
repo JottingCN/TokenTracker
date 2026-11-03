@@ -5,6 +5,44 @@ namespace TokenTracker.Core.Tests;
 
 public sealed class PricingTests
 {
+    [Theory]
+    [InlineData("gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18")]
+    [InlineData("gpt-4o-2024-08-06", "gpt-4o-2024-08-06")]
+    [InlineData("claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022")]
+    [InlineData("claude-sonnet-4-20250514", "claude-sonnet-4-20250514")]
+    [InlineData("gemini-2.5-pro-preview-05-06", "gemini-2.5-pro-preview-05-06")]
+    [InlineData("gpt-4o-latest", "gpt-4o-latest")]
+    [InlineData("DeepSeek/deepseek-flash", "deepseek-flash")]
+    [InlineData("openai/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18")]
+    [InlineData("openrouter/deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash-1017")]
+    [InlineData("GPT-4O", "gpt-4o")]
+    [InlineData("gpt-4o-mini (recommended)", "gpt-4o-mini")]
+    public void NormalizesModelNames(string input, string expected)
+    {
+        Assert.Equal(expected, ModelPricing.NormalizeModel(input));
+    }
+
+    [Fact]
+    public void NormalizationDependsOnSource()
+    {
+        Assert.Equal(
+            "deepseek-flash",
+            ModelPricing.NormalizeModel("deepseek-flash", "copilot-chat"));
+        Assert.Equal(
+            "anthropic/claude-sonnet-4-20250514",
+            ModelPricing.NormalizeModel(
+                "anthropic/claude-sonnet-4-20250514",
+                "copilot-chat"));
+        Assert.Equal(
+            "deepseek-flash",
+            ModelPricing.NormalizeModel("DeepSeek/deepseek-flash", "agent-host"));
+        Assert.Equal(
+            "deepseek/deepseek-v4.1-flash-1017",
+            ModelPricing.NormalizeModel(
+                "openrouter/deepseek/deepseek-v4.1-flash-1017",
+                "agent-host"));
+    }
+
     private static DateTimeOffset Utc(string text) =>
         DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal);
 

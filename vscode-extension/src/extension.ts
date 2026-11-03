@@ -5,14 +5,16 @@ import * as vscode from 'vscode';
 import { httpPost } from './httpClient';
 import { tr } from './i18n';
 import { readMoneySettings } from './money';
-import { cleanupOldRuntimes, prepareRuntime } from './runtimeManager';
+import { cleanupOldRuntimes, prepareRuntime, RuntimeInfo } from './runtimeManager';
 import {
   ensureServer,
+  fetchServerInfo,
+  isHealthy,
   RunningServer,
   serverUrl,
   stopOwnedServer,
 } from './serverManager';
-import { StatusBarController } from './statusBar';
+import { readStatusBarFormat, StatusBarController } from './statusBar';
 
 let statusBar: StatusBarController | undefined;
 let fallbackItem: vscode.StatusBarItem | undefined;
@@ -106,6 +108,8 @@ interface LocalImportResult {
   matched: number;
   inserted: number;
   skipped: number;
+  eventsMatched?: number;
+  eventsInserted?: number;
   errors: string[];
 }
 
@@ -294,13 +298,19 @@ function resolveDownloadSource(
   return { githubRepo: url };
 }
 
-async function startServerAndStatus(
+function describeRuntime(runtime: RuntimeInfo): string {
+  return (
+    `runtime: build=${runtime.buildId} rid=${runtime.rid} ` +
+    `source=${runtime.source} release=${runtime.releaseTag} ` +
+    `version=${runtime.serverVersion} ` +
+    `dir=${runtime.runtimeDirectory} data=${runtime.dataDirectory}`
+  );
+}
+
+async function resolveRuntime(
   context: vscode.ExtensionContext,
-  port: number,
-  autoStart: boolean,
-  range: StatsRange,
-  idleExitSeconds: number,
-): Promise<void> {
+  onProgress: (message: string) => void,
+): Promise<RuntimeInfo> {
   const configuration = vscode.workspace.getConfiguration('tokentracker');
   const downloadSource = resolveDownloadSource(
     context,
@@ -309,6 +319,66 @@ async function startServerAndStatus(
   const proxyUrl = resolveProxyUrl();
   log(`download proxy: ${proxyUrl ? 'enabled' : 'disabled'}`);
 
+  return prepareRuntime(context.extensionPath, context.globalStorageUri.fsPath, {
+    ...downloadSource,
+    proxyUrl,
+    onProgress,
+  });
+}
+
+async function probeRunningServer(port: number): Promise<RunningServer | null> {
+  if (!(await isHealthy(port))) {
+    return null;
+  }
+
+  return {
+    url: serverUrl(port),
+    port,
+    startedHere: false,
+    info: (await fetchServerInfo(port)) ?? undefined,
+  };
+}
+
+function useRunningServer(
+  context: vscode.ExtensionContext,
+  running: RunningServer,
+  port: number,
+  range: StatsRange,
+): void {
+  server = running;
+  log(
+    `server ready: ${running.url} startedHere=${running.startedHere} ` +
+      `version=${running.info?.version ?? 'unknown'} pid=${running.pid ?? 'external'}`,
+  );
+
+  const roots = currentWorkspaceRoots();
+  log(`workspace roots: ${roots.join(' | ') || '(none)'}`);
+
+  disposeStatusBars();
+  let lastSnapshotDetail = '';
+  statusBar = new StatusBarController(
+    port,
+    range.index,
+    range.label,
+    roots,
+    readMoneySettings(),
+    readStatusBarFormat(),
+    (detail) => {
+    if (detail !== lastSnapshotDetail) {
+      lastSnapshotDetail = detail;
+      log(`status snapshot: ${detail}`);
+    }
+  });
+  statusBar.start();
+  context.subscriptions.push(statusBar);
+}
+
+async function prepareAndStartServer(
+  context: vscode.ExtensionContext,
+  port: number,
+  autoStart: boolean,
+  idleExitSeconds: number,
+): Promise<RunningServer> {
   const runtime = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Window,
@@ -319,19 +389,10 @@ async function startServerAndStatus(
       cancellable: false,
     },
     (progress) =>
-      prepareRuntime(context.extensionPath, context.globalStorageUri.fsPath, {
-        ...downloadSource,
-        proxyUrl,
-        onProgress: (message) => progress.report({ message }),
-      }),
+      resolveRuntime(context, (message) => progress.report({ message })),
   );
 
-  log(
-    `runtime: build=${runtime.buildId} rid=${runtime.rid} ` +
-      `source=${runtime.source} release=${runtime.releaseTag} ` +
-      `version=${runtime.serverVersion} ` +
-      `dir=${runtime.runtimeDirectory} data=${runtime.dataDirectory}`,
-  );
+  log(describeRuntime(runtime));
 
   const running = await ensureServer({
     storagePath: context.globalStorageUri.fsPath,
@@ -353,12 +414,6 @@ async function startServerAndStatus(
     );
   }
 
-  server = running;
-  log(
-    `server ready: ${running.url} startedHere=${running.startedHere} ` +
-      `version=${running.info?.version ?? 'unknown'} pid=${running.pid ?? 'external'}`,
-  );
-
   const cleanup = cleanupOldRuntimes(
     context.globalStorageUri.fsPath,
     runtime.buildId,
@@ -368,25 +423,75 @@ async function startServerAndStatus(
       `failed=[${cleanup.failed.join(', ')}]`,
   );
 
-  const roots = currentWorkspaceRoots();
-  log(`workspace roots: ${roots.join(' | ') || '(none)'}`);
+  return running;
+}
 
-  disposeStatusBars();
-  let lastSnapshotDetail = '';
-  statusBar = new StatusBarController(
-    port,
-    range.index,
-    range.label,
-    roots,
-    readMoneySettings(),
-    (detail) => {
-    if (detail !== lastSnapshotDetail) {
-      lastSnapshotDetail = detail;
-      log(`status snapshot: ${detail}`);
+let updateAnnouncedBuildId = '';
+
+async function checkServerUpdateInBackground(
+  context: vscode.ExtensionContext,
+  running: RunningServer,
+): Promise<void> {
+  try {
+    const runtime = await resolveRuntime(context, (message) =>
+      log(`update check: ${message}`),
+    );
+    log(`update check: ${describeRuntime(runtime)}`);
+
+    const currentBuildId = running.info?.buildId;
+    if (currentBuildId === runtime.buildId) {
+      log('update check: running build is up to date');
+      return;
     }
-  });
-  statusBar.start();
-  context.subscriptions.push(statusBar);
+
+    if (updateAnnouncedBuildId === runtime.buildId) {
+      return;
+    }
+    updateAnnouncedBuildId = runtime.buildId;
+
+    log(
+      `update ready: build=${runtime.buildId} version=${runtime.serverVersion} ` +
+        `(running ${currentBuildId ?? 'unknown'}); running server left untouched`,
+    );
+    const restart = tr('重启服务', 'Restart service');
+    const choice = await vscode.window.showInformationMessage(
+      tr(
+        `Token Tracker 服务端 ${runtime.serverVersion} 已下载完成，当前运行的服务不受影响，重启后生效。`,
+        `Token Tracker server ${runtime.serverVersion} is downloaded. The running server is untouched; restart to apply it.`,
+      ),
+      restart,
+    );
+    if (choice === restart) {
+      await vscode.commands.executeCommand('tokentracker.startServer');
+    }
+  } catch (error) {
+    // Update checks never affect a healthy running server.
+    const message = error instanceof Error ? error.message : String(error);
+    log(`update check failed: ${message}`);
+  }
+}
+
+async function attachOrStartServer(
+  context: vscode.ExtensionContext,
+  port: number,
+  autoStart: boolean,
+  range: StatsRange,
+  idleExitSeconds: number,
+): Promise<void> {
+  const running = await probeRunningServer(port);
+  if (running) {
+    useRunningServer(context, running, port, range);
+    void checkServerUpdateInBackground(context, running);
+    return;
+  }
+
+  const started = await prepareAndStartServer(
+    context,
+    port,
+    autoStart,
+    idleExitSeconds,
+  );
+  useRunningServer(context, started, port, range);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<TokenTrackerApi> {
@@ -410,7 +515,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
   );
   const idleExitSeconds = Math.max(
     0,
-    configuration.get<number>('idleExitSeconds', 60),
+    configuration.get<number>('idleExitSeconds', 5),
   );
   log(`stats range: ${range.label} (${range.index})`);
 
@@ -447,16 +552,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
         .getConfiguration('tokentracker')
         .get<number>('port', port);
       const endpoint = `http://127.0.0.1:${currentPort}`;
+      const supportsSourcePaths =
+        server?.info?.features?.includes('source-paths') ?? false;
+      const supportsCopilotChatSource =
+        server?.info?.features?.includes('source-copilot-chat') ?? false;
+      const extensionEndpoint = supportsCopilotChatSource
+        ? `${endpoint}/otlp/copilot-chat`
+        : supportsSourcePaths
+          ? `${endpoint}/otlp/extension-host`
+          : endpoint;
+      const agentHostEndpoint = supportsSourcePaths
+        ? `${endpoint}/otlp/agent-host`
+        : endpoint;
       const updates: Array<[string, string, string | boolean]> = [
         ['github.copilot.chat.otel', 'enabled', true],
         ['github.copilot.chat.otel', 'exporterType', 'otlp-http'],
         ['github.copilot.chat.otel', 'protocol', 'http/json'],
-        ['github.copilot.chat.otel', 'otlpEndpoint', endpoint],
+        ['github.copilot.chat.otel', 'otlpEndpoint', extensionEndpoint],
         ['github.copilot.chat.otel', 'captureContent', false],
         ['chat.agentHost.otel', 'enabled', true],
         ['chat.agentHost.otel', 'exporterType', 'otlp-http'],
         ['chat.agentHost.otel', 'otlpProtocol', 'http/json'],
-        ['chat.agentHost.otel', 'otlpEndpoint', endpoint],
+        ['chat.agentHost.otel', 'otlpEndpoint', agentHostEndpoint],
         ['chat.agentHost.otel', 'captureContent', false],
       ];
 
@@ -523,14 +640,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
         }
 
         const result = JSON.parse(response.body) as LocalImportResult;
+        const eventsInserted = result.eventsInserted ?? 0;
         log(
           `local import: files=${paths.length} scanned=${result.scanned} ` +
-            `matched=${result.matched} inserted=${result.inserted} skipped=${result.skipped}`,
+            `matched=${result.matched} inserted=${result.inserted} skipped=${result.skipped} ` +
+            `eventsMatched=${result.eventsMatched ?? 0} eventsInserted=${eventsInserted}`,
         );
         void vscode.window.showInformationMessage(
           tr(
-            `已导入 ${result.inserted} 条调用（扫描 ${result.scanned}，匹配 ${result.matched}，跳过重复 ${result.skipped}）。`,
-            `Imported ${result.inserted} calls (scanned ${result.scanned}, matched ${result.matched}, skipped ${result.skipped} duplicates).`,
+            `已导入 ${result.inserted} 条调用 + ${eventsInserted} 条事件（扫描 ${result.scanned}，匹配 ${result.matched}，跳过重复 ${result.skipped}）。`,
+            `Imported ${result.inserted} calls + ${eventsInserted} events (scanned ${result.scanned}, matched ${result.matched}, skipped ${result.skipped} duplicates).`,
           ),
         );
         if (result.errors.length > 0) {
@@ -555,7 +674,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
     }),
     vscode.commands.registerCommand('tokentracker.startServer', async () => {
       try {
-        await startServerAndStatus(context, port, true, range, idleExitSeconds);
+        const running = await prepareAndStartServer(context, port, true, idleExitSeconds);
+        useRunningServer(context, running, port, range);
         log('server started by command');
         void vscode.window.showInformationMessage(
           tr('Token Tracker 服务已启动', 'Token Tracker server started'),
@@ -642,13 +762,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
       ) {
         statusBar?.setMoneySettings(readMoneySettings());
       }
+      if (event.affectsConfiguration('tokentracker.statusBarFormat')) {
+        statusBar?.setStatusBarFormat(readStatusBarFormat());
+      }
     }),
   );
 
   registerMetadataWatchers(context);
 
-  // Keep activation responsive; server download/startup continues in the background.
-  void startServerAndStatus(context, port, autoStart, range, idleExitSeconds).catch(
+  // A healthy server is attached right away; the release check runs in the background.
+  void attachOrStartServer(context, port, autoStart, range, idleExitSeconds).catch(
     (error) => {
       const message = error instanceof Error ? error.message : String(error);
       log(`server unavailable: ${message}`);

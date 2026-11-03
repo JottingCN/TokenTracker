@@ -125,31 +125,79 @@ public static class WsEndpoint
 
             while (!token.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
-                var (view, id, range, utility, fromMs, toMs) = subscription.Snapshot();
+                var state = subscription.Snapshot();
                 byte[] payload;
                 try
                 {
-                    var customRange = fromMs is > 0 && toMs > fromMs;
-                    payload = view switch
+                    var customRange = state.FromMs is > 0 && state.ToMs > state.FromMs;
+                    payload = state.View switch
                     {
-                        "model" when !string.IsNullOrWhiteSpace(id) =>
+                        "model" when !string.IsNullOrWhiteSpace(state.Id) =>
                             JsonSerializer.SerializeToUtf8Bytes(
                                 new ModelMessage(
                                     "snapshot",
                                     customRange
-                                        ? service.GetModel(id!, fromMs!.Value, toMs!.Value)
-                                        : service.GetModel(id!, range)),
+                                        ? service.GetModel(
+                                            state.Id!,
+                                            state.FromMs!.Value,
+                                            state.ToMs!.Value,
+                                            state.Source)
+                                        : service.GetModel(
+                                            state.Id!,
+                                            state.Range,
+                                            state.Source)),
                                 AppJsonContext.Default.ModelMessage),
-                        "session" when !string.IsNullOrWhiteSpace(id) =>
+                        "session" when !string.IsNullOrWhiteSpace(state.Id) =>
                             JsonSerializer.SerializeToUtf8Bytes(
-                                new SessionMessage("snapshot", service.GetSession(id!)),
+                                new SessionMessage(
+                                    "snapshot",
+                                    service.GetSession(state.Id!, state.Source)),
                                 AppJsonContext.Default.SessionMessage),
+                        "calls" => JsonSerializer.SerializeToUtf8Bytes(
+                            new CallsMessage(
+                                "snapshot",
+                                customRange
+                                    ? service.GetCalls(
+                                        state.FromMs!.Value,
+                                        state.ToMs!.Value,
+                                        state.Utility,
+                                        state.Model,
+                                        state.Source,
+                                        state.Query,
+                                        state.Kind,
+                                        state.Priced,
+                                        state.Period,
+                                        state.HasError,
+                                        state.Agent,
+                                        state.Offset ?? 0,
+                                        state.Limit ?? 50)
+                                    : service.GetCalls(
+                                        state.Range,
+                                        state.Utility,
+                                        state.Model,
+                                        state.Source,
+                                        state.Query,
+                                        state.Kind,
+                                        state.Priced,
+                                        state.Period,
+                                        state.HasError,
+                                        state.Agent,
+                                        state.Offset ?? 0,
+                                        state.Limit ?? 50)),
+                            AppJsonContext.Default.CallsMessage),
                         _ => JsonSerializer.SerializeToUtf8Bytes(
                             new DashboardMessage(
                                 "snapshot",
                                 customRange
-                                    ? service.GetDashboard(fromMs!.Value, toMs!.Value, utility)
-                                    : service.GetDashboard(range, utility)),
+                                    ? service.GetDashboard(
+                                        state.FromMs!.Value,
+                                        state.ToMs!.Value,
+                                        state.Utility,
+                                        state.Source)
+                                    : service.GetDashboard(
+                                        state.Range,
+                                        state.Utility,
+                                        state.Source)),
                             AppJsonContext.Default.DashboardMessage),
                     };
                 }
@@ -183,6 +231,16 @@ public static class WsEndpoint
         private string? _id;
         private long? _fromMs;
         private long? _toMs;
+        private string? _model;
+        private string? _source;
+        private string? _query;
+        private string? _kind;
+        private bool? _priced;
+        private string? _period;
+        private bool? _hasError;
+        private string? _agent;
+        private int? _offset;
+        private int? _limit;
         private bool _isVscode;
         private bool _hasValue;
 
@@ -218,6 +276,16 @@ public static class WsEndpoint
                 _id = message.Id;
                 _fromMs = message.FromMs;
                 _toMs = message.ToMs;
+                _model = message.Model;
+                _source = message.Source;
+                _query = message.Query;
+                _kind = message.Kind;
+                _priced = message.Priced;
+                _period = message.Period;
+                _hasError = message.HasError;
+                _agent = message.Agent;
+                _offset = message.Offset;
+                _limit = message.Limit;
                 _isVscode = string.Equals(
                     message.Client,
                     "vscode",
@@ -226,12 +294,46 @@ public static class WsEndpoint
             }
         }
 
-        public (string View, string? Id, int Range, bool Utility, long? FromMs, long? ToMs) Snapshot()
+        public SubscriptionState Snapshot()
         {
             lock (_gate)
             {
-                return (_view, _id, _range, _utility, _fromMs, _toMs);
+                return new SubscriptionState(
+                    _view,
+                    _id,
+                    _range,
+                    _utility,
+                    _fromMs,
+                    _toMs,
+                    _model,
+                    _source,
+                    _query,
+                    _kind,
+                    _priced,
+                    _period,
+                    _hasError,
+                    _agent,
+                    _offset,
+                    _limit);
             }
         }
+
+        public sealed record SubscriptionState(
+            string View,
+            string? Id,
+            int Range,
+            bool Utility,
+            long? FromMs,
+            long? ToMs,
+            string? Model,
+            string? Source,
+            string? Query,
+            string? Kind,
+            bool? Priced,
+            string? Period,
+            bool? HasError,
+            string? Agent,
+            int? Offset,
+            int? Limit);
     }
 }

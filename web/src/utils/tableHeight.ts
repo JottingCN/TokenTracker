@@ -1,3 +1,5 @@
+const FOOTER_HEIGHT = 35;
+
 export function tableHeight(offsetPx: number): string {
-  return `max(220px, calc(100vh - ${offsetPx}px))`;
+  return `max(120px, calc(100vh - ${offsetPx + FOOTER_HEIGHT}px))`;
 }

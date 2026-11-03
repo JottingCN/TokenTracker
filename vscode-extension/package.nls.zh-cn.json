@@ -21,5 +21,8 @@
   "config.costUnit.usd": "美元（USD）",
   "config.costUnit.credit": "积分",
   "config.creditRate": "1 积分对应的人民币金额（CNY）。",
-  "config.usdRate": "1 美元对应的人民币金额（CNY）。"
+  "config.usdRate": "1 美元对应的人民币金额（CNY）。",
+  "config.statusBarFormat": "状态栏模板。可用占位符：{icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turns} {hooks} {range} {model} {session}；冒号后可选格式，如 {hit:0.00%}、{ttft:0.0s}、{speed:0.0}、{cost:0.000000}、{calls:0}。",
+  "config.group.display": "Token Tracker: 状态栏与显示",
+  "config.group.server": "Token Tracker: 服务端"
 }

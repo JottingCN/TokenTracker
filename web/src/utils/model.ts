@@ -41,12 +41,3 @@ export function shortModelName(model: string): string {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
 }
-
-export function sessionDisplay(title: string | null, sessionId: string): string {
-  if (title && title.trim()) {
-    return title;
-  }
-
-  const short = sessionId.length > 20 ? `${sessionId.slice(0, 8)}…` : sessionId;
-  return `未命名 · ${short}`;
-}

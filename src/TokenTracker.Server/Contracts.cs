@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using TokenTracker.Core.Models;
+using TokenTracker.Core.Storage;
 
 namespace TokenTracker.Server;
 
@@ -30,10 +31,11 @@ public sealed record DashboardPayload(
     SummaryDto Summary,
     List<ModelRow> Models,
     List<SessionRow> Sessions,
-    List<CallRow> Calls,
     ReceiverInfo Receiver,
     string UpdatedAt,
     int RetentionDays,
+    SignalHealthRow SignalHealth,
+    OutcomeSummary Outcomes,
     AhpStatusPayload Ahp);
 
 public sealed record SettingsPayload(int RetentionDays);
@@ -43,14 +45,57 @@ public sealed record SettingsUpdateRequest(int? RetentionDays);
 public sealed record ModelPayload(
     SummaryDto Summary,
     List<SessionRow> Sessions,
-    List<CallRow> Calls,
     string Model);
 
 public sealed record SessionPayload(
     SummaryDto Summary,
     List<CallRow> Calls,
+    List<SessionEventRow> Events,
+    List<ToolCallRow> Tools,
+    List<AgentRunRow> AgentRuns,
+    List<HookSummaryRow> Hooks,
+    SignalHealthRow SignalHealth,
+    OutcomeSummary Outcomes,
     string SessionId,
-    string? Title);
+    string? Title,
+    string? WorkspacePath);
+
+public sealed record TracePayload(List<TraceNodeRow> Nodes);
+
+public sealed record CallsPayload(
+    List<CallRow> Calls,
+    long Total,
+    int Offset,
+    int Limit);
+
+public sealed record SystemAhpInfo(
+    string State,
+    bool Connected,
+    int Sessions);
+
+public sealed record SystemPathInfo(
+    string Label,
+    string Path,
+    string Kind,
+    bool Exists,
+    string? LastModifiedText,
+    string Purpose);
+
+public sealed record SystemAccessInfo(
+    string Label,
+    string Target,
+    string Kind);
+
+public sealed record SystemInfoPayload(
+    ServerInfoPayload Server,
+    StorageStats Storage,
+    ReceiverInfo Receiver,
+    int RetentionDays,
+    string DataDirectory,
+    string LastReceivedText,
+    SystemAhpInfo Ahp,
+    List<SystemPathInfo> WatchedPaths,
+    List<SystemAccessInfo> Accesses);
 
 public sealed record ServerInfoPayload(
     string Name,
@@ -69,7 +114,17 @@ public sealed record SubscribeMessage(
     string? Id,
     long? FromMs,
     long? ToMs,
-    string? Client);
+    string? Client,
+    string? Model,
+    string? Source,
+    string? Query,
+    string? Kind,
+    bool? Priced,
+    string? Period,
+    bool? HasError,
+    string? Agent,
+    int? Offset,
+    int? Limit);
 
 public sealed record ModelPriceRowPayload(
     string Model,
@@ -122,6 +177,8 @@ public sealed record LocalImportPayload(
     long Matched,
     long Inserted,
     long Skipped,
+    long EventsMatched,
+    long EventsInserted,
     string[] Errors);
 
 public sealed record DashboardMessage(string Type, DashboardPayload Data);
@@ -130,10 +187,16 @@ public sealed record ModelMessage(string Type, ModelPayload Data);
 
 public sealed record SessionMessage(string Type, SessionPayload Data);
 
+public sealed record CallsMessage(string Type, CallsPayload Data);
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(DashboardMessage))]
 [JsonSerializable(typeof(ModelMessage))]
 [JsonSerializable(typeof(SessionMessage))]
+[JsonSerializable(typeof(CallsMessage))]
+[JsonSerializable(typeof(CallsPayload))]
+[JsonSerializable(typeof(TracePayload))]
+[JsonSerializable(typeof(SystemInfoPayload))]
 [JsonSerializable(typeof(SubscribeMessage))]
 [JsonSerializable(typeof(List<ModelPriceRowPayload>))]
 [JsonSerializable(typeof(ModelPriceRowPayload))]

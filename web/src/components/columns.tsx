@@ -1,7 +1,12 @@
-import { Tooltip } from 'antd';
+import { Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { CallRow, ModelRow, SessionRow } from '../types';
+import { ModelIcon } from './ModelIcon';
 import { translate } from '../ui';
+import {
+  formatLatency,
+  formatSpeed,
+} from '../utils/labels';
 import { formatCost, formatMoney } from '../utils/money';
 
 function tokenWithCost(tokenText: string, costText: string) {
@@ -12,6 +17,31 @@ function tokenWithCost(tokenText: string, costText: string) {
         {costText}
       </div>
     </div>
+  );
+}
+
+function ModelCell({ model }: { model: string }) {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        maxWidth: '100%',
+        minWidth: 0,
+      }}
+    >
+      <ModelIcon model={model} />
+      <span
+        style={{
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {model}
+      </span>
+    </span>
   );
 }
 
@@ -46,10 +76,12 @@ export function modelColumns(): ColumnsType<ModelRow> {
   return [
     {
       title: translate('模型', 'Model'),
-      dataIndex: 'model',
       key: 'model',
       width: 200,
       ellipsis: true,
+      render: (_, row) => (
+        <ModelCell model={row.model} />
+      ),
     },
     {
       title: translate('调用', 'Calls'),
@@ -73,6 +105,38 @@ export function modelColumns(): ColumnsType<ModelRow> {
       align: 'right',
     },
     {
+      title: (
+        <Tooltip
+          title={translate(
+            '首次响应时间（TTFT）：请求发出到收到首个输出 token',
+            'Time to first token (TTFT): from request to the first output token.',
+          )}
+        >
+          {translate('首次响应', 'TTFT')}
+        </Tooltip>
+      ),
+      key: 'ttft',
+      width: 100,
+      align: 'right',
+      render: (_, row) => formatLatency(row.avgTtftMs),
+    },
+    {
+      title: (
+        <Tooltip
+          title={translate(
+            '生成速度 = 输出 token / (调用总耗时 - 首 token 等待)',
+            'Generation speed = output tokens / (total duration - TTFT).',
+          )}
+        >
+          {translate('生成速度', 'Gen speed')}
+        </Tooltip>
+      ),
+      key: 'speed',
+      width: 110,
+      align: 'right',
+      render: (_, row) => formatSpeed(row.tokensPerSecond),
+    },
+    {
       title: translate('估算费用', 'Estimated cost'),
       key: 'cost',
       width: 120,
@@ -85,6 +149,7 @@ export function modelColumns(): ColumnsType<ModelRow> {
 export function sessionColumns(
   showModel: boolean,
   onOpenSession: (sessionId: string) => void,
+  showPerformance = false,
 ): ColumnsType<SessionRow> {
   const columns: ColumnsType<SessionRow> = [
     {
@@ -103,20 +168,35 @@ export function sessionColumns(
   if (showModel) {
     columns.push({
       title: translate('模型', 'Model'),
-      dataIndex: 'model',
       key: 'model',
       width: 160,
       ellipsis: true,
+      render: (_, row) =>
+        row.model === '-' ? '-' : <ModelCell model={row.model} />,
     });
   }
 
   columns.push(
     {
       title: translate('调用', 'Calls'),
-      dataIndex: 'callsText',
       key: 'calls',
-      width: 60,
+      width: 76,
       align: 'right',
+      render: (_, row) =>
+        row.calls === 0 && row.events > 0 ? (
+          <Tooltip
+            title={translate(
+              '仅有事件，没有模型调用',
+              'Events only; no model calls',
+            )}
+          >
+            <span>
+              {`0 (${row.events} ${translate('事件', 'events')})`}
+            </span>
+          </Tooltip>
+        ) : (
+          row.callsText
+        ),
     },
     {
       title: translate('输入', 'Input'),
@@ -187,20 +267,71 @@ export function sessionColumns(
       align: 'right',
       render: (_, row) => formatCost(row.costCny, row.unpricedCalls),
     },
-    {
+  );
+
+  if (showPerformance) {
+    columns.push(
+      {
+        title: translate('平均耗时', 'Avg duration'),
+        dataIndex: 'avgDurationText',
+        key: 'avgDuration',
+        width: 100,
+        align: 'right',
+      },
+      {
+        title: (
+          <Tooltip
+            title={translate(
+              '首次响应时间（TTFT）：请求发出到收到首个输出 token',
+              'Time to first token (TTFT): from request to the first output token.',
+            )}
+          >
+            {translate('首次响应', 'TTFT')}
+          </Tooltip>
+        ),
+        dataIndex: 'avgTtftText',
+        key: 'ttft',
+        width: 95,
+        align: 'right',
+      },
+      {
+        title: (
+          <Tooltip
+            title={translate(
+              '生成速度 = 输出 token /（调用耗时 − TTFT）',
+              'Generation speed = output tokens / (call duration - TTFT).',
+            )}
+          >
+            {translate('生成速度', 'Gen speed')}
+          </Tooltip>
+        ),
+        dataIndex: 'tokensPerSecondText',
+        key: 'speed',
+        width: 100,
+        align: 'right',
+      },
+      {
+        title: translate('时间', 'Time'),
+        dataIndex: 'timeRangeText',
+        key: 'timeRange',
+        width: 190,
+        align: 'right',
+      },
+    );
+  } else {
+    columns.push({
       title: translate('最近', 'Last seen'),
       dataIndex: 'lastSeenText',
       key: 'lastSeen',
       width: 100,
       align: 'right',
-    },
-  );
+    });
+  }
 
   return columns;
 }
 
 export function callColumns(
-  showTitle: boolean,
   onOpenSession?: (sessionId: string) => void,
 ): ColumnsType<CallRow> {
   const columns: ColumnsType<CallRow> = [
@@ -210,10 +341,7 @@ export function callColumns(
       key: 'time',
       width: 120,
     },
-  ];
-
-  if (showTitle) {
-    columns.push({
+    {
       title: translate('标题', 'Title'),
       key: 'title',
       width: 200,
@@ -226,16 +354,49 @@ export function callColumns(
           text
         );
       },
-    });
-  }
+    },
+    {
+      title: translate('Agent', 'Agent'),
+      key: 'agent',
+      width: 150,
+      ellipsis: true,
+      render: (_, row) => row.agentText,
+    },
+    {
+      title: translate('子代理', 'Subagent'),
+      key: 'subagent',
+      width: 130,
+      ellipsis: true,
+      render: (_, row) =>
+        row.subagentName ? (
+          <Tag color="purple">{row.subagentName}</Tag>
+        ) : (
+          '-'
+        ),
+    },
+    {
+      title: translate('错误', 'Error'),
+      key: 'error',
+      width: 120,
+      ellipsis: true,
+      render: (_, row) =>
+        row.errorType ? (
+          <span style={{ color: '#ff4d4f' }} title={row.finishReasonsText}>
+            {row.errorText}
+          </span>
+        ) : (
+          '-'
+        ),
+    },
+  ];
 
   columns.push(
     {
       title: translate('模型', 'Model'),
-      dataIndex: 'model',
       key: 'model',
       width: 180,
       ellipsis: true,
+      render: (_, row) => <ModelCell model={row.model} />,
     },
     {
       title: translate('输入', 'Input'),
@@ -267,6 +428,38 @@ export function callColumns(
       key: 'hitRate',
       width: 80,
       align: 'right',
+    },
+    {
+      title: (
+        <Tooltip
+          title={translate(
+            '首次响应时间（TTFT）：请求发出到收到首个输出 token',
+            'Time to first token (TTFT): from request to the first output token.',
+          )}
+        >
+          {translate('首次响应', 'TTFT')}
+        </Tooltip>
+      ),
+      key: 'ttft',
+      width: 95,
+      align: 'right',
+      render: (_, row) => formatLatency(row.ttftMs),
+    },
+    {
+      title: (
+        <Tooltip
+          title={translate(
+            '生成速度 = 输出 token / (本次调用耗时 - 首 token 等待)',
+            'Generation speed = output tokens / (call duration - TTFT).',
+          )}
+        >
+          {translate('生成速度', 'Gen speed')}
+        </Tooltip>
+      ),
+      key: 'speed',
+      width: 100,
+      align: 'right',
+      render: (_, row) => formatSpeed(row.tokensPerSecond),
     },
     {
       title: (
@@ -306,4 +499,4 @@ export function callColumns(
 }
 
 export const callRowKey = (row: CallRow) =>
-  `${row.startTimeMs}-${row.sessionId ?? 'none'}-${row.model}`;
+  `${row.startTimeMs}-${row.sessionId ?? 'none'}-${row.model}-${row.source ?? 'none'}`;

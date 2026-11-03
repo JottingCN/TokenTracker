@@ -32,6 +32,15 @@ body {
   overflow-y: auto !important;
 }
 
+.tt-fill-table .ant-table-body {
+  min-height: var(--tt-table-body-height, 0px);
+}
+
+.ant-menu-inline-collapsed .ant-menu-title-content,
+.ant-menu-inline-collapsed .ant-menu-submenu-arrow {
+  display: none;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--ant-color-text-quaternary) transparent;
@@ -60,4 +69,20 @@ body {
 
 *::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+.tt-trace-tree,
+.tt-trace-tree .rc-virtual-list-holder,
+.tt-trace-tree .rc-virtual-list-holder-inner {
+  overscroll-behavior: contain;
+}
+
+.tt-trace-tree .ant-tree-list-holder {
+  height: var(--tt-trace-height, auto) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+
+.tt-trace-tree .ant-tree-list {
+  height: var(--tt-trace-height, auto);
 }

@@ -30,10 +30,12 @@ public sealed class LocalTraceImporterTests
 
             var first = LocalTraceImporter.Import(store, new[] { sourcePath });
 
-            Assert.Equal(1, first.Scanned);
+            Assert.Equal(2, first.Scanned);
             Assert.Equal(1, first.Matched);
             Assert.Equal(1, first.Inserted);
             Assert.Equal(0, first.Skipped);
+            Assert.Equal(1, first.EventsMatched);
+            Assert.Equal(1, first.EventsInserted);
             Assert.Empty(first.Errors);
 
             var call = Assert.Single(store.GetCalls(0, includeUtility: true));
@@ -46,12 +48,22 @@ public sealed class LocalTraceImporterTests
             Assert.Null(call.CostCny);
             Assert.Equal(startMs, call.StartTimeMs);
 
+            var tool = Assert.Single(store.GetSessionTools("session-import"));
+            Assert.Equal("read_file", tool.Tool);
+            Assert.Equal(1, tool.Calls);
+            Assert.Equal(1, tool.ErrorCount);
+            Assert.Equal(new[] { "function" }, tool.ToolTypes);
+            Assert.Equal(new[] { "str_replace" }, tool.EditTypes);
+            Assert.Equal(new[] { "review" }, tool.SkillNames);
+
             var second = LocalTraceImporter.Import(store, new[] { sourcePath });
 
-            Assert.Equal(1, second.Scanned);
+            Assert.Equal(2, second.Scanned);
             Assert.Equal(1, second.Matched);
             Assert.Equal(0, second.Inserted);
             Assert.Equal(1, second.Skipped);
+            Assert.Equal(1, second.EventsMatched);
+            Assert.Equal(0, second.EventsInserted);
         }
         finally
         {
@@ -117,9 +129,23 @@ public sealed class LocalTraceImporterTests
                 'session-import'
             );
 
+            INSERT INTO spans (
+                span_id, trace_id, name, start_time_ms, end_time_ms,
+                status_code, operation_name, provider_name,
+                conversation_id, chat_session_id, tool_name, tool_call_id,
+                tool_type
+            ) VALUES (
+                'span-tool', 'trace-tool', 'execute_tool read_file',
+                {{startMs + 1500}}, {{startMs + 2000}}, 2, 'execute_tool',
+                'anthropic', 'conversation-import', 'session-import',
+                'read_file', 'call-import', 'function'
+            );
+
             INSERT INTO span_attributes (span_id, key, value) VALUES
                 ('span-import', 'gen_ai.usage.cache_creation.input_tokens', '100'),
-                ('span-import', 'copilot_chat.copilot_usage_nano_aiu', '1500000000');
+                ('span-import', 'copilot_chat.copilot_usage_nano_aiu', '1500000000'),
+                ('span-tool', 'github.copilot.tool.parameters.edit_type', 'str_replace'),
+                ('span-tool', 'github.copilot.tool.parameters.skill_name', 'review');
             """;
         command.ExecuteNonQuery();
     }

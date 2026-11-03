@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Pricing;
@@ -9,8 +10,41 @@ public sealed record StoredModelPrice(
     ModelPrice Price,
     long UpdatedAtMs);
 
-public sealed class SpanStore
+public sealed partial class SpanStore
 {
+    private const string SourceCaseSql =
+        "CASE " +
+        "WHEN lower(COALESCE(service_namespace, '')) LIKE '%agent-host%' THEN 'agent-host' " +
+        "WHEN COALESCE(service_namespace, '') <> '' THEN 'copilot-chat' " +
+        "WHEN lower(COALESCE(service_name, '')) IN (" +
+        "'github-copilot','claude-code','codex-app-server','vscode-agent-host') " +
+        "THEN 'agent-host' " +
+        "WHEN lower(COALESCE(service_name, '')) = 'copilot-chat' THEN 'copilot-chat' " +
+        "ELSE 'unknown' END";
+
+    private const string SourceSql =
+        "COALESCE(otel_source, " + SourceCaseSql + ")";
+
+    private const string SpeedSql = """
+        CASE WHEN SUM(CASE WHEN end_time_ms > start_time_ms
+            AND ttft_ms IS NOT NULL
+            AND output_tokens >= 5
+            AND end_time_ms - start_time_ms - ttft_ms >= 50
+            THEN end_time_ms - start_time_ms - ttft_ms ELSE 0 END) > 0
+            THEN SUM(CASE WHEN end_time_ms > start_time_ms
+                AND ttft_ms IS NOT NULL
+                AND output_tokens >= 5
+                AND end_time_ms - start_time_ms - ttft_ms >= 50
+                THEN output_tokens ELSE 0 END) * 1000.0 /
+                SUM(CASE WHEN end_time_ms > start_time_ms
+                    AND ttft_ms IS NOT NULL
+                    AND output_tokens >= 5
+                    AND end_time_ms - start_time_ms - ttft_ms >= 50
+                    THEN end_time_ms - start_time_ms - ttft_ms ELSE 0 END)
+            ELSE NULL
+        END
+        """;
+
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
@@ -37,6 +71,115 @@ public sealed class SpanStore
     public string DatabasePath =>
         new SqliteConnectionStringBuilder(_connectionString).DataSource ?? string.Empty;
 
+    public StorageStats GetStorageStats()
+    {
+        using var connection = OpenConnection();
+        long pageSize;
+        long pageCount;
+        string journalMode;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA page_size;";
+            pageSize = Convert.ToInt64(
+                command.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA page_count;";
+            pageCount = Convert.ToInt64(
+                command.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA journal_mode;";
+            journalMode = command.ExecuteScalar()?.ToString() ?? "unknown";
+        }
+
+        var tables = new List<StorageTableInfo>();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name;
+                """;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                tables.Add(new StorageTableInfo(reader.GetString(0), 0));
+            }
+        }
+
+        for (var index = 0; index < tables.Count; index++)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                $"SELECT COUNT(*) FROM \"{tables[index].Name.Replace("\"", "\"\"")}\";";
+            tables[index] = tables[index] with
+            {
+                Rows = Convert.ToInt64(
+                    command.ExecuteScalar(),
+                    CultureInfo.InvariantCulture),
+            };
+        }
+
+        long rawSpans;
+        long combinedSpans;
+        long outcomeMetricPoints;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT
+                    COALESCE(SUM(CASE WHEN otel_source = 'combined' THEN 0 ELSE 1 END), 0),
+                    COALESCE(SUM(CASE WHEN otel_source = 'combined' THEN 1 ELSE 0 END), 0)
+                FROM spans;
+                """;
+            using var reader = command.ExecuteReader();
+            reader.Read();
+            rawSpans = reader.GetInt64(0);
+            combinedSpans = reader.GetInt64(1);
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            var parameters = MetricNames.Outcome
+                .Select((_, index) => $"@outcome_{index}")
+                .ToList();
+            command.CommandText =
+                "SELECT COUNT(*) FROM metric_points WHERE metric_name IN " +
+                $"({string.Join(", ", parameters)});";
+            var index = 0;
+            foreach (var name in MetricNames.Outcome)
+            {
+                command.Parameters.AddWithValue(parameters[index++], name);
+            }
+
+            outcomeMetricPoints = Convert.ToInt64(
+                command.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+        }
+
+        long FileSize(string path) =>
+            File.Exists(path) ? new FileInfo(path).Length : 0;
+
+        return new StorageStats(
+            DatabasePath,
+            FileSize(DatabasePath),
+            FileSize(DatabasePath + "-wal"),
+            FileSize(DatabasePath + "-shm"),
+            pageSize,
+            pageCount,
+            journalMode,
+            rawSpans,
+            combinedSpans,
+            outcomeMetricPoints,
+            tables);
+    }
+
     private void Initialize()
     {
         using var connection = OpenConnection();
@@ -49,10 +192,14 @@ public sealed class SpanStore
             CREATE TABLE IF NOT EXISTS spans (
                 trace_id TEXT NOT NULL,
                 span_id TEXT NOT NULL,
+                parent_span_id TEXT,
                 name TEXT,
                 start_time_ms INTEGER NOT NULL,
                 end_time_ms INTEGER,
                 service_name TEXT,
+                service_namespace TEXT,
+                scope_name TEXT,
+                otel_source TEXT,
                 model TEXT,
                 session_id TEXT,
                 is_main INTEGER NOT NULL,
@@ -61,6 +208,7 @@ public sealed class SpanStore
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
                 reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                ttft_ms INTEGER,
                 nano_aiu INTEGER,
                 cache_cost_cny REAL,
                 uncached_cost_cny REAL,
@@ -69,15 +217,117 @@ public sealed class SpanStore
                 hit_rate REAL,
                 cost_cny REAL,
                 pricing_period TEXT,
-                attributes TEXT,
+                error_type TEXT,
+                provider_name TEXT,
+                agent_name TEXT,
+                subagent_name TEXT,
+                window_session_id TEXT,
+                finish_reasons TEXT,
                 received_at_ms INTEGER NOT NULL,
                 PRIMARY KEY (trace_id, span_id)
             );
 
-            CREATE INDEX IF NOT EXISTS ix_spans_start ON spans(start_time_ms);
-            CREATE INDEX IF NOT EXISTS ix_spans_session ON spans(session_id);
-            CREATE INDEX IF NOT EXISTS ix_spans_model ON spans(model);
-            CREATE INDEX IF NOT EXISTS ix_spans_received ON spans(received_at_ms);
+            CREATE TABLE IF NOT EXISTS session_events (
+                trace_id TEXT NOT NULL,
+                span_id TEXT NOT NULL,
+                parent_span_id TEXT,
+                name TEXT,
+                operation TEXT NOT NULL,
+                tool_name TEXT,
+                tool_type TEXT,
+                edit_type TEXT,
+                skill_name TEXT,
+                mcp_server_hash TEXT,
+                mcp_tool_name TEXT,
+                hook_decision TEXT,
+                hook_duration_ms REAL,
+                hook_tool_names TEXT,
+                hook_type TEXT,
+                hook_result_kind TEXT,
+                call_id TEXT,
+                session_id TEXT,
+                service_name TEXT,
+                service_namespace TEXT,
+                scope_name TEXT,
+                otel_source TEXT,
+                error_type TEXT,
+                agent_name TEXT,
+                agent_type TEXT,
+                provider_name TEXT,
+                window_session_id TEXT,
+                start_time_ms INTEGER NOT NULL,
+                end_time_ms INTEGER,
+                is_error INTEGER NOT NULL DEFAULT 0,
+                received_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (trace_id, span_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                otel_source TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
+                span_id TEXT NOT NULL,
+                parent_span_id TEXT,
+                is_root INTEGER NOT NULL,
+                session_id TEXT,
+                agent_name TEXT,
+                agent_type TEXT,
+                provider_name TEXT,
+                request_model TEXT,
+                response_model TEXT,
+                service_name TEXT,
+                service_namespace TEXT,
+                git_repository TEXT,
+                git_branch TEXT,
+                git_commit TEXT,
+                github_org TEXT,
+                turn_count INTEGER,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                start_time_ms INTEGER NOT NULL,
+                end_time_ms INTEGER,
+                is_error INTEGER NOT NULL DEFAULT 0,
+                error_type TEXT,
+                received_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (otel_source, trace_id, span_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS metric_points (
+                otel_source TEXT NOT NULL,
+                series_key TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_kind TEXT NOT NULL,
+                temporality TEXT,
+                service_name TEXT,
+                scope_name TEXT,
+                attrs TEXT,
+                window_session_id TEXT,
+                attributed_session_id TEXT,
+                attribution_method TEXT,
+                attribution_confidence REAL,
+                start_time_ms INTEGER NOT NULL,
+                end_time_ms INTEGER NOT NULL,
+                value REAL,
+                count INTEGER,
+                sum REAL,
+                min REAL,
+                max REAL,
+                bucket_counts TEXT,
+                explicit_bounds TEXT,
+                received_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (otel_source, series_key, end_time_ms)
+            );
+
+            CREATE TABLE IF NOT EXISTS window_session_links (
+                window_session_id TEXT NOT NULL,
+                chat_session_id TEXT NOT NULL,
+                service_name TEXT,
+                first_seen_ms INTEGER NOT NULL,
+                last_seen_ms INTEGER NOT NULL,
+                PRIMARY KEY (window_session_id, chat_session_id)
+            );
 
             CREATE TABLE IF NOT EXISTS model_prices (
                 model TEXT PRIMARY KEY COLLATE NOCASE,
@@ -120,6 +370,41 @@ public sealed class SpanStore
         EnsureColumn(connection, "spans", "output_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "reasoning_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "nano_aiu", "INTEGER");
+        EnsureColumn(connection, "spans", "ttft_ms", "INTEGER");
+        EnsureColumn(connection, "spans", "otel_source", "TEXT");
+        EnsureColumn(connection, "spans", "service_namespace", "TEXT");
+        EnsureColumn(connection, "spans", "scope_name", "TEXT");
+        EnsureColumn(connection, "spans", "parent_span_id", "TEXT");
+        EnsureColumn(connection, "spans", "error_type", "TEXT");
+        EnsureColumn(connection, "spans", "provider_name", "TEXT");
+        EnsureColumn(connection, "spans", "agent_name", "TEXT");
+        EnsureColumn(connection, "spans", "subagent_name", "TEXT");
+        EnsureColumn(connection, "spans", "finish_reasons", "TEXT");
+        EnsureColumn(connection, "spans", "window_session_id", "TEXT");
+        EnsureColumn(connection, "session_events", "window_session_id", "TEXT");
+        EnsureColumn(connection, "metric_points", "window_session_id", "TEXT");
+        EnsureColumn(connection, "metric_points", "attributed_session_id", "TEXT");
+        EnsureColumn(connection, "metric_points", "attribution_method", "TEXT");
+        EnsureColumn(connection, "metric_points", "attribution_confidence", "REAL");
+        EnsureColumn(connection, "session_events", "otel_source", "TEXT");
+        EnsureColumn(connection, "session_events", "service_namespace", "TEXT");
+        EnsureColumn(connection, "session_events", "scope_name", "TEXT");
+        EnsureColumn(connection, "session_events", "call_id", "TEXT");
+        EnsureColumn(connection, "session_events", "tool_type", "TEXT");
+        EnsureColumn(connection, "session_events", "edit_type", "TEXT");
+        EnsureColumn(connection, "session_events", "skill_name", "TEXT");
+        EnsureColumn(connection, "session_events", "parent_span_id", "TEXT");
+        EnsureColumn(connection, "session_events", "error_type", "TEXT");
+        EnsureColumn(connection, "session_events", "agent_name", "TEXT");
+        EnsureColumn(connection, "session_events", "agent_type", "TEXT");
+        EnsureColumn(connection, "session_events", "provider_name", "TEXT");
+        EnsureColumn(connection, "session_events", "mcp_server_hash", "TEXT");
+        EnsureColumn(connection, "session_events", "mcp_tool_name", "TEXT");
+        EnsureColumn(connection, "session_events", "hook_decision", "TEXT");
+        EnsureColumn(connection, "session_events", "hook_duration_ms", "REAL");
+        EnsureColumn(connection, "session_events", "hook_tool_names", "TEXT");
+        EnsureColumn(connection, "session_events", "hook_type", "TEXT");
+        EnsureColumn(connection, "session_events", "hook_result_kind", "TEXT");
 
         EnsureColumn(connection, "model_prices", "long_threshold_tokens", "INTEGER");
         EnsureColumn(connection, "model_prices", "long_cached_input", "REAL");
@@ -132,6 +417,65 @@ public sealed class SpanStore
         EnsureColumn(connection, "model_prices", "peak_cache_write", "REAL");
         EnsureColumn(connection, "model_prices", "long_cache_write", "REAL");
         EnsureColumn(connection, "model_prices", "long_peak_cache_write", "REAL");
+
+        // Indexes last: upgrading from an old database fails if an index references
+        // a column that EnsureColumn has not added yet.
+        using (var indexes = connection.CreateCommand())
+        {
+            indexes.CommandText = """
+                CREATE INDEX IF NOT EXISTS ix_spans_start ON spans(start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_spans_session ON spans(session_id);
+                CREATE INDEX IF NOT EXISTS ix_spans_model ON spans(model);
+                CREATE INDEX IF NOT EXISTS ix_spans_received ON spans(received_at_ms);
+                CREATE INDEX IF NOT EXISTS ix_spans_source ON spans(otel_source);
+                CREATE INDEX IF NOT EXISTS ix_spans_trace ON spans(trace_id);
+                CREATE INDEX IF NOT EXISTS ix_spans_parent ON spans(parent_span_id);
+                CREATE INDEX IF NOT EXISTS ix_spans_error ON spans(error_type);
+                CREATE INDEX IF NOT EXISTS ix_spans_source_start
+                    ON spans(otel_source, start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_spans_session_start
+                    ON spans(session_id, start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_spans_model_source_start
+                    ON spans(model, otel_source, start_time_ms);
+
+                CREATE INDEX IF NOT EXISTS ix_events_session ON session_events(session_id);
+                CREATE INDEX IF NOT EXISTS ix_events_operation ON session_events(operation);
+                CREATE INDEX IF NOT EXISTS ix_events_tool ON session_events(tool_name);
+                CREATE INDEX IF NOT EXISTS ix_events_call_id ON session_events(call_id);
+                CREATE INDEX IF NOT EXISTS ix_events_start ON session_events(start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_events_source ON session_events(otel_source);
+                CREATE INDEX IF NOT EXISTS ix_events_parent ON session_events(parent_span_id);
+                CREATE INDEX IF NOT EXISTS ix_events_error ON session_events(error_type);
+                CREATE INDEX IF NOT EXISTS ix_events_source_start
+                    ON session_events(otel_source, start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_events_session_start
+                    ON session_events(session_id, start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_events_session_operation
+                    ON session_events(session_id, operation, start_time_ms);
+
+                CREATE INDEX IF NOT EXISTS ix_agent_runs_session
+                    ON agent_runs(session_id, start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_agent_runs_agent
+                    ON agent_runs(agent_name);
+                CREATE INDEX IF NOT EXISTS ix_agent_runs_start
+                    ON agent_runs(start_time_ms);
+
+                CREATE INDEX IF NOT EXISTS ix_metric_points_name
+                    ON metric_points(metric_name, end_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_metric_points_source
+                    ON metric_points(otel_source, end_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_metric_points_series
+                    ON metric_points(series_key, end_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_metric_points_window
+                    ON metric_points(window_session_id, end_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_metric_points_attributed
+                    ON metric_points(attributed_session_id, end_time_ms);
+
+                CREATE INDEX IF NOT EXISTS ix_window_links_session
+                    ON window_session_links(chat_session_id, last_seen_ms);
+                """;
+            indexes.ExecuteNonQuery();
+        }
     }
 
     public int InsertMany(IReadOnlyList<OtlpSpanRecord> spans)
@@ -150,28 +494,36 @@ public sealed class SpanStore
             command.Transaction = transaction;
             command.CommandText = """
                 INSERT OR IGNORE INTO spans (
-                    trace_id, span_id, name, start_time_ms, end_time_ms,
-                    service_name, model, session_id, is_main,
+                    trace_id, span_id, parent_span_id, name, start_time_ms, end_time_ms,
+                    service_name, service_namespace, scope_name, otel_source,
+                    model, session_id, is_main,
                     input_tokens, output_tokens, cache_read_tokens,
-                    cache_creation_tokens, reasoning_tokens, nano_aiu,
+                    cache_creation_tokens, reasoning_tokens, ttft_ms, nano_aiu,
                     cache_cost_cny, uncached_cost_cny, output_cost_cny, reasoning_cost_cny,
-                    hit_rate, cost_cny, pricing_period, attributes, received_at_ms
+                    hit_rate, cost_cny, pricing_period, error_type, provider_name,
+                    agent_name, window_session_id, finish_reasons, received_at_ms
                 ) VALUES (
-                    @trace_id, @span_id, @name, @start_time_ms, @end_time_ms,
-                    @service_name, @model, @session_id, @is_main,
+                    @trace_id, @span_id, @parent_span_id, @name, @start_time_ms, @end_time_ms,
+                    @service_name, @service_namespace, @scope_name, @otel_source,
+                    @model, @session_id, @is_main,
                     @input_tokens, @output_tokens, @cache_read_tokens,
-                    @cache_creation_tokens, @reasoning_tokens, @nano_aiu,
+                    @cache_creation_tokens, @reasoning_tokens, @ttft_ms, @nano_aiu,
                     @cache_cost_cny, @uncached_cost_cny, @output_cost_cny, @reasoning_cost_cny,
-                    @hit_rate, @cost_cny, @pricing_period, @attributes, @received_at_ms
+                    @hit_rate, @cost_cny, @pricing_period, @error_type, @provider_name,
+                    @agent_name, @window_session_id, @finish_reasons, @received_at_ms
                 );
                 """;
 
             AddParameter(command, "@trace_id", SqliteType.Text);
             AddParameter(command, "@span_id", SqliteType.Text);
+            AddParameter(command, "@parent_span_id", SqliteType.Text);
             AddParameter(command, "@name", SqliteType.Text);
             AddParameter(command, "@start_time_ms", SqliteType.Integer);
             AddParameter(command, "@end_time_ms", SqliteType.Integer);
             AddParameter(command, "@service_name", SqliteType.Text);
+            AddParameter(command, "@service_namespace", SqliteType.Text);
+            AddParameter(command, "@scope_name", SqliteType.Text);
+            AddParameter(command, "@otel_source", SqliteType.Text);
             AddParameter(command, "@model", SqliteType.Text);
             AddParameter(command, "@session_id", SqliteType.Text);
             AddParameter(command, "@is_main", SqliteType.Integer);
@@ -180,6 +532,7 @@ public sealed class SpanStore
             AddParameter(command, "@cache_read_tokens", SqliteType.Integer);
             AddParameter(command, "@cache_creation_tokens", SqliteType.Integer);
             AddParameter(command, "@reasoning_tokens", SqliteType.Integer);
+            AddParameter(command, "@ttft_ms", SqliteType.Integer);
             AddParameter(command, "@nano_aiu", SqliteType.Integer);
             AddParameter(command, "@cache_cost_cny", SqliteType.Real);
             AddParameter(command, "@uncached_cost_cny", SqliteType.Real);
@@ -188,34 +541,32 @@ public sealed class SpanStore
             AddParameter(command, "@hit_rate", SqliteType.Real);
             AddParameter(command, "@cost_cny", SqliteType.Real);
             AddParameter(command, "@pricing_period", SqliteType.Text);
-            AddParameter(command, "@attributes", SqliteType.Text);
+            AddParameter(command, "@error_type", SqliteType.Text);
+            AddParameter(command, "@provider_name", SqliteType.Text);
+            AddParameter(command, "@agent_name", SqliteType.Text);
+            AddParameter(command, "@window_session_id", SqliteType.Text);
+            AddParameter(command, "@finish_reasons", SqliteType.Text);
             AddParameter(command, "@received_at_ms", SqliteType.Integer);
 
             var inserted = 0;
             foreach (var span in spans)
             {
-                if (span.SessionId is not null && span.Model is not null)
-                {
-                    var duplicate = FindDuplicate(connection, transaction, span);
-                    if (duplicate is not null)
-                    {
-                        if (!IsRicher(span, duplicate))
-                        {
-                            continue;
-                        }
-
-                        DeleteSpan(connection, transaction, duplicate.TraceId, duplicate.SpanId);
-                    }
-                }
-
                 command.Parameters["@trace_id"].Value = span.TraceId;
                 command.Parameters["@span_id"].Value = span.SpanId;
+                command.Parameters["@parent_span_id"].Value =
+                    (object?)span.ParentSpanId ?? DBNull.Value;
                 command.Parameters["@name"].Value = (object?)span.Name ?? DBNull.Value;
                 command.Parameters["@start_time_ms"].Value = span.StartTimeMs;
                 command.Parameters["@end_time_ms"].Value =
                     span.EndTimeMs is null ? DBNull.Value : span.EndTimeMs.Value;
                 command.Parameters["@service_name"].Value =
                     (object?)span.ServiceName ?? DBNull.Value;
+                command.Parameters["@service_namespace"].Value =
+                    (object?)span.ServiceNamespace ?? DBNull.Value;
+                command.Parameters["@scope_name"].Value =
+                    (object?)span.ScopeName ?? DBNull.Value;
+                command.Parameters["@otel_source"].Value =
+                    (object?)span.Source ?? DBNull.Value;
                 command.Parameters["@model"].Value = (object?)span.Model ?? DBNull.Value;
                 command.Parameters["@session_id"].Value =
                     (object?)span.SessionId ?? DBNull.Value;
@@ -226,6 +577,8 @@ public sealed class SpanStore
                 command.Parameters["@cache_creation_tokens"].Value =
                     span.CacheCreationTokens;
                 command.Parameters["@reasoning_tokens"].Value = span.ReasoningTokens;
+                command.Parameters["@ttft_ms"].Value =
+                    span.TtftMs is null ? DBNull.Value : span.TtftMs.Value;
                 command.Parameters["@nano_aiu"].Value =
                     span.NanoAiu is null ? DBNull.Value : span.NanoAiu.Value;
                 command.Parameters["@cache_cost_cny"].Value =
@@ -242,14 +595,299 @@ public sealed class SpanStore
                     span.CostCny is null ? DBNull.Value : span.CostCny.Value;
                 command.Parameters["@pricing_period"].Value =
                     (object?)span.PricingPeriod ?? DBNull.Value;
-                command.Parameters["@attributes"].Value =
-                    (object?)span.Attributes ?? DBNull.Value;
+                command.Parameters["@error_type"].Value =
+                    (object?)span.ErrorType ?? DBNull.Value;
+                command.Parameters["@provider_name"].Value =
+                    (object?)span.ProviderName ?? DBNull.Value;
+                command.Parameters["@agent_name"].Value =
+                    (object?)span.AgentName ?? DBNull.Value;
+                command.Parameters["@window_session_id"].Value =
+                    (object?)span.WindowSessionId ?? DBNull.Value;
+                command.Parameters["@finish_reasons"].Value =
+                    (object?)span.FinishReasons ?? DBNull.Value;
                 command.Parameters["@received_at_ms"].Value = span.ReceivedAtMs;
 
                 inserted += command.ExecuteNonQuery();
             }
 
+            var resolveTraceIds = spans
+                .Where(span =>
+                    NeedsSessionResolution(span.SessionId) &&
+                    !string.IsNullOrWhiteSpace(span.ParentSpanId))
+                .Select(span => span.TraceId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var resolved = resolveTraceIds.Count > 0
+                ? ResolveSessionIdsForTraces(
+                    connection,
+                    transaction,
+                    resolveTraceIds)
+                : 0;
+
+            var nameTraceIds = spans
+                .Where(span => !string.IsNullOrWhiteSpace(span.ParentSpanId))
+                .Select(span => span.TraceId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (nameTraceIds.Count > 0)
+            {
+                UpdateSubagentNames(connection, transaction, nameTraceIds);
+            }
+
+            var windowIds = spans
+                .Where(span => !string.IsNullOrWhiteSpace(span.WindowSessionId))
+                .Select(span => span.WindowSessionId!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            UpsertWindowSessionLinks(
+                connection,
+                transaction,
+                spans
+                    .Where(span =>
+                        !string.IsNullOrWhiteSpace(span.WindowSessionId) &&
+                        !string.IsNullOrWhiteSpace(span.SessionId))
+                    .Select(span => (
+                        span.WindowSessionId!,
+                        span.SessionId!,
+                        span.ServiceName,
+                        span.StartTimeMs,
+                        span.EndTimeMs)));
+            if (windowIds.Count > 0)
+            {
+                ReconcileMetricAttribution(
+                    connection,
+                    transaction,
+                    windowIds);
+            }
+
             transaction.Commit();
+            if (resolved > 0)
+            {
+                _combinedAllDirty = true;
+                _combinedDirtySessions.Clear();
+                _combinedDirty = true;
+            }
+            else if (inserted > 0)
+            {
+                foreach (var span in spans)
+                {
+                    if (string.IsNullOrWhiteSpace(span.SessionId))
+                    {
+                        _combinedAllDirty = true;
+                    }
+                    else
+                    {
+                        _combinedDirtySessions.Add(span.SessionId);
+                    }
+                }
+
+                _combinedDirty = true;
+            }
+
+            return inserted;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public int InsertEvents(IReadOnlyList<OtlpEventRecord> events)
+    {
+        if (events.Count == 0)
+        {
+            return 0;
+        }
+
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT OR IGNORE INTO session_events (
+                    trace_id, span_id, parent_span_id, name, operation, tool_name,
+                    tool_type, edit_type, skill_name, mcp_server_hash, mcp_tool_name,
+                    hook_decision, hook_duration_ms, hook_tool_names, hook_type,
+                    hook_result_kind, call_id, session_id, service_name,
+                    service_namespace, scope_name, otel_source, error_type,
+                    agent_name, agent_type, provider_name, window_session_id,
+                    start_time_ms, end_time_ms, is_error, received_at_ms
+                ) VALUES (
+                    @trace_id, @span_id, @parent_span_id, @name, @operation,
+                    @tool_name, @tool_type, @edit_type, @skill_name,
+                    @mcp_server_hash, @mcp_tool_name, @hook_decision,
+                    @hook_duration_ms, @hook_tool_names, @hook_type,
+                    @hook_result_kind, @call_id, @session_id, @service_name,
+                    @service_namespace, @scope_name, @otel_source, @error_type,
+                    @agent_name, @agent_type, @provider_name,
+                    @window_session_id, @start_time_ms, @end_time_ms,
+                    @is_error, @received_at_ms
+                );
+                """;
+
+            AddParameter(command, "@trace_id", SqliteType.Text);
+            AddParameter(command, "@span_id", SqliteType.Text);
+            AddParameter(command, "@parent_span_id", SqliteType.Text);
+            AddParameter(command, "@name", SqliteType.Text);
+            AddParameter(command, "@operation", SqliteType.Text);
+            AddParameter(command, "@tool_name", SqliteType.Text);
+            AddParameter(command, "@tool_type", SqliteType.Text);
+            AddParameter(command, "@edit_type", SqliteType.Text);
+            AddParameter(command, "@skill_name", SqliteType.Text);
+            AddParameter(command, "@mcp_server_hash", SqliteType.Text);
+            AddParameter(command, "@mcp_tool_name", SqliteType.Text);
+            AddParameter(command, "@hook_decision", SqliteType.Text);
+            AddParameter(command, "@hook_duration_ms", SqliteType.Real);
+            AddParameter(command, "@hook_tool_names", SqliteType.Text);
+            AddParameter(command, "@hook_type", SqliteType.Text);
+            AddParameter(command, "@hook_result_kind", SqliteType.Text);
+            AddParameter(command, "@call_id", SqliteType.Text);
+            AddParameter(command, "@session_id", SqliteType.Text);
+            AddParameter(command, "@service_name", SqliteType.Text);
+            AddParameter(command, "@service_namespace", SqliteType.Text);
+            AddParameter(command, "@scope_name", SqliteType.Text);
+            AddParameter(command, "@otel_source", SqliteType.Text);
+            AddParameter(command, "@error_type", SqliteType.Text);
+            AddParameter(command, "@agent_name", SqliteType.Text);
+            AddParameter(command, "@agent_type", SqliteType.Text);
+            AddParameter(command, "@provider_name", SqliteType.Text);
+            AddParameter(command, "@window_session_id", SqliteType.Text);
+            AddParameter(command, "@start_time_ms", SqliteType.Integer);
+            AddParameter(command, "@end_time_ms", SqliteType.Integer);
+            AddParameter(command, "@is_error", SqliteType.Integer);
+            AddParameter(command, "@received_at_ms", SqliteType.Integer);
+
+            var inserted = 0;
+            foreach (var item in events)
+            {
+                if (!string.IsNullOrWhiteSpace(item.CallId) &&
+                    !string.IsNullOrWhiteSpace(item.SessionId) &&
+                    EventExists(connection, transaction, item))
+                {
+                    continue;
+                }
+
+                command.Parameters["@trace_id"].Value = item.TraceId;
+                command.Parameters["@span_id"].Value = item.SpanId;
+                command.Parameters["@parent_span_id"].Value =
+                    (object?)item.ParentSpanId ?? DBNull.Value;
+                command.Parameters["@name"].Value =
+                    (object?)item.Name ?? DBNull.Value;
+                command.Parameters["@operation"].Value = item.Operation;
+                command.Parameters["@tool_name"].Value =
+                    (object?)item.ToolName ?? DBNull.Value;
+                command.Parameters["@tool_type"].Value =
+                    (object?)item.ToolType ?? DBNull.Value;
+                command.Parameters["@edit_type"].Value =
+                    (object?)item.EditType ?? DBNull.Value;
+                command.Parameters["@skill_name"].Value =
+                    (object?)item.SkillName ?? DBNull.Value;
+                command.Parameters["@mcp_server_hash"].Value =
+                    (object?)item.McpServerHash ?? DBNull.Value;
+                command.Parameters["@mcp_tool_name"].Value =
+                    (object?)item.McpToolName ?? DBNull.Value;
+                command.Parameters["@hook_decision"].Value =
+                    (object?)item.HookDecision ?? DBNull.Value;
+                command.Parameters["@hook_duration_ms"].Value =
+                    item.HookDurationMs is null
+                        ? DBNull.Value
+                        : item.HookDurationMs.Value;
+                command.Parameters["@hook_tool_names"].Value =
+                    (object?)item.HookToolNames ?? DBNull.Value;
+                command.Parameters["@hook_type"].Value =
+                    (object?)item.HookType ?? DBNull.Value;
+                command.Parameters["@hook_result_kind"].Value =
+                    (object?)item.HookResultKind ?? DBNull.Value;
+                command.Parameters["@call_id"].Value =
+                    (object?)item.CallId ?? DBNull.Value;
+                command.Parameters["@session_id"].Value =
+                    (object?)item.SessionId ?? DBNull.Value;
+                command.Parameters["@service_name"].Value =
+                    (object?)item.ServiceName ?? DBNull.Value;
+                command.Parameters["@service_namespace"].Value =
+                    (object?)item.ServiceNamespace ?? DBNull.Value;
+                command.Parameters["@scope_name"].Value =
+                    (object?)item.ScopeName ?? DBNull.Value;
+                command.Parameters["@otel_source"].Value =
+                    (object?)item.Source ?? DBNull.Value;
+                command.Parameters["@error_type"].Value =
+                    (object?)item.ErrorType ?? DBNull.Value;
+                command.Parameters["@agent_name"].Value =
+                    (object?)item.AgentName ?? DBNull.Value;
+                command.Parameters["@agent_type"].Value =
+                    (object?)item.AgentType ?? DBNull.Value;
+                command.Parameters["@provider_name"].Value =
+                    (object?)item.ProviderName ?? DBNull.Value;
+                command.Parameters["@window_session_id"].Value =
+                    (object?)item.WindowSessionId ?? DBNull.Value;
+                command.Parameters["@start_time_ms"].Value = item.StartTimeMs;
+                command.Parameters["@end_time_ms"].Value =
+                    item.EndTimeMs is null ? DBNull.Value : item.EndTimeMs.Value;
+                command.Parameters["@is_error"].Value = item.IsError ? 1 : 0;
+                command.Parameters["@received_at_ms"].Value = item.ReceivedAtMs;
+                inserted += command.ExecuteNonQuery();
+            }
+
+            var resolveTraceIds = events
+                .Where(item =>
+                    NeedsSessionResolution(item.SessionId) &&
+                    !string.IsNullOrWhiteSpace(item.ParentSpanId))
+                .Select(item => item.TraceId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (resolveTraceIds.Count > 0)
+            {
+                ResolveSessionIdsForTraces(
+                    connection,
+                    transaction,
+                    resolveTraceIds);
+            }
+
+            var nameTraceIds = events
+                .Select(item => item.TraceId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var namesChanged = nameTraceIds.Count > 0
+                ? UpdateSubagentNames(connection, transaction, nameTraceIds)
+                : 0;
+
+            var eventWindowIds = events
+                .Where(item => !string.IsNullOrWhiteSpace(item.WindowSessionId))
+                .Select(item => item.WindowSessionId!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            UpsertWindowSessionLinks(
+                connection,
+                transaction,
+                events
+                    .Where(item =>
+                        !string.IsNullOrWhiteSpace(item.WindowSessionId) &&
+                        !string.IsNullOrWhiteSpace(item.SessionId))
+                    .Select(item => (
+                        item.WindowSessionId!,
+                        item.SessionId!,
+                        item.ServiceName,
+                        item.StartTimeMs,
+                        item.EndTimeMs)));
+            if (eventWindowIds.Count > 0)
+            {
+                ReconcileMetricAttribution(
+                    connection,
+                    transaction,
+                    eventWindowIds);
+            }
+
+            transaction.Commit();
+            if (namesChanged > 0)
+            {
+                _combinedAllDirty = true;
+                _combinedDirtySessions.Clear();
+                _combinedDirty = true;
+            }
+
             return inserted;
         }
         finally
@@ -280,107 +918,56 @@ public sealed class SpanStore
         command.ExecuteNonQuery();
     }
 
-    private static SpanDuplicate? FindDuplicate(
+    private static bool EventExists(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        OtlpSpanRecord span)
+        OtlpEventRecord item)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT trace_id, span_id, cache_read_tokens, reasoning_tokens,
-                   nano_aiu, service_name
-            FROM spans
+            SELECT 1 FROM session_events
             WHERE session_id = @session
-              AND model = @model
-              AND input_tokens = @input
-              AND output_tokens = @output
-              AND start_time_ms BETWEEN @from AND @to
-              AND COALESCE(service_name, '') <> COALESCE(@service, '')
+              AND operation = @operation
+              AND call_id = @call_id
+              AND COALESCE(tool_name, '') = COALESCE(@tool, '')
+              AND COALESCE(otel_source, 'unknown') = COALESCE(@source, 'unknown')
             LIMIT 1;
             """;
-        command.Parameters.AddWithValue("@session", span.SessionId!);
-        command.Parameters.AddWithValue("@model", span.Model!);
-        command.Parameters.AddWithValue("@input", span.InputTokens);
-        command.Parameters.AddWithValue("@output", span.OutputTokens);
-        command.Parameters.AddWithValue("@from", span.StartTimeMs - 2_000);
-        command.Parameters.AddWithValue("@to", span.StartTimeMs + 2_000);
-        command.Parameters.AddWithValue("@service", (object?)span.ServiceName ?? DBNull.Value);
-
-        using var reader = command.ExecuteReader();
-        if (!reader.Read())
-        {
-            return null;
-        }
-
-        return new SpanDuplicate(
-            reader.GetString(0),
-            reader.GetString(1),
-            reader.GetInt64(2),
-            reader.GetInt64(3),
-            reader.IsDBNull(4) ? null : reader.GetInt64(4),
-            reader.IsDBNull(5) ? null : reader.GetString(5));
-    }
-
-    private static bool IsRicher(OtlpSpanRecord span, SpanDuplicate existing)
-    {
-        if (span.CacheReadTokens != existing.CacheReadTokens)
-        {
-            return span.CacheReadTokens > existing.CacheReadTokens;
-        }
-
-        if (span.ReasoningTokens != existing.ReasoningTokens)
-        {
-            return span.ReasoningTokens > existing.ReasoningTokens;
-        }
-
-        var nano = span.NanoAiu ?? 0;
-        var existingNano = existing.NanoAiu ?? 0;
-        if (nano != existingNano)
-        {
-            return nano > existingNano;
-        }
-
-        return string.Equals(
-            span.ServiceName,
-            "copilot-chat",
-            StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(
-                existing.ServiceName,
-                "copilot-chat",
-                StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static void DeleteSpan(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string traceId,
-        string spanId)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            DELETE FROM spans
-            WHERE trace_id = @trace AND span_id = @span;
-            """;
-        command.Parameters.AddWithValue("@trace", traceId);
-        command.Parameters.AddWithValue("@span", spanId);
-        command.ExecuteNonQuery();
+        command.Parameters.AddWithValue("@session", item.SessionId!);
+        command.Parameters.AddWithValue("@operation", item.Operation);
+        command.Parameters.AddWithValue("@call_id", item.CallId!);
+        command.Parameters.AddWithValue(
+            "@tool",
+            (object?)item.ToolName ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@source",
+            (object?)item.Source ?? DBNull.Value);
+        return command.ExecuteScalar() is not null;
     }
 
     public SummaryDto GetSummary(
         long fromMs,
         bool includeUtility = false,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        string? source = null)
     {
         return ReadSummary(
             fromMs,
             toMs,
-            includeUtility ? string.Empty : " AND is_main = 1");
+            includeUtility ? string.Empty : " AND is_main = 1",
+            source);
     }
 
-    private SummaryDto ReadSummary(long fromMs, long toMs, string filter)
+    private SummaryDto ReadSummary(
+        long fromMs,
+        long toMs,
+        string filter,
+        string? source)
     {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -399,10 +986,14 @@ public sealed class SpanStore
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
             FROM spans
             WHERE start_time_ms >= @from
-              AND start_time_ms < @to{filter};
+              AND start_time_ms < @to{filter}{sourceFilter};
             """;
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
 
         using var reader = command.ExecuteReader();
         if (!reader.Read())
@@ -427,14 +1018,53 @@ public sealed class SpanStore
         };
     }
 
+    public IReadOnlyList<string> GetSessionIds(
+        long fromMs,
+        long toMs = long.MaxValue,
+        string? source = null)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT DISTINCT session_id
+            FROM spans
+            WHERE session_id IS NOT NULL
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
+            ORDER BY session_id;
+            """;
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        return rows;
+    }
+
     public IReadOnlyList<SessionRow> GetSessions(
         long fromMs,
         int limit = 50,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        string? source = null)
     {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT
                 s.session_id,
                 COALESCE((
@@ -442,6 +1072,8 @@ public sealed class SpanStore
                     FROM spans s2
                     WHERE s2.session_id = s.session_id
                       AND s2.model IS NOT NULL
+                      AND COALESCE(s2.otel_source, '') =
+                          COALESCE(s.otel_source, '')
                     ORDER BY s2.start_time_ms DESC
                     LIMIT 1
                 ), '-'),
@@ -456,11 +1088,17 @@ public sealed class SpanStore
                 COALESCE(SUM(s.cache_cost_cny), 0),
                 COALESCE(SUM(s.uncached_cost_cny), 0),
                 COALESCE(SUM(s.output_cost_cny), 0),
-                COALESCE(SUM(s.reasoning_cost_cny), 0)
+                COALESCE(SUM(s.reasoning_cost_cny), 0),
+                MIN(s.start_time_ms),
+                AVG(CASE WHEN s.end_time_ms > s.start_time_ms
+                    THEN s.end_time_ms - s.start_time_ms END),
+                AVG(s.ttft_ms),
+                COUNT(s.ttft_ms),
+                {SpeedSql}
             FROM spans s
             WHERE s.is_main = 1
               AND s.start_time_ms >= @from
-              AND s.start_time_ms < @to
+              AND s.start_time_ms < @to{sourceFilter}
             GROUP BY s.session_id
             ORDER BY MAX(s.start_time_ms) DESC
             LIMIT @limit;
@@ -468,6 +1106,10 @@ public sealed class SpanStore
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);
         command.Parameters.AddWithValue("@limit", limit);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
 
         var rows = new List<SessionRow>();
         using var reader = command.ExecuteReader();
@@ -491,6 +1133,11 @@ public sealed class SpanStore
                 UncachedCostCny = reader.GetDouble(11),
                 OutputCostCny = reader.GetDouble(12),
                 ReasoningCostCny = reader.GetDouble(13),
+                FirstSeenMs = reader.GetInt64(14),
+                AvgDurationMs = reader.IsDBNull(15) ? null : reader.GetDouble(15),
+                AvgTtftMs = reader.IsDBNull(16) ? null : reader.GetDouble(16),
+                TtftSamples = reader.GetInt64(17),
+                TokensPerSecond = reader.IsDBNull(18) ? null : reader.GetDouble(18),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -504,11 +1151,21 @@ public sealed class SpanStore
         long fromMs,
         bool includeUtility = false,
         int limit = 200,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue) =>
+        GetCalls(new CallQuery
+        {
+            FromMs = fromMs,
+            ToMs = toMs,
+            IncludeUtility = includeUtility,
+            Limit = limit,
+        });
+
+    public IReadOnlyList<CallRow> GetCalls(CallQuery query)
     {
-        var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
+        var where = BuildCallWhere(command, query);
+
         command.CommandText = $"""
             SELECT
                 start_time_ms,
@@ -526,97 +1183,160 @@ public sealed class SpanStore
                 output_cost_cny,
                 reasoning_tokens,
                 reasoning_cost_cny,
-                nano_aiu
+                nano_aiu,
+                {SourceSql} AS source,
+                end_time_ms,
+                ttft_ms,
+                trace_id,
+                parent_span_id,
+                error_type,
+                agent_name,
+                finish_reasons,
+                subagent_name
             FROM spans
-            WHERE start_time_ms >= @from
-              AND start_time_ms < @to{utilityFilter}
+            WHERE {where}
             ORDER BY start_time_ms DESC
-            LIMIT @limit;
+            LIMIT @limit OFFSET @offset;
             """;
-        command.Parameters.AddWithValue("@from", fromMs);
-        command.Parameters.AddWithValue("@to", toMs);
-        command.Parameters.AddWithValue("@limit", limit);
+        command.Parameters.AddWithValue("@limit", Math.Max(1, query.Limit));
+        command.Parameters.AddWithValue("@offset", Math.Max(0, query.Offset));
 
         return ReadCallRows(command);
+    }
+
+    public long CountCalls(CallQuery query)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        var where = BuildCallWhere(command, query);
+        command.CommandText = $"SELECT COUNT(*) FROM spans WHERE {where};";
+        return Convert.ToInt64(
+            command.ExecuteScalar(),
+            CultureInfo.InvariantCulture);
+    }
+
+    private static string BuildCallWhere(SqliteCommand command, CallQuery query)
+    {
+        var where = new List<string>
+        {
+            "start_time_ms >= @from",
+            "start_time_ms < @to",
+        };
+        command.Parameters.AddWithValue("@from", query.FromMs);
+        command.Parameters.AddWithValue("@to", query.ToMs);
+
+        if (!query.IncludeUtility)
+        {
+            where.Add("is_main = 1");
+        }
+
+        switch (query.Kind)
+        {
+            case "main":
+                where.Add("is_main = 1");
+                break;
+            case "utility":
+                where.Add("is_main = 0");
+                break;
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Model))
+        {
+            where.Add("model = @model");
+            command.Parameters.AddWithValue("@model", query.Model);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Source))
+        {
+            where.Add($"{SourceSql} = @source");
+            command.Parameters.AddWithValue("@source", query.Source);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.SessionId))
+        {
+            where.Add("session_id = @session_id");
+            command.Parameters.AddWithValue("@session_id", query.SessionId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Query))
+        {
+            var textClauses = new List<string>
+            {
+                "instr(lower(COALESCE(model, '')), lower(@query)) > 0",
+                "instr(lower(COALESCE(session_id, '')), lower(@query)) > 0",
+            };
+            command.Parameters.AddWithValue("@query", query.Query.Trim());
+            if (query.SessionIds is { Count: > 0 } sessionIds)
+            {
+                var parameters = new List<string>(sessionIds.Count);
+                var index = 0;
+                foreach (var sessionId in sessionIds)
+                {
+                    var parameter = $"@query_session_{index++}";
+                    parameters.Add(parameter);
+                    command.Parameters.AddWithValue(parameter, sessionId);
+                }
+
+                textClauses.Add(
+                    $"session_id IN ({string.Join(", ", parameters)})");
+            }
+
+            where.Add($"({string.Join(" OR ", textClauses)})");
+        }
+
+        if (query.Priced is bool priced)
+        {
+            where.Add(priced ? "cost_cny IS NOT NULL" : "cost_cny IS NULL");
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Period))
+        {
+            where.Add("pricing_period = @period");
+            command.Parameters.AddWithValue("@period", query.Period);
+        }
+
+        if (query.HasError is bool hasError)
+        {
+            where.Add(hasError ? "error_type IS NOT NULL" : "error_type IS NULL");
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Agent))
+        {
+            where.Add("agent_name = @agent");
+            command.Parameters.AddWithValue("@agent", query.Agent);
+        }
+
+        return string.Join(" AND ", where);
     }
 
     public IReadOnlyList<CallRow> GetCallsForModel(
         string model,
         long fromMs,
         long toMs = long.MaxValue,
-        int limit = 200)
-    {
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT
-                start_time_ms,
-                COALESCE(model, '-'),
-                session_id,
-                is_main,
-                input_tokens,
-                cache_read_tokens,
-                output_tokens,
-                hit_rate,
-                cost_cny,
-                pricing_period,
-                cache_cost_cny,
-                uncached_cost_cny,
-                output_cost_cny,
-                reasoning_tokens,
-                reasoning_cost_cny,
-                nano_aiu
-            FROM spans
-            WHERE model = @model
-              AND start_time_ms >= @from
-              AND start_time_ms < @to
-            ORDER BY start_time_ms DESC
-            LIMIT @limit;
-            """;
-        command.Parameters.AddWithValue("@model", model);
-        command.Parameters.AddWithValue("@from", fromMs);
-        command.Parameters.AddWithValue("@to", toMs);
-        command.Parameters.AddWithValue("@limit", limit);
-
-        return ReadCallRows(command);
-    }
+        int limit = 200) =>
+        GetCalls(new CallQuery
+        {
+            Model = model,
+            FromMs = fromMs,
+            ToMs = toMs,
+            IncludeUtility = true,
+            Limit = limit,
+        });
 
     public IReadOnlyList<CallRow> GetCallsForSession(
         string sessionId,
         long fromMs = 0,
-        int limit = 1000)
-    {
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT
-                start_time_ms,
-                COALESCE(model, '-'),
-                session_id,
-                is_main,
-                input_tokens,
-                cache_read_tokens,
-                output_tokens,
-                hit_rate,
-                cost_cny,
-                pricing_period,
-                cache_cost_cny,
-                uncached_cost_cny,
-                output_cost_cny,
-                reasoning_tokens,
-                reasoning_cost_cny,
-                nano_aiu
-            FROM spans
-            WHERE session_id = @session_id AND start_time_ms >= @from
-            ORDER BY start_time_ms DESC
-            LIMIT @limit;
-            """;
-        command.Parameters.AddWithValue("@session_id", sessionId);
-        command.Parameters.AddWithValue("@from", fromMs);
-        command.Parameters.AddWithValue("@limit", limit);
-
-        return ReadCallRows(command);
-    }
+        int limit = 1000,
+        string? source = null) =>
+        GetCalls(new CallQuery
+        {
+            SessionId = sessionId,
+            FromMs = fromMs,
+            ToMs = long.MaxValue,
+            IncludeUtility = true,
+            Source = source,
+            Limit = limit,
+        });
 
     private static IReadOnlyList<CallRow> ReadCallRows(SqliteCommand command)
     {
@@ -624,9 +1344,11 @@ public sealed class SpanStore
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
+            var startMs = reader.GetInt64(0);
+            var endMs = reader.IsDBNull(17) ? (long?)null : reader.GetInt64(17);
             rows.Add(new CallRow
             {
-                StartTimeMs = reader.GetInt64(0),
+                StartTimeMs = startMs,
                 Model = reader.GetString(1),
                 SessionId = reader.IsDBNull(2) ? null : reader.GetString(2),
                 IsMain = reader.GetInt64(3) != 0,
@@ -642,18 +1364,193 @@ public sealed class SpanStore
                 ReasoningTokens = reader.GetInt64(13),
                 ReasoningCostCny = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
                 NanoAiu = reader.IsDBNull(15) ? null : reader.GetInt64(15),
+                Source = reader.IsDBNull(16) ? null : reader.GetString(16),
+                DurationMs = endMs is > 0 && endMs > startMs
+                    ? endMs.Value - startMs
+                    : null,
+                TtftMs = reader.IsDBNull(18) ? null : reader.GetInt64(18),
+                TraceId = reader.GetString(19),
+                ParentSpanId = reader.IsDBNull(20) ? null : reader.GetString(20),
+                ErrorType = reader.IsDBNull(21) ? null : reader.GetString(21),
+                AgentName = reader.IsDBNull(22) ? null : reader.GetString(22),
+                FinishReasons = reader.IsDBNull(23) ? null : reader.GetString(23),
+                SubagentName = reader.IsDBNull(24) ? null : reader.GetString(24),
             });
         }
 
         return rows;
     }
 
+    public IReadOnlyList<SessionEventAggregate> GetSessionEventAggregates(
+        long fromMs,
+        long toMs,
+        string? source = null)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT session_id, COUNT(*), MIN(start_time_ms), MAX(start_time_ms)
+            FROM session_events
+            WHERE session_id IS NOT NULL
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
+            GROUP BY session_id;
+            """;
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<SessionEventAggregate>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new SessionEventAggregate(
+                reader.GetString(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3)));
+        }
+
+        return rows;
+    }
+
+    public IReadOnlyList<SessionEventRow> GetSessionEvents(
+        string sessionId,
+        string? source = null)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT
+                operation,
+                {SourceSql} AS source,
+                COUNT(*),
+                AVG(CASE WHEN end_time_ms > start_time_ms
+                    THEN end_time_ms - start_time_ms END),
+                COALESCE(SUM(is_error), 0),
+                MAX(start_time_ms)
+            FROM session_events
+            WHERE session_id = @session_id{sourceFilter}
+            GROUP BY operation, {SourceSql}
+            ORDER BY COUNT(*) DESC;
+            """;
+        command.Parameters.AddWithValue("@session_id", sessionId);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<SessionEventRow>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new SessionEventRow
+            {
+                Operation = reader.GetString(0),
+                Source = reader.GetString(1),
+                Count = reader.GetInt64(2),
+                AvgDurationMs = reader.IsDBNull(3) ? null : reader.GetDouble(3),
+                ErrorCount = reader.GetInt64(4),
+                LastSeenMs = reader.GetInt64(5),
+            });
+        }
+
+        return rows;
+    }
+
+    public IReadOnlyList<ToolCallRow> GetSessionTools(
+        string sessionId,
+        string? source = null)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT
+                COALESCE(NULLIF(tool_name, ''), '-'),
+                {SourceSql} AS source,
+                tool_type,
+                edit_type,
+                skill_name,
+                mcp_server_hash,
+                mcp_tool_name,
+                error_type,
+                COALESCE(
+                    agent_name,
+                    (SELECT p.agent_name FROM session_events p
+                     WHERE p.trace_id = session_events.trace_id
+                       AND p.span_id = session_events.parent_span_id
+                       AND p.agent_name IS NOT NULL
+                     LIMIT 1)) AS agent_name,
+                start_time_ms,
+                end_time_ms,
+                is_error
+            FROM session_events
+            WHERE session_id = @session_id
+              AND operation = 'execute_tool'{sourceFilter}
+            ORDER BY start_time_ms;
+            """;
+        command.Parameters.AddWithValue("@session_id", sessionId);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var accumulators = new Dictionary<string, ToolAccumulator>(
+            StringComparer.OrdinalIgnoreCase);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var tool = reader.GetString(0);
+            var toolSource = reader.GetString(1);
+            var key = $"{toolSource}\u001f{tool}";
+            if (!accumulators.TryGetValue(key, out var row))
+            {
+                row = new ToolAccumulator(tool, toolSource);
+                accumulators[key] = row;
+            }
+
+            row.Add(
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetString(8),
+                reader.GetInt64(9),
+                reader.IsDBNull(10) ? null : reader.GetInt64(10),
+                reader.GetInt64(11) != 0);
+        }
+
+        return accumulators.Values
+            .OrderByDescending(row => row.Calls)
+            .ThenBy(row => row.Tool, StringComparer.OrdinalIgnoreCase)
+            .Select(row => row.Build())
+            .ToList();
+    }
+
     public IReadOnlyList<ModelRow> GetModels(
         long fromMs,
         long toMs = long.MaxValue,
-        bool includeUtility = false)
+        bool includeUtility = false,
+        string? source = null)
     {
         var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -664,16 +1561,23 @@ public sealed class SpanStore
                 COALESCE(SUM(cache_read_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(cost_cny), 0),
-                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
+                AVG(ttft_ms),
+                COUNT(ttft_ms),
+                {SpeedSql}
             FROM spans
             WHERE start_time_ms >= @from
               AND start_time_ms < @to
-              AND model IS NOT NULL{utilityFilter}
+              AND model IS NOT NULL{utilityFilter}{sourceFilter}
             GROUP BY model
             ORDER BY COUNT(*) DESC;
             """;
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
 
         var rows = new List<ModelRow>();
         using var reader = command.ExecuteReader();
@@ -690,6 +1594,9 @@ public sealed class SpanStore
                 OutputTokens = reader.GetInt64(4),
                 CostCny = reader.GetDouble(5),
                 UnpricedCalls = reader.GetInt64(6),
+                AvgTtftMs = reader.IsDBNull(7) ? null : reader.GetDouble(7),
+                TtftSamples = reader.GetInt64(8),
+                TokensPerSecond = reader.IsDBNull(9) ? null : reader.GetDouble(9),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -703,9 +1610,13 @@ public sealed class SpanStore
         string model,
         long fromMs,
         long toMs = long.MaxValue,
-        bool includeUtility = false)
+        bool includeUtility = false,
+        string? source = null)
     {
         var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -721,15 +1632,22 @@ public sealed class SpanStore
                 COALESCE(SUM(uncached_cost_cny), 0),
                 COALESCE(SUM(output_cost_cny), 0),
                 COALESCE(SUM(reasoning_cost_cny), 0),
-                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
+                AVG(ttft_ms),
+                COUNT(ttft_ms),
+                {SpeedSql}
             FROM spans
             WHERE model = @model
               AND start_time_ms >= @from
-              AND start_time_ms < @to{utilityFilter};
+              AND start_time_ms < @to{utilityFilter}{sourceFilter};
             """;
         command.Parameters.AddWithValue("@model", model);
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
 
         using var reader = command.ExecuteReader();
         if (!reader.Read())
@@ -751,6 +1669,9 @@ public sealed class SpanStore
             OutputCostCny = reader.GetDouble(9),
             ReasoningCostCny = reader.GetDouble(10),
             UnpricedCalls = reader.GetInt64(11),
+            AvgTtftMs = reader.IsDBNull(12) ? null : reader.GetDouble(12),
+            TtftSamples = reader.GetInt64(13),
+            TokensPerSecond = reader.IsDBNull(14) ? null : reader.GetDouble(14),
         };
     }
 
@@ -758,11 +1679,15 @@ public sealed class SpanStore
         string model,
         long fromMs,
         int limit = 50,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        string? source = null)
     {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT
                 s.session_id,
                 @model,
@@ -777,12 +1702,18 @@ public sealed class SpanStore
                 COALESCE(SUM(s.cache_cost_cny), 0),
                 COALESCE(SUM(s.uncached_cost_cny), 0),
                 COALESCE(SUM(s.output_cost_cny), 0),
-                COALESCE(SUM(s.reasoning_cost_cny), 0)
+                COALESCE(SUM(s.reasoning_cost_cny), 0),
+                MIN(s.start_time_ms),
+                AVG(CASE WHEN s.end_time_ms > s.start_time_ms
+                    THEN s.end_time_ms - s.start_time_ms END),
+                AVG(s.ttft_ms),
+                COUNT(s.ttft_ms),
+                {SpeedSql}
             FROM spans s
             WHERE s.is_main = 1
               AND s.model = @model
               AND s.start_time_ms >= @from
-              AND s.start_time_ms < @to
+              AND s.start_time_ms < @to{sourceFilter}
             GROUP BY s.session_id
             ORDER BY MAX(s.start_time_ms) DESC
             LIMIT @limit;
@@ -791,6 +1722,10 @@ public sealed class SpanStore
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);
         command.Parameters.AddWithValue("@limit", limit);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
 
         var rows = new List<SessionRow>();
         using var reader = command.ExecuteReader();
@@ -814,6 +1749,11 @@ public sealed class SpanStore
                 UncachedCostCny = reader.GetDouble(11),
                 OutputCostCny = reader.GetDouble(12),
                 ReasoningCostCny = reader.GetDouble(13),
+                FirstSeenMs = reader.GetInt64(14),
+                AvgDurationMs = reader.IsDBNull(15) ? null : reader.GetDouble(15),
+                AvgTtftMs = reader.IsDBNull(16) ? null : reader.GetDouble(16),
+                TtftSamples = reader.GetInt64(17),
+                TokensPerSecond = reader.IsDBNull(18) ? null : reader.GetDouble(18),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -896,6 +1836,7 @@ public sealed class SpanStore
             SELECT DISTINCT model
             FROM spans
             WHERE model IS NOT NULL
+              AND COALESCE(otel_source, '') <> 'combined'
             ORDER BY model;
             """;
 
@@ -909,202 +1850,6 @@ public sealed class SpanStore
         return rows;
     }
 
-    public int DeduplicateSpans()
-    {
-        _writeLock.Wait();
-        try
-        {
-            using var connection = OpenConnection();
-            using var transaction = connection.BeginTransaction();
-
-            var spans = new List<DedupeSpan>();
-            using (var select = connection.CreateCommand())
-            {
-                select.Transaction = transaction;
-                select.CommandText = """
-                    SELECT trace_id, span_id, session_id, model, start_time_ms,
-                           input_tokens, output_tokens, cache_read_tokens,
-                           reasoning_tokens, nano_aiu, service_name
-                    FROM spans
-                    WHERE session_id IS NOT NULL AND model IS NOT NULL
-                    ORDER BY session_id, start_time_ms;
-                    """;
-                using var reader = select.ExecuteReader();
-                while (reader.Read())
-                {
-                    spans.Add(new DedupeSpan(
-                        reader.GetString(0),
-                        reader.GetString(1),
-                        reader.GetString(2),
-                        reader.GetString(3),
-                        reader.GetInt64(4),
-                        reader.GetInt64(5),
-                        reader.GetInt64(6),
-                        reader.GetInt64(7),
-                        reader.GetInt64(8),
-                        reader.IsDBNull(9) ? null : reader.GetInt64(9),
-                        reader.IsDBNull(10) ? null : reader.GetString(10)));
-                }
-            }
-
-            using var delete = connection.CreateCommand();
-            delete.Transaction = transaction;
-            delete.CommandText = """
-                DELETE FROM spans
-                WHERE trace_id = @trace AND span_id = @span;
-                """;
-            delete.Parameters.AddWithValue("@trace", "");
-            delete.Parameters.AddWithValue("@span", "");
-            using var update = connection.CreateCommand();
-            update.Transaction = transaction;
-            update.CommandText = """
-                UPDATE spans SET model = @model
-                WHERE trace_id = @trace AND span_id = @span;
-                """;
-            update.Parameters.AddWithValue("@model", "");
-            update.Parameters.AddWithValue("@trace", "");
-            update.Parameters.AddWithValue("@span", "");
-
-            var removed = 0;
-            var groups = new Dictionary<string, List<DedupeSpan>>(
-                StringComparer.OrdinalIgnoreCase);
-            foreach (var span in spans)
-            {
-                var key =
-                    $"{span.SessionId}\u0001{ModelPricing.NormalizeModel(span.Model)}" +
-                    $"\u0001{span.InputTokens}\u0001{span.OutputTokens}";
-                if (!groups.TryGetValue(key, out var group))
-                {
-                    group = new List<DedupeSpan>();
-                    groups[key] = group;
-                }
-
-                group.Add(span);
-            }
-
-            foreach (var group in groups.Values)
-            {
-                var cluster = new List<DedupeSpan>();
-                foreach (var span in group.OrderBy(item => item.StartTimeMs))
-                {
-                    if (cluster.Count > 0 &&
-                        span.StartTimeMs - cluster[^1].StartTimeMs > 2_000)
-                    {
-                        removed += DeduplicateCluster(
-                            cluster,
-                            delete,
-                            update);
-                        cluster.Clear();
-                    }
-
-                    cluster.Add(span);
-                }
-
-                removed += DeduplicateCluster(cluster, delete, update);
-            }
-
-            transaction.Commit();
-            return removed;
-        }
-        finally
-        {
-            _writeLock.Release();
-        }
-    }
-
-    private static int DeduplicateCluster(
-        List<DedupeSpan> cluster,
-        SqliteCommand delete,
-        SqliteCommand update)
-    {
-        if (cluster.Count == 0)
-        {
-            return 0;
-        }
-
-        var best = cluster[0];
-        foreach (var candidate in cluster.Skip(1))
-        {
-            if (IsRicher(candidate, best))
-            {
-                best = candidate;
-            }
-        }
-
-        var canonicalModel = ModelPricing.NormalizeModel(best.Model);
-        if (!string.Equals(best.Model, canonicalModel, StringComparison.Ordinal))
-        {
-            update.Parameters["@model"].Value = canonicalModel;
-            update.Parameters["@trace"].Value = best.TraceId;
-            update.Parameters["@span"].Value = best.SpanId;
-            update.ExecuteNonQuery();
-        }
-
-        if (cluster.Count < 2 ||
-            cluster.Select(item => item.ServiceName).Distinct(
-                StringComparer.OrdinalIgnoreCase).Count() < 2)
-        {
-            return 0;
-        }
-
-        var removed = 0;
-        foreach (var span in cluster)
-        {
-            if (span.TraceId == best.TraceId && span.SpanId == best.SpanId)
-            {
-                continue;
-            }
-
-            delete.Parameters["@trace"].Value = span.TraceId;
-            delete.Parameters["@span"].Value = span.SpanId;
-            removed += delete.ExecuteNonQuery();
-        }
-
-        return removed;
-    }
-
-    private static bool IsRicher(DedupeSpan candidate, DedupeSpan existing)
-    {
-        if (candidate.CacheReadTokens != existing.CacheReadTokens)
-        {
-            return candidate.CacheReadTokens > existing.CacheReadTokens;
-        }
-
-        if (candidate.ReasoningTokens != existing.ReasoningTokens)
-        {
-            return candidate.ReasoningTokens > existing.ReasoningTokens;
-        }
-
-        var candidateNano = candidate.NanoAiu ?? 0;
-        var existingNano = existing.NanoAiu ?? 0;
-        if (candidateNano != existingNano)
-        {
-            return candidateNano > existingNano;
-        }
-
-        return string.Equals(
-            candidate.ServiceName,
-            "copilot-chat",
-            StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(
-                existing.ServiceName,
-                "copilot-chat",
-                StringComparison.OrdinalIgnoreCase);
-    }
-
-    private sealed record DedupeSpan(
-        string TraceId,
-        string SpanId,
-        string SessionId,
-        string Model,
-        long StartTimeMs,
-        long InputTokens,
-        long OutputTokens,
-        long CacheReadTokens,
-        long ReasoningTokens,
-        long? NanoAiu,
-        string? ServiceName);
-
     public IReadOnlyDictionary<string, long> GetModelCallCounts()
     {
         using var connection = OpenConnection();
@@ -1113,6 +1858,7 @@ public sealed class SpanStore
             SELECT model, COUNT(*)
             FROM spans
             WHERE model IS NOT NULL
+              AND COALESCE(otel_source, '') <> 'combined'
             GROUP BY model;
             """;
 
@@ -1478,7 +2224,36 @@ public sealed class SpanStore
             using var command = connection.CreateCommand();
             command.CommandText = "DELETE FROM spans WHERE start_time_ms < @cutoff;";
             command.Parameters.AddWithValue("@cutoff", cutoffMs);
-            return command.ExecuteNonQuery();
+            var removed = command.ExecuteNonQuery();
+
+            using var events = connection.CreateCommand();
+            events.CommandText =
+                "DELETE FROM session_events WHERE start_time_ms < @cutoff;";
+            events.Parameters.AddWithValue("@cutoff", cutoffMs);
+            events.ExecuteNonQuery();
+
+            using var agentRuns = connection.CreateCommand();
+            agentRuns.CommandText =
+                "DELETE FROM agent_runs WHERE start_time_ms < @cutoff;";
+            agentRuns.Parameters.AddWithValue("@cutoff", cutoffMs);
+            agentRuns.ExecuteNonQuery();
+
+            using var metricPoints = connection.CreateCommand();
+            metricPoints.CommandText =
+                "DELETE FROM metric_points WHERE end_time_ms < @cutoff;";
+            metricPoints.Parameters.AddWithValue("@cutoff", cutoffMs);
+            metricPoints.ExecuteNonQuery();
+
+            using var windowLinks = connection.CreateCommand();
+            windowLinks.CommandText =
+                "DELETE FROM window_session_links WHERE last_seen_ms < @cutoff;";
+            windowLinks.Parameters.AddWithValue("@cutoff", cutoffMs);
+            windowLinks.ExecuteNonQuery();
+
+            _combinedAllDirty = true;
+            _combinedDirtySessions.Clear();
+            _combinedDirty = true;
+            return removed;
         }
         finally
         {
@@ -1499,13 +2274,460 @@ public sealed class SpanStore
         SqliteType type) =>
         command.Parameters.Add(name, type);
 
-    private sealed record SpanDuplicate(
-        string TraceId,
-        string SpanId,
-        long CacheReadTokens,
-        long ReasoningTokens,
-        long? NanoAiu,
-        string? ServiceName);
+    private sealed class ToolAccumulator
+    {
+        private readonly HashSet<string> _toolTypes = new(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _editTypes = new(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _skillNames = new(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _mcpServerHashes = new(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _mcpToolNames = new(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _errorTypes = new(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _agentNames = new(
+            StringComparer.OrdinalIgnoreCase);
+        private double _totalDurationMs;
+        private long _durationSamples;
+        private double? _maxDurationMs;
+
+        public ToolAccumulator(string tool, string source)
+        {
+            Tool = tool;
+            Source = source;
+        }
+
+        public string Tool { get; }
+        public string Source { get; }
+        public long Calls { get; private set; }
+        public long ErrorCount { get; private set; }
+        public long LastSeenMs { get; private set; }
+
+        public void Add(
+            string? toolType,
+            string? editType,
+            string? skillName,
+            string? mcpServerHash,
+            string? mcpToolName,
+            string? errorType,
+            string? agentName,
+            long startMs,
+            long? endMs,
+            bool isError)
+        {
+            Calls++;
+            LastSeenMs = Math.Max(LastSeenMs, startMs);
+            if (endMs is > 0 && endMs.Value > startMs)
+            {
+                var duration = (double)(endMs.Value - startMs);
+                _totalDurationMs += duration;
+                _durationSamples++;
+                _maxDurationMs = Math.Max(_maxDurationMs ?? 0, duration);
+            }
+
+            if (isError)
+            {
+                ErrorCount++;
+            }
+
+            AddValue(_toolTypes, toolType);
+            AddValue(_editTypes, editType);
+            AddValue(_skillNames, skillName);
+            AddValue(_mcpServerHashes, mcpServerHash);
+            AddValue(_mcpToolNames, mcpToolName);
+            AddValue(_errorTypes, errorType);
+            AddValue(_agentNames, agentName);
+        }
+
+        public ToolCallRow Build() => new()
+        {
+            Tool = Tool,
+            Source = Source,
+            Calls = Calls,
+            AvgDurationMs = _durationSamples > 0
+                ? _totalDurationMs / _durationSamples
+                : null,
+            MaxDurationMs = _maxDurationMs,
+            ErrorCount = ErrorCount,
+            LastSeenMs = LastSeenMs,
+            ToolTypes = Sorted(_toolTypes),
+            EditTypes = Sorted(_editTypes),
+            SkillNames = Sorted(_skillNames),
+            McpServerHashes = Sorted(_mcpServerHashes),
+            McpToolNames = Sorted(_mcpToolNames),
+            ErrorTypes = Sorted(_errorTypes),
+            AgentNames = Sorted(_agentNames),
+        };
+
+        private static void AddValue(HashSet<string> values, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                values.Add(value.Trim());
+            }
+        }
+
+        private static List<string> Sorted(HashSet<string> values) =>
+            values
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+    }
+
+    public int ResolveSubagentSessions()
+    {
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            var changed = 0;
+            for (var pass = 0; pass < 6; pass++)
+            {
+                var updated = ResolveSessionIds(
+                    connection,
+                    transaction,
+                    "spans");
+                updated += ResolveSessionIds(
+                    connection,
+                    transaction,
+                    "session_events");
+                updated += ResolveSessionIds(
+                    connection,
+                    transaction,
+                    "agent_runs");
+                changed += updated;
+                if (updated == 0)
+                {
+                    break;
+                }
+            }
+
+            transaction.Commit();
+            _combinedAllDirty = true;
+            _combinedDirtySessions.Clear();
+            _combinedDirty = true;
+            return changed;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private static int ResolveSessionIds(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        IReadOnlyCollection<string>? traceIds = null)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        var traceFilter = string.Empty;
+        if (traceIds is { Count: > 0 })
+        {
+            var parameters = new List<string>(traceIds.Count);
+            var index = 0;
+            foreach (var traceId in traceIds)
+            {
+                var parameter = $"@resolve_trace_{index++}";
+                parameters.Add(parameter);
+                command.Parameters.AddWithValue(parameter, traceId);
+            }
+
+            traceFilter =
+                $" AND {table}.trace_id IN ({string.Join(", ", parameters)})";
+        }
+
+        command.CommandText = $"""
+            UPDATE {table}
+            SET session_id = COALESCE(
+                (SELECT p.session_id FROM spans p
+                 WHERE p.trace_id = {table}.trace_id
+                   AND p.span_id = {table}.parent_span_id
+                   AND p.session_id IS NOT NULL
+                   AND lower(substr(p.session_id, 1, 5)) <> 'call_'
+                 LIMIT 1),
+                (SELECT e.session_id FROM session_events e
+                 WHERE e.trace_id = {table}.trace_id
+                   AND e.span_id = {table}.parent_span_id
+                   AND e.session_id IS NOT NULL
+                   AND lower(substr(e.session_id, 1, 5)) <> 'call_'
+                 LIMIT 1)
+            )
+            WHERE ({table}.session_id IS NULL
+                   OR lower(substr({table}.session_id, 1, 5)) = 'call_'){traceFilter}
+              AND COALESCE(
+                (SELECT p.session_id FROM spans p
+                 WHERE p.trace_id = {table}.trace_id
+                   AND p.span_id = {table}.parent_span_id
+                   AND p.session_id IS NOT NULL
+                   AND lower(substr(p.session_id, 1, 5)) <> 'call_'
+                 LIMIT 1),
+                (SELECT e.session_id FROM session_events e
+                 WHERE e.trace_id = {table}.trace_id
+                   AND e.span_id = {table}.parent_span_id
+                   AND e.session_id IS NOT NULL
+                   AND lower(substr(e.session_id, 1, 5)) <> 'call_'
+                 LIMIT 1)
+              ) IS NOT NULL;
+            """;
+        return command.ExecuteNonQuery();
+    }
+
+    private static int ResolveSessionIdsForTraces(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyCollection<string> traceIds)
+    {
+        var changed = 0;
+        for (var pass = 0; pass < 6; pass++)
+        {
+            var updated = ResolveSessionIds(
+                connection,
+                transaction,
+                "spans",
+                traceIds);
+            updated += ResolveSessionIds(
+                connection,
+                transaction,
+                "session_events",
+                traceIds);
+            updated += ResolveSessionIds(
+                connection,
+                transaction,
+                "agent_runs",
+                traceIds);
+            changed += updated;
+            if (updated == 0)
+            {
+                break;
+            }
+        }
+
+        return changed;
+    }
+
+    private static int UpdateSubagentNames(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyCollection<string>? traceIds = null)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        var traceFilter = string.Empty;
+        if (traceIds is { Count: > 0 })
+        {
+            var parameters = new List<string>(traceIds.Count);
+            var index = 0;
+            foreach (var traceId in traceIds)
+            {
+                var parameter = $"@name_trace_{index++}";
+                parameters.Add(parameter);
+                command.Parameters.AddWithValue(parameter, traceId);
+            }
+
+            traceFilter = $" AND spans.trace_id IN ({string.Join(", ", parameters)})";
+        }
+
+        command.CommandText = $"""
+            UPDATE spans
+            SET subagent_name = (
+                SELECT e.agent_name FROM session_events e
+                WHERE e.trace_id = spans.trace_id
+                  AND e.span_id = spans.parent_span_id
+                  AND e.operation = 'invoke_agent'
+                  AND e.parent_span_id IS NOT NULL
+                  AND e.agent_name IS NOT NULL
+                LIMIT 1
+            )
+            WHERE spans.parent_span_id IS NOT NULL
+              AND spans.subagent_name IS NULL{traceFilter};
+            """;
+        return command.ExecuteNonQuery();
+    }
+
+    public int BackfillSubagentNames()
+    {
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using (var clear = connection.CreateCommand())
+            {
+                clear.Transaction = transaction;
+                clear.CommandText = "UPDATE spans SET subagent_name = NULL;";
+                clear.ExecuteNonQuery();
+            }
+
+            var changed = UpdateSubagentNames(
+                connection,
+                transaction,
+                traceIds: null);
+            transaction.Commit();
+            if (changed > 0)
+            {
+                _combinedAllDirty = true;
+                _combinedDirtySessions.Clear();
+                _combinedDirty = true;
+            }
+
+            return changed;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private static void UpsertWindowSessionLinks(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IEnumerable<(
+            string WindowSessionId,
+            string SessionId,
+            string? ServiceName,
+            long StartTimeMs,
+            long? EndTimeMs)> links)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO window_session_links (
+                window_session_id, chat_session_id, service_name,
+                first_seen_ms, last_seen_ms
+            ) VALUES (
+                @window, @session, @service, @first, @last
+            )
+            ON CONFLICT(window_session_id, chat_session_id) DO UPDATE SET
+                service_name = COALESCE(
+                    window_session_links.service_name,
+                    excluded.service_name),
+                first_seen_ms = MIN(
+                    window_session_links.first_seen_ms,
+                    excluded.first_seen_ms),
+                last_seen_ms = MAX(
+                    window_session_links.last_seen_ms,
+                    excluded.last_seen_ms);
+            """;
+        command.Parameters.AddWithValue("@window", "");
+        command.Parameters.AddWithValue("@session", "");
+        command.Parameters.AddWithValue("@service", DBNull.Value);
+        command.Parameters.AddWithValue("@first", 0L);
+        command.Parameters.AddWithValue("@last", 0L);
+        foreach (var link in links)
+        {
+            var end = link.EndTimeMs ?? link.StartTimeMs;
+            command.Parameters["@window"].Value = link.WindowSessionId;
+            command.Parameters["@session"].Value = link.SessionId;
+            command.Parameters["@service"].Value =
+                (object?)link.ServiceName ?? DBNull.Value;
+            command.Parameters["@first"].Value = link.StartTimeMs;
+            command.Parameters["@last"].Value = end;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private static bool NeedsSessionResolution(string? sessionId) =>
+        string.IsNullOrWhiteSpace(sessionId) ||
+        sessionId.TrimStart().StartsWith("call_", StringComparison.OrdinalIgnoreCase);
+
+    public int SlimStorage()
+    {
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            var removed = 0;
+
+            using (var command = connection.CreateCommand())
+            {
+                var parameters = MetricNames.Outcome
+                    .Select((_, index) => $"@metric_{index}")
+                    .ToList();
+                command.CommandText =
+                    "DELETE FROM metric_points WHERE metric_name NOT IN " +
+                    $"({string.Join(", ", parameters)});";
+                var index = 0;
+                foreach (var name in MetricNames.Outcome)
+                {
+                    command.Parameters.AddWithValue(
+                        parameters[index++],
+                        name);
+                }
+
+                removed += command.ExecuteNonQuery();
+            }
+
+            foreach (var column in new[] { "attributes", "source_origins", "provenance" })
+            {
+                if (!ColumnExists(connection, "spans", column))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var drop = connection.CreateCommand();
+                    drop.CommandText = $"ALTER TABLE spans DROP COLUMN {column};";
+                    drop.ExecuteNonQuery();
+                }
+                catch (SqliteException)
+                {
+                    using var clear = connection.CreateCommand();
+                    clear.CommandText =
+                        $"UPDATE spans SET {column} = NULL WHERE {column} IS NOT NULL;";
+                    clear.ExecuteNonQuery();
+                }
+            }
+
+            using (var dropLogs = connection.CreateCommand())
+            {
+                dropLogs.CommandText = "DROP TABLE IF EXISTS otel_log_events;";
+                dropLogs.ExecuteNonQuery();
+            }
+
+            using (var vacuum = connection.CreateCommand())
+            {
+                vacuum.CommandText = "VACUUM;";
+                vacuum.ExecuteNonQuery();
+            }
+
+            _combinedAllDirty = true;
+            _combinedDirtySessions.Clear();
+            _combinedDirty = true;
+            return removed;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private static bool ColumnExists(
+        SqliteConnection connection,
+        string table,
+        string column)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(
+                    reader.GetString(1),
+                    column,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static void EnsureColumn(
         SqliteConnection connection,

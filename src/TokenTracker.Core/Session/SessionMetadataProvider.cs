@@ -6,6 +6,12 @@ public sealed record SessionMetadata(
     bool UserNamed,
     string? WorkspacePath = null);
 
+public sealed record SessionAccessInfo(
+    string SessionRoot,
+    string? AgentHostDatabase,
+    IReadOnlyList<string> CopilotUserDataDirectories,
+    IReadOnlyList<string> AhpUserDataDirectories);
+
 public sealed class SessionMetadataProvider
 {
     private readonly string _rootDirectory;
@@ -42,6 +48,12 @@ public sealed class SessionMetadataProvider
     public event Action? AhpStatusChanged;
 
     public AhpConnectionStatus GetAhpStatus() => _ahp.GetStatus();
+
+    public SessionAccessInfo GetAccessInfo() => new(
+        _rootDirectory,
+        _agentHost.DatabasePath,
+        _copilotChat.UserDataDirectories,
+        _ahp.UserDataDirectories);
 
     public SessionMetadata? Get(string? sessionId)
     {

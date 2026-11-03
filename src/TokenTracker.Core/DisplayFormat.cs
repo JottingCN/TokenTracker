@@ -39,6 +39,46 @@ public static class DisplayFormat
             _ => period,
         };
 
+    public static string Source(string? source) =>
+        source?.ToLowerInvariant() switch
+        {
+            "extension-host" or "copilot-chat" => "Copilot Chat",
+            "agent-host" or "github-copilot" => "Agent Host",
+            "combined" => "综合",
+            "unknown" => "未知",
+            null or "" => "未知",
+            _ => source!,
+        };
+
+    public static string Operation(string? operation) =>
+        operation switch
+        {
+            "chat" => "模型调用",
+            "execute_tool" => "工具调用",
+            "invoke_agent" => "代理调用",
+            "create_agent" => "创建代理",
+            "execute_hook" => "钩子执行",
+            null or "" => "-",
+            _ => operation,
+        };
+
+    public static string Duration(long? milliseconds) =>
+        milliseconds is null
+            ? "-"
+            : milliseconds.Value < 1_000
+                ? $"{milliseconds.Value} ms"
+                : $"{milliseconds.Value / 1_000d:0.00} s";
+
+    public static string Duration(double? milliseconds) =>
+        milliseconds is null
+            ? "-"
+            : Duration((long)Math.Round(milliseconds.Value));
+
+    public static string Speed(double? tokensPerSecond) =>
+        tokensPerSecond is null
+            ? "-"
+            : $"{tokensPerSecond.Value:0.0} tok/s";
+
     public static string SessionShort(string? sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId))

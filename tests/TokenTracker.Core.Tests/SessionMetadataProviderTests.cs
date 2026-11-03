@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Session;
@@ -50,6 +50,9 @@ public sealed class SessionMetadataProviderTests
         try
         {
             Directory.CreateDirectory(workspaceStorage);
+            File.WriteAllText(
+                Path.Combine(workspaceStorage, "workspace.json"),
+                """{"folder":"file:///d%3A/source/demo"}""");
             using (var connection = new SqliteConnection($"Data Source={stateDatabase}"))
             {
                 connection.Open();
@@ -62,7 +65,7 @@ public sealed class SessionMetadataProviderTests
                 command.Parameters.AddWithValue(
                     "@value",
                     """
-                    {"version":1,"entries":{"chat-session":{"sessionId":"chat-session","title":"Extension chat title","lastMessageDate":123,"workingDirectory":"file:///d:/source/demo"}}}
+                    {"version":1,"entries":{"chat-session":{"sessionId":"chat-session","title":"Extension chat title","lastMessageDate":123}}}
                     """);
                 command.ExecuteNonQuery();
             }

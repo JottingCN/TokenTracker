@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   downloadServerArchive,
@@ -53,11 +52,6 @@ export async function prepareRuntime(
   const runtimeRoot = path.join(storagePath, 'runtime');
   const dataDirectory = path.join(storagePath, 'data');
   fs.mkdirSync(dataDirectory, { recursive: true });
-  migratePreviousPublisherStorage(storagePath, dataDirectory);
-
-  if (process.platform === 'win32') {
-    migrateLegacyDatabase(dataDirectory);
-  }
 
   const bundledDirectory = path.join(extensionPath, 'server');
   const bundledExecutable = path.join(bundledDirectory, executableName);
@@ -345,76 +339,4 @@ function writeRuntimeState(
     releaseTag: info.releaseTag,
   };
   fs.writeFileSync(statePath(storagePath), JSON.stringify(state, null, 2), 'utf8');
-}
-
-function migratePreviousPublisherStorage(
-  storagePath: string,
-  dataDirectory: string,
-): void {
-  const target = path.join(dataDirectory, 'tokentracker.db');
-  if (fs.existsSync(target)) {
-    return;
-  }
-
-  const parent = path.dirname(storagePath);
-  const current = path.dirname(target);
-  for (const name of [
-    'jotting.tokentracker',
-    'jottingcn.tokentracker',
-    'JottingCN.tokentracker',
-  ]) {
-    const directory = path.join(parent, name, 'data');
-    const same = process.platform === 'win32'
-      ? directory.toLowerCase() === current.toLowerCase()
-      : directory === current;
-    if (same) {
-      continue;
-    }
-
-    const source = path.join(directory, 'tokentracker.db');
-    if (!fs.existsSync(source)) {
-      continue;
-    }
-
-    for (const suffix of ['', '-wal', '-shm']) {
-      const from = source + suffix;
-      if (!fs.existsSync(from)) {
-        continue;
-      }
-      try {
-        fs.copyFileSync(from, target + suffix);
-      } catch {
-        // Best-effort migration.
-      }
-    }
-    return;
-  }
-}
-
-function migrateLegacyDatabase(dataDirectory: string): void {
-  const target = path.join(dataDirectory, 'tokentracker.db');
-  if (fs.existsSync(target)) {
-    return;
-  }
-
-  const legacyDirectory = path.join(
-    process.env.LOCALAPPDATA ?? os.homedir(),
-    'TokenTracker',
-  );
-  const source = path.join(legacyDirectory, 'tokentracker.db');
-  if (!fs.existsSync(source)) {
-    return;
-  }
-
-  for (const suffix of ['', '-wal', '-shm']) {
-    const from = source + suffix;
-    if (!fs.existsSync(from)) {
-      continue;
-    }
-    try {
-      fs.copyFileSync(from, target + suffix);
-    } catch {
-      // Best-effort migration: server will create a fresh database if needed.
-    }
-  }
 }

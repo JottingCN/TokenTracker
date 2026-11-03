@@ -34,12 +34,12 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.9",
+    "1.0.11",
     1,
     port,
     startedAt,
     string.IsNullOrWhiteSpace(buildId) ? null : buildId,
-    ["dashboard", "prices", "settings", "holidays", "breakdown", "ws"]);
+    ["dashboard", "calls", "events", "tools", "prices", "settings", "holidays", "breakdown", "source-paths", "source-copilot-chat", "otel-metrics", "agent-runs", "trace-tree", "otel-metrics-store", "ws"]);
 
 var dataDirectory = Environment.GetEnvironmentVariable("TOKENTRACKER_DATA_DIR");
 if (string.IsNullOrWhiteSpace(dataDirectory))
@@ -48,6 +48,12 @@ if (string.IsNullOrWhiteSpace(dataDirectory))
 }
 
 Directory.CreateDirectory(dataDirectory);
+var captureOtelMetrics = string.Equals(
+    Environment.GetEnvironmentVariable("TOKENTRACKER_CAPTURE_OTEL_METRICS"),
+    "1",
+    StringComparison.OrdinalIgnoreCase);
+var otelMetricCaptureDirectory = Path.Combine(dataDirectory, "otel-metrics");
+var otelCaptureLock = new object();
 var store = new SpanStore(Path.Combine(dataDirectory, "tokentracker.db"));
 
 const string retentionKey = "retention_days";
@@ -85,17 +91,35 @@ var counters = new ReceiverCounters();
 var endpoint = $"http://127.0.0.1:{port}";
 var service = new DashboardService(store, metadata, counters, settings, endpoint);
 service.ApplyOverrides();
-if (store.GetSetting("builtin_prices_removed") != "1")
+
+if (store.GetSetting("storage_slim_v1") != "1")
 {
-    store.RecomputeCostsInRange(0, long.MaxValue);
-    store.SetSetting("builtin_prices_removed", "1");
+    var removed = store.SlimStorage();
+    store.SetSetting("storage_slim_v1", "1");
+    Console.WriteLine($"slimmed storage: {removed} rows removed");
 }
 
-if (store.GetSetting("duplicate_spans_merged") != "1")
+if (store.GetSetting("subagent_sessions_v1") != "1")
 {
-    store.DeduplicateSpans();
-    store.SetSetting("duplicate_spans_merged", "1");
+    var resolved = store.ResolveSubagentSessions();
+    store.SetSetting("subagent_sessions_v1", "1");
+    Console.WriteLine($"resolved subagent sessions for {resolved} rows");
 }
+
+if (store.GetSetting("subagent_names_v2") != "1")
+{
+    var named = store.BackfillSubagentNames();
+    store.SetSetting("subagent_names_v2", "1");
+    Console.WriteLine($"backfilled subagent names for {named} spans");
+}
+
+if (store.GetSetting("metric_attribution_v1") != "1")
+{
+    var attributed = store.ReconcileMetricAttribution();
+    store.SetSetting("metric_attribution_v1", "1");
+    Console.WriteLine($"attributed {attributed} metric points to sessions");
+}
+
 var hub = new RealtimeHub();
 metadata.AhpStatusChanged += hub.NotifyChanged;
 var idleExitSeconds = 0;
@@ -201,24 +225,220 @@ app.MapGet("/healthz", () => Results.Text("ok"));
 app.MapGet("/api/version", () =>
     Results.Json(serverInfo, AppJsonContext.Default.ServerInfoPayload));
 
-app.MapGet("/api/dashboard", (int? range, bool? utility, long? from, long? to) =>
+app.MapGet("/api/system", () =>
+{
+    var ahp = metadata.GetAhpStatus();
+    var lastReceived = store.GetLastReceivedAtMs();
+    var access = metadata.GetAccessInfo();
+    var watchedPaths = new List<SystemPathInfo>();
+
+    void AddPath(string label, string? path, string kind, string purpose)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            watchedPaths.Add(new SystemPathInfo(
+                label,
+                "-",
+                kind,
+                false,
+                null,
+                purpose));
+            return;
+        }
+
+        var exists = kind == "directory"
+            ? Directory.Exists(path)
+            : File.Exists(path);
+        string? modified = null;
+        if (exists)
+        {
+            try
+            {
+                modified = (kind == "directory"
+                        ? Directory.GetLastWriteTime(path)
+                        : File.GetLastWriteTime(path))
+                    .ToString("yyyy-MM-dd HH:mm:ss");
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        watchedPaths.Add(new SystemPathInfo(
+            label,
+            path,
+            kind,
+            exists,
+            modified,
+            purpose));
+    }
+
+    AddPath(
+        "会话状态目录",
+        access.SessionRoot,
+        "directory",
+        "只读 workspace.yaml 的会话标题与工作目录");
+    AddPath(
+        "Agent Host 标题库",
+        access.AgentHostDatabase,
+        "file",
+        "只读 agent-host.db 中的会话标题与工作目录");
+    foreach (var directory in access.CopilotUserDataDirectories)
+    {
+        AddPath(
+            "Chat 标题索引",
+            Path.Combine(directory, "globalStorage", "state.vscdb"),
+            "file",
+            "只读 chat.ChatSessionStore.index 的会话标题/工作区");
+        AddPath(
+            "工作区标题索引目录",
+            Path.Combine(directory, "workspaceStorage"),
+            "directory",
+            "只读各工作区 state.vscdb 中的标题索引");
+        AddPath(
+            "Copilot Chat 本地 Trace 库",
+            Path.Combine(
+                directory,
+                "globalStorage",
+                "github.copilot-chat",
+                "agent-traces.db"),
+            "file",
+            "仅在执行“导入本地 OTel 数据”时读取");
+    }
+
+    foreach (var directory in access.AhpUserDataDirectories)
+    {
+        AddPath(
+            "AHP 本地端点目录",
+            Path.Combine(
+                directory,
+                "agent-host",
+                "local-endpoint",
+                "entries"),
+            "directory",
+            "只读端点描述文件，用于连接 AHP 同步标题");
+        AddPath(
+            "Agent Host 本地 Trace 库",
+            Path.Combine(directory, "agent-host", "otel", "agent-host-traces.db"),
+            "file",
+            "仅在执行“导入本地 OTel 数据”时读取");
+    }
+
+    var holidayApi =
+        Environment.GetEnvironmentVariable("TOKENTRACKER_HOLIDAY_API_URL") ??
+        HolidayService.DefaultUrlTemplate;
+    var accesses = new List<SystemAccessInfo>
+    {
+        new("节假日 API", holidayApi, "http"),
+        new("OTLP 接收端点", endpoint, "http"),
+        new(
+            "AHP 标题同步",
+            "named pipe / UDS / TCP（由 local-endpoint entries 解析）",
+            "ipc"),
+    };
+
+    return Results.Json(
+        new SystemInfoPayload(
+            serverInfo,
+            store.GetStorageStats(),
+            counters.Snapshot(endpoint, running: true),
+            settings.RetentionDays,
+            dataDirectory,
+            lastReceived > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(lastReceived)
+                    .ToLocalTime()
+                    .ToString("yyyy-MM-dd HH:mm:ss")
+                : "-",
+            new SystemAhpInfo(ahp.State, ahp.Connected, ahp.Sessions),
+            watchedPaths,
+            accesses),
+        AppJsonContext.Default.SystemInfoPayload);
+});
+
+app.MapGet("/api/dashboard", (
+    int? range,
+    bool? utility,
+    long? from,
+    long? to,
+    string? source) =>
     Results.Json(
         from is > 0 && to > from
-            ? service.GetDashboard(from.Value, to.Value, utility ?? false)
-            : service.GetDashboard(range ?? 2, utility ?? false),
+            ? service.GetDashboard(from.Value, to.Value, utility ?? false, source)
+            : service.GetDashboard(range ?? 2, utility ?? false, source),
         AppJsonContext.Default.DashboardPayload));
 
-app.MapGet("/api/model/{model}", (string model, int? range, long? from, long? to) =>
+app.MapGet("/api/model/{model}", (
+    string model,
+    int? range,
+    long? from,
+    long? to,
+    string? source) =>
     Results.Json(
         from is > 0 && to > from
-            ? service.GetModel(model, from.Value, to.Value)
-            : service.GetModel(model, range ?? 2),
+            ? service.GetModel(model, from.Value, to.Value, source)
+            : service.GetModel(model, range ?? 2, source),
         AppJsonContext.Default.ModelPayload));
 
-app.MapGet("/api/session/{sessionId}", (string sessionId) =>
+app.MapGet("/api/session/{sessionId}", (string sessionId, string? source) =>
     Results.Json(
-        service.GetSession(sessionId),
+        service.GetSession(sessionId, source),
         AppJsonContext.Default.SessionPayload));
+
+app.MapGet("/api/session/{sessionId}/trace", (
+    string sessionId,
+    string? source) =>
+    Results.Json(
+        service.GetTrace(sessionId, source),
+        AppJsonContext.Default.TracePayload));
+
+app.MapGet("/api/calls", (
+    int? range,
+    bool? utility,
+    long? from,
+    long? to,
+    string? model,
+    string? source,
+    string? query,
+    string? kind,
+    bool? priced,
+    string? period,
+    bool? hasError,
+    string? agent,
+    int? offset,
+    int? limit) =>
+    Results.Json(
+        from is > 0 && to > from
+            ? service.GetCalls(
+                from.Value,
+                to.Value,
+                utility ?? true,
+                model,
+                source,
+                query,
+                kind,
+                priced,
+                period,
+                hasError,
+                agent,
+                offset ?? 0,
+                limit ?? 50)
+            : service.GetCalls(
+                range ?? 2,
+                utility ?? true,
+                model,
+                source,
+                query,
+                kind,
+                priced,
+                period,
+                hasError,
+                agent,
+                offset ?? 0,
+                limit ?? 50),
+        AppJsonContext.Default.CallsPayload));
 
 app.MapGet("/api/prices", () =>
     Results.Json(
@@ -296,11 +516,51 @@ app.MapPost("/api/import-local", (LocalImportRequest request) =>
             result.Matched,
             result.Inserted,
             result.Skipped,
+            result.EventsMatched,
+            result.EventsInserted,
             result.Errors.ToArray()),
         AppJsonContext.Default.LocalImportPayload);
 });
 
 app.MapPost("/v1/traces", async (HttpContext context) =>
+    await IngestTraces(context, store, counters, hub, sourceOverride: null));
+
+app.MapPost("/otlp/{source}", async (HttpContext context, string source) =>
+{
+    var normalized = NormalizeIngestSource(source);
+    if (normalized is null)
+    {
+        return Results.NotFound();
+    }
+
+    return await IngestTraces(context, store, counters, hub, normalized);
+});
+
+app.MapPost("/otlp/{source}/v1/traces", async (HttpContext context, string source) =>
+{
+    var normalized = NormalizeIngestSource(source);
+    if (normalized is null)
+    {
+        return Results.NotFound();
+    }
+
+    return await IngestTraces(context, store, counters, hub, normalized);
+});
+
+static string? NormalizeIngestSource(string source) =>
+    source.Trim().ToLowerInvariant() switch
+    {
+        "copilot-chat" or "extension-host" => "copilot-chat",
+        "agent-host" => "agent-host",
+        _ => null,
+    };
+
+static async Task<IResult> IngestTraces(
+    HttpContext context,
+    SpanStore store,
+    ReceiverCounters counters,
+    RealtimeHub hub,
+    string? sourceOverride)
 {
     try
     {
@@ -312,13 +572,21 @@ app.MapPost("/v1/traces", async (HttpContext context) =>
 
         using (document)
         {
-            var spans = OtlpTraceParser.ParseTraces(
+            var parsed = OtlpTraceParser.Parse(
                 document,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            if (spans.Count > 0)
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                sourceOverride);
+            if (parsed.Spans.Count > 0 ||
+                parsed.Events.Count > 0 ||
+                parsed.AgentRuns.Count > 0)
             {
-                store.InsertMany(spans);
-                counters.Record(spans.Count);
+                store.InsertMany(parsed.Spans);
+                store.InsertEvents(parsed.Events);
+                store.InsertAgentRuns(parsed.AgentRuns);
+                counters.Record(
+                    parsed.Spans.Count +
+                    parsed.Events.Count +
+                    parsed.AgentRuns.Count);
                 hub.NotifyChanged();
             }
         }
@@ -330,12 +598,127 @@ app.MapPost("/v1/traces", async (HttpContext context) =>
         counters.RecordError(exception.Message);
         return Results.Problem(exception.Message);
     }
-});
+}
+
+static async Task<IResult> IngestOtelMetrics(
+    HttpContext context,
+    string? sourceOverride,
+    bool captureEnabled,
+    string captureDirectory,
+    object captureLock,
+    SpanStore store,
+    ReceiverCounters counters,
+    RealtimeHub hub)
+{
+    try
+    {
+        var document = await ReadJsonAsync(context.Request);
+        if (document is null)
+        {
+            return Results.BadRequest();
+        }
+
+        using (document)
+        {
+            var receivedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var parsed = OtlpMetricParser.Parse(
+                document,
+                receivedAtMs,
+                sourceOverride);
+            var inserted = parsed.Count > 0
+                ? store.InsertMetricPoints(parsed)
+                : 0;
+            if (inserted > 0)
+            {
+                counters.Record(inserted);
+                hub.NotifyChanged();
+            }
+
+            if (captureEnabled)
+            {
+                var source = sourceOverride ??
+                    parsed.FirstOrDefault()?.Source ??
+                    "direct";
+                var raw = document.RootElement.GetRawText();
+                Directory.CreateDirectory(captureDirectory);
+                var fileName =
+                    $"{DateTimeOffset.Now:yyyyMMdd-HHmmss-fff}-{source}-{Guid.NewGuid():N}.json";
+                await File.WriteAllTextAsync(
+                    Path.Combine(captureDirectory, fileName),
+                    raw);
+                TrimCapturedSignals(captureDirectory);
+                var line =
+                    $"{DateTimeOffset.UtcNow:O} source={source} " +
+                    $"points={parsed.Count} bytes={raw.Length} " +
+                    $"file={fileName}";
+                lock (captureLock)
+                {
+                    File.AppendAllText(
+                        Path.Combine(captureDirectory, "capture.log"),
+                        line + Environment.NewLine);
+                }
+
+                Console.WriteLine($"OTLP metrics captured: {line}");
+            }
+        }
+
+        return Results.Ok();
+    }
+    catch (Exception exception)
+    {
+        counters.RecordError(exception.Message);
+        Console.Error.WriteLine(
+            $"OTLP metrics ingestion failed: {exception.Message}");
+        return Results.Problem(exception.Message);
+    }
+}
+
+static void TrimCapturedSignals(string captureDirectory)
+{
+    try
+    {
+        foreach (var file in Directory
+                     .GetFiles(captureDirectory, "*.json")
+                     .OrderByDescending(File.GetLastWriteTimeUtc)
+                     .Skip(50))
+        {
+            File.Delete(file);
+        }
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"OTLP logs cleanup failed: {exception.Message}");
+    }
+}
 
 app.MapPost("/v1/metrics", async (HttpContext context) =>
+    await IngestOtelMetrics(
+        context,
+        sourceOverride: null,
+        captureOtelMetrics,
+        otelMetricCaptureDirectory,
+        otelCaptureLock,
+        store,
+        counters,
+        hub));
+
+app.MapPost("/otlp/{source}/v1/metrics", async (HttpContext context, string source) =>
 {
-    await DrainAsync(context.Request);
-    return Results.Ok();
+    var normalized = NormalizeIngestSource(source);
+    if (normalized is null)
+    {
+        return Results.NotFound();
+    }
+
+    return await IngestOtelMetrics(
+        context,
+        normalized,
+        captureOtelMetrics,
+        otelMetricCaptureDirectory,
+        otelCaptureLock,
+        store,
+        counters,
+        hub);
 });
 
 app.MapGet("/ws", (HttpContext context) =>
@@ -363,14 +746,6 @@ static async Task<JsonDocument?> ReadJsonAsync(HttpRequest request)
     finally
     {
         gzip?.Dispose();
-    }
-}
-
-static async Task DrainAsync(HttpRequest request)
-{
-    var buffer = new byte[8192];
-    while (await request.Body.ReadAsync(buffer) > 0)
-    {
     }
 }
 

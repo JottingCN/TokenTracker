@@ -32,6 +32,8 @@ internal sealed class CopilotChatTitleReader
             .ToArray();
     }
 
+    public IReadOnlyList<string> UserDataDirectories => _userDataDirectories;
+
     public CopilotChatTitle? Get(string sessionId)
     {
         if (_userDataDirectories.Length == 0)
@@ -75,7 +77,11 @@ internal sealed class CopilotChatTitleReader
                     if (!_databaseCache.TryGetValue(databasePath, out var cached) ||
                         cached.Stamp != stamp.Value)
                     {
-                        cached = new DatabaseCache(stamp.Value, ReadIndex(databasePath));
+                        cached = new DatabaseCache(
+                            stamp.Value,
+                            ReadIndex(
+                                databasePath,
+                                ReadWorkspacePath(databasePath)));
                     }
 
                     nextCache[databasePath] = cached;
@@ -158,7 +164,9 @@ internal sealed class CopilotChatTitleReader
         }
     }
 
-    private static Dictionary<string, Entry> ReadIndex(string databasePath)
+    private static Dictionary<string, Entry> ReadIndex(
+        string databasePath,
+        string? fallbackWorkspacePath)
     {
         var entries = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -226,6 +234,7 @@ internal sealed class CopilotChatTitleReader
                 workspaceElement.ValueKind == JsonValueKind.String
                     ? ToLocalPath(workspaceElement.GetString())
                     : null;
+            workspacePath ??= fallbackWorkspacePath;
             var lastMessageDate =
                 entry.TryGetProperty("lastMessageDate", out var dateElement) &&
                 dateElement.ValueKind == JsonValueKind.Number &&
@@ -243,6 +252,52 @@ internal sealed class CopilotChatTitleReader
         }
 
         return entries;
+    }
+
+    private static string? ReadWorkspacePath(string databasePath)
+    {
+        var directory = Path.GetDirectoryName(databasePath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        var workspaceJson = Path.Combine(directory, "workspace.json");
+        if (!File.Exists(workspaceJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(workspaceJson));
+            var root = document.RootElement;
+            if (root.TryGetProperty("folder", out var folder) &&
+                folder.ValueKind == JsonValueKind.String)
+            {
+                return ToLocalPath(folder.GetString());
+            }
+
+            if (root.TryGetProperty("workspace", out var workspace) &&
+                workspace.ValueKind == JsonValueKind.String)
+            {
+                var path = ToLocalPath(workspace.GetString());
+                if (path is not null)
+                {
+                    return path.EndsWith(".code-workspace", StringComparison.OrdinalIgnoreCase)
+                        ? Path.GetDirectoryName(path)
+                        : path;
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+            UnauthorizedAccessException or
+            JsonException)
+        {
+        }
+
+        return null;
     }
 
     private static string? ToLocalPath(string? value)

@@ -61,6 +61,8 @@ internal sealed class AhpTitleClient
         }
     }
 
+    public IReadOnlyList<string> UserDataDirectories => _userDataDirectories;
+
     public AhpConnectionStatus GetStatus()
     {
         lock (_gate)

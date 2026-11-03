@@ -36,76 +36,97 @@
         "title": "%command.stopServer%"
       }
     ],
-    "configuration": {
-      "properties": {
-        "tokentracker.autoStart": {
-          "default": true,
-          "description": "%config.autoStart%",
-          "type": "boolean"
-        },
-        "tokentracker.costUnit": {
-          "default": "cny",
-          "description": "%config.costUnit%",
-          "enum": [
-            "cny",
-            "usd",
-            "credit"
-          ],
-          "enumDescriptions": [
-            "%config.costUnit.cny%",
-            "%config.costUnit.usd%",
-            "%config.costUnit.credit%"
-          ],
-          "type": "string"
-        },
-        "tokentracker.creditRate": {
-          "default": 0.01,
-          "description": "%config.creditRate%",
-          "minimum": 0.0001,
-          "type": "number"
-        },
-        "tokentracker.usdRate": {
-          "default": 7.2,
-          "description": "%config.usdRate%",
-          "minimum": 0.01,
-          "type": "number"
-        },
-        "tokentracker.idleExitSeconds": {
-          "default": 60,
-          "description": "%config.idleExitSeconds%",
-          "minimum": 0,
-          "type": "number"
-        },
-        "tokentracker.port": {
-          "default": 4318,
-          "description": "%config.port%",
-          "type": "number"
-        },
-        "tokentracker.serverDownloadBaseUrl": {
-          "default": "",
-          "description": "%config.serverDownloadBaseUrl%",
-          "type": "string"
-        },
-        "tokentracker.statsRange": {
-          "default": "7d",
-          "description": "%config.statsRange%",
-          "enum": [
-            "today",
-            "7d",
-            "30d",
-            "all"
-          ],
-          "enumDescriptions": [
-            "%config.statsRange.today%",
-            "%config.statsRange.7d%",
-            "%config.statsRange.30d%",
-            "%config.statsRange.all%"
-          ],
-          "type": "string"
+    "configuration": [
+      {
+        "title": "%config.group.display%",
+        "properties": {
+          "tokentracker.statusBarFormat": {
+            "default": "$(pulse) {hit} · {ttft} · {speed} · {cost}",
+            "description": "%config.statusBarFormat%",
+            "type": "string",
+            "order": 1
+          },
+          "tokentracker.statsRange": {
+            "default": "7d",
+            "description": "%config.statsRange%",
+            "enum": [
+              "today",
+              "7d",
+              "30d",
+              "all"
+            ],
+            "enumDescriptions": [
+              "%config.statsRange.today%",
+              "%config.statsRange.7d%",
+              "%config.statsRange.30d%",
+              "%config.statsRange.all%"
+            ],
+            "type": "string",
+            "order": 2
+          },
+          "tokentracker.costUnit": {
+            "default": "cny",
+            "description": "%config.costUnit%",
+            "enum": [
+              "cny",
+              "usd",
+              "credit"
+            ],
+            "enumDescriptions": [
+              "%config.costUnit.cny%",
+              "%config.costUnit.usd%",
+              "%config.costUnit.credit%"
+            ],
+            "type": "string",
+            "order": 3
+          },
+          "tokentracker.creditRate": {
+            "default": 0.01,
+            "description": "%config.creditRate%",
+            "minimum": 0.0001,
+            "type": "number",
+            "order": 4
+          },
+          "tokentracker.usdRate": {
+            "default": 7.2,
+            "description": "%config.usdRate%",
+            "minimum": 0.01,
+            "type": "number",
+            "order": 5
+          }
         }
       },
-      "title": "Token Tracker"
-    }
+      {
+        "title": "%config.group.server%",
+        "properties": {
+          "tokentracker.port": {
+            "default": 4318,
+            "description": "%config.port%",
+            "type": "number",
+            "order": 1
+          },
+          "tokentracker.autoStart": {
+            "default": true,
+            "description": "%config.autoStart%",
+            "type": "boolean",
+            "order": 2
+          },
+          "tokentracker.idleExitSeconds": {
+            "default": 5,
+            "description": "%config.idleExitSeconds%",
+            "minimum": 0,
+            "type": "number",
+            "order": 3
+          },
+          "tokentracker.serverDownloadBaseUrl": {
+            "default": "",
+            "description": "%config.serverDownloadBaseUrl%",
+            "type": "string",
+            "order": 4
+          }
+        }
+      }
+    ]
   },
   "description": "%description%",
   "homepage": "https://github.com/JottingCN/TokenTracker#readme",
@@ -135,5 +156,5 @@
     "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
     "sync-server": "node scripts/sync-server.mjs"
   },
-  "version": "0.1.5"
+  "version": "0.1.8"
 }
