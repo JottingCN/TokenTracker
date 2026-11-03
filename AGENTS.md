@@ -66,7 +66,7 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 | GET | `/healthz`、`/api/version` | 健康检查；名称、版本、buildId、features 列表 |
 | GET | `/api/system` | 数据库路径/大小、表与行数、原始/综合 span、outcome 指标、监听与 AHP 状态 |
 | GET | `/api/dashboard` | `range=0..4`、`source`；汇总、按模型（含辅助调用）、会话（主调用） |
-| GET | `/api/model/{model}` | 模型详情、TTFT、平均生成速度、会话列表 |
+| GET | `/api/model/{model}` | `range` 或 `from`/`to`、`source`；模型详情、TTFT、平均生成速度、会话列表 |
 | GET | `/api/session/{sessionId}` | 会话汇总、调用、事件统计、Agent 运行、Hook、工具统计、outcome 指标 |
 | GET | `/api/session/{sessionId}/trace` | Trace 拓扑节点（时间升序，最多 5000，超限保留最新） |
 | GET | `/api/calls` | 服务端分页明细：`range/source/model/query/kind/priced/period/offset/limit` |
