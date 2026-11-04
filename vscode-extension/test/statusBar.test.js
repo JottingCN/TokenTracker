@@ -1,0 +1,174 @@
+'use strict';
+
+// Node's built-in runner keeps the extension free of a test dependency.
+// The compiled module requires 'vscode', which only exists inside the editor
+// host, so it is stubbed before loading.
+const test = require('node:test');
+const assert = require('node:assert');
+const Module = require('node:module');
+
+class MarkdownString {
+  constructor(value = '') {
+    this.value = value;
+  }
+  appendMarkdown(text) {
+    this.value += text;
+    return this;
+  }
+  appendCodeblock(code) {
+    this.value += '\n```text\n' + code + '\n```\n';
+    return this;
+  }
+}
+
+class Disposable {
+  dispose() {}
+}
+
+const statusBarItem = {
+  name: '',
+  text: '',
+  tooltip: '',
+  command: '',
+  visible: false,
+  show() {
+    this.visible = true;
+  },
+  hide() {
+    this.visible = false;
+  },
+  dispose() {},
+  onDidChangeVisibility: () => new Disposable(),
+};
+
+const vscodeStub = {
+  MarkdownString,
+  Disposable,
+  StatusBarAlignment: { Left: 1, Right: 2 },
+  env: { language: 'zh-cn' },
+  window: { createStatusBarItem: () => statusBarItem },
+  workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+};
+
+const originalLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+  if (request === 'vscode') {
+    return vscodeStub;
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+const path = require('node:path');
+const { selectLatestSession, StatusBarController } = require(
+  path.join(__dirname, '..', 'out', 'statusBar.js'),
+);
+
+function session(id, workspacePath, lastSeenMs, overrides = {}) {
+  return {
+    sessionId: id,
+    sessionDisplay: id,
+    workspacePath,
+    lastSeenMs,
+    hitRate: 0.5,
+    costCny: 0.1,
+    unpricedCalls: 0,
+    inputTokens: 100,
+    outputTokens: 10,
+    cacheReadTokens: 50,
+    ...overrides,
+  };
+}
+
+const root = 'd:\\source\\project-a';
+
+test('matches only sessions inside the current workspace', () => {
+  const sessions = [
+    session('a', 'd:\\source\\project-a\\sub', 30),
+    session('b', 'd:\\source\\project-b', 40),
+  ];
+  const result = selectLatestSession(sessions, [root]);
+  assert.equal(result.session.sessionId, 'a');
+  assert.equal(result.unassigned, false);
+});
+
+test('picks the most recent matching session', () => {
+  const sessions = [
+    session('old', 'd:\\source\\project-a', 10),
+    session('new', 'd:\\source\\project-a', 20),
+  ];
+  assert.equal(selectLatestSession(sessions, [root]).session.sessionId, 'new');
+});
+
+test('falls back to workspace-unknown sessions instead of hiding', () => {
+  const sessions = [
+    session('other', 'd:\\source\\project-b', 50),
+    session('unknown-1', null, 10),
+    session('unknown-2', undefined, 30),
+  ];
+  const result = selectLatestSession(sessions, [root]);
+  assert.equal(result.session.sessionId, 'unknown-2');
+  assert.equal(result.unassigned, true);
+});
+
+test('never shows another workspace when every session is assigned', () => {
+  const sessions = [session('other', 'd:\\source\\project-b', 50)];
+  const result = selectLatestSession(sessions, [root]);
+  assert.equal(result.session, undefined);
+  assert.equal(result.unassigned, false);
+});
+
+test('uses all sessions when no folder is open', () => {
+  const sessions = [session('a', 'd:\\source\\project-a', 10), session('b', null, 20)];
+  const result = selectLatestSession(sessions, []);
+  assert.equal(result.session.sessionId, 'b');
+  assert.equal(result.unassigned, false);
+});
+
+test('renders the unconfirmed-workspace note in the tooltip', () => {
+  const controller = new StatusBarController(
+    0,
+    4,
+    '全部',
+    [root],
+    { unit: 'cny', usdRate: 7.2, creditRate: 0.01 },
+    '$(pulse) {hit}',
+    () => {},
+  );
+
+  const summary = session('unknown-1', null, 20, {
+    firstSeenMs: 20,
+    inputText: '1,000',
+    cacheText: '500',
+    outputText: '10',
+    reasoningText: '0',
+    uncachedCostCny: 0.01,
+    cacheCostCny: 0.001,
+    outputCostCny: 0.002,
+    reasoningCostCny: 0,
+    hitRateText: '50%',
+    avgTtftText: '-',
+    tokensPerSecondText: '-',
+    calls: 1,
+    events: 0,
+  });
+
+  const details = {
+    models: [],
+    tools: [],
+    hooks: [],
+    agentRuns: [],
+    events: [],
+    calls: [],
+  };
+
+  // TypeScript-only privacy: the compiled members stay reachable at runtime.
+  const render = (unassigned) => {
+    controller.currentUnassigned = unassigned;
+    controller.updateTooltip(summary, details);
+    return statusBarItem.tooltip.value;
+  };
+
+  assert.match(render(true), /\$\(folder\) 工作区未确认/);
+  assert.doesNotMatch(render(false), /工作区未确认/);
+  controller.dispose();
+});

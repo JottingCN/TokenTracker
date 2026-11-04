@@ -208,6 +208,7 @@ interface LatestScope {
   hitRate: number | null;
   costCny: number;
   hasCost: boolean;
+  unassigned?: boolean;
 }
 
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
@@ -221,6 +222,7 @@ export class StatusBarController implements vscode.Disposable {
   private pollTimer: NodeJS.Timeout | undefined;
   private disposed = false;
   private workspaceRoots: string[];
+  private currentUnassigned = false;
   private readonly breakdownCache = new Map<string, SessionDetails>();
   private pendingKey: string | undefined;
   private currentSession: SessionSummary | undefined;
@@ -403,6 +405,7 @@ export class StatusBarController implements vscode.Disposable {
       session.inputTokens + session.outputTokens + session.cacheReadTokens <= 0
     ) {
       this.currentSession = undefined;
+      this.currentUnassigned = false;
       this.item.hide();
       this.onSnapshot?.(
         `hidden: no tokens for current workspace (range=${this.rangeLabel})`,
@@ -412,6 +415,7 @@ export class StatusBarController implements vscode.Disposable {
 
     this.item.show();
     this.currentSession = session;
+    this.currentUnassigned = Boolean(latest.unassigned);
     this.renderStatusText(session);
 
     const key = this.breakdownKey(session);
@@ -450,18 +454,13 @@ export class StatusBarController implements vscode.Disposable {
     const tooltip = new vscode.MarkdownString();
     tooltip.supportThemeIcons = true;
 
-    const appendSection = (icon: string, title: string, summary?: string) => {
+    const appendSection = (icon: string, title: string) => {
       tooltip.appendMarkdown(`
 ---
 
 **${icon} ${title}**
 
 `);
-      if (summary) {
-        tooltip.appendMarkdown(`${summary}
-
-`);
-      }
     };
 
     const appendBullet = (name: string, parts: Array<string | null>) => {
@@ -480,8 +479,11 @@ export class StatusBarController implements vscode.Disposable {
     );
     tooltip.appendMarkdown(
       `$(calendar) ${this.rangeLabel} · $(clock) ` +
-        `${formatTimeRange(session.firstSeenMs, session.lastSeenMs)}
-`,
+        `${formatTimeRange(session.firstSeenMs, session.lastSeenMs)}` +
+        (this.currentUnassigned
+          ? ` · $(folder) ${tr('工作区未确认', 'workspace unconfirmed')}`
+          : '') +
+        `\n`,
     );
 
     const models = details?.models ?? [];
@@ -489,8 +491,7 @@ export class StatusBarController implements vscode.Disposable {
       for (const row of models) {
         appendSection(
           '$(symbol-method)',
-          escapeMarkdown(row.model),
-          formatShortTime(row.lastSeenMs),
+          `${escapeMarkdown(row.model)} · ${formatShortTime(row.lastSeenMs)}`,
         );
         tooltip.appendCodeblock(modelTableFor(row, this.money), 'text');
         tooltip.appendMarkdown(
@@ -542,8 +543,8 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       );
       appendSection(
         '$(tools)',
-        tr('工具调用', 'Tool calls'),
-        `${numberFormatter.format(totalCalls)} ${tr('次', 'calls')} · ` +
+        `${tr('工具调用', 'Tool calls')} · ` +
+          `${numberFormatter.format(totalCalls)} ${tr('次', 'calls')} · ` +
           `${numberFormatter.format(details.tools.length)} ${tr('种工具', 'tools')}`,
       );
       for (const row of details.tools.slice(0, 5)) {
@@ -560,31 +561,6 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       }
     }
 
-    if (details && details.agentRuns.length > 0) {
-      const totalTurns = details.agentRuns.reduce(
-        (total, row) => total + (row.turnCount ?? 0),
-        0,
-      );
-      appendSection(
-        '$(symbol-class)',
-        tr('Agent 运行', 'Agent runs'),
-        `${numberFormatter.format(details.agentRuns.length)} ${tr('次', 'runs')} · ` +
-          `${numberFormatter.format(totalTurns)} ${tr('轮', 'turns')}`,
-      );
-      for (const row of details.agentRuns.slice(0, 3)) {
-        appendBullet(row.agentText, [
-          row.agentTypeText,
-          row.modelText,
-          `${tr('轮次', 'Turns')} ${row.turnText}`,
-          `${tr('输入', 'In')} ${row.inputText}`,
-          `${tr('缓存', 'Cache')} ${row.cacheText}`,
-          `${tr('输出', 'Out')} ${row.outputText}`,
-          row.durationText,
-          row.isError ? `$(error) ${row.errorText}` : null,
-        ]);
-      }
-    }
-
     if (details && details.hooks.length > 0) {
       const totalHooks = details.hooks.reduce(
         (total, row) => total + row.count,
@@ -592,8 +568,8 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       );
       appendSection(
         '$(symbol-event)',
-        tr('Hook 执行', 'Hook executions'),
-        `${numberFormatter.format(totalHooks)} ${tr('次', 'calls')} · ` +
+        `${tr('Hook 执行', 'Hook executions')} · ` +
+          `${numberFormatter.format(totalHooks)} ${tr('次', 'calls')} · ` +
           `${numberFormatter.format(details.hooks.length)} ${tr('组', 'groups')}`,
       );
       for (const row of details.hooks.slice(0, 5)) {
@@ -604,31 +580,6 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
           `${tr('平均', 'Avg')} ${row.avgDurationText}`,
           row.errorCount > 0 ? `$(error) ${row.errorCount}` : null,
         ]);
-      }
-    }
-
-    if (details) {
-      const otherEvents = details.events.filter(
-        (row) =>
-          row.operation !== 'chat' && row.operation !== 'execute_tool',
-      );
-      if (otherEvents.length > 0) {
-        const totalEvents = otherEvents.reduce(
-          (total, row) => total + row.count,
-          0,
-        );
-        appendSection(
-          '$(pulse)',
-          tr('代理/其他事件', 'Agent & other events'),
-          `${numberFormatter.format(totalEvents)} ${tr('次', 'calls')}`,
-        );
-        for (const row of otherEvents) {
-          appendBullet(operationName(row.operation), [
-            `${numberFormatter.format(row.count)} ${tr('次', 'calls')}`,
-            `${tr('平均', 'Avg')} ${formatDuration(row.avgDurationMs)}`,
-            row.errorCount > 0 ? `$(error) ${row.errorCount}` : null,
-          ]);
-        }
       }
     }
 
@@ -740,32 +691,63 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
   }
 
   private resolveLatest(data: DashboardSnapshot): LatestScope {
-    const sessions = data.sessions ?? [];
-    const filtered = this.workspaceRoots.length === 0
-      ? sessions
-      : sessions.filter((session) => {
-          if (!session.workspacePath) {
-            return false;
-          }
-          const path = normalizePath(session.workspacePath);
-          return this.workspaceRoots.some((root) => isPathWithin(path, root));
-        });
-
-    if (filtered.length === 0) {
+    const selection = selectLatestSession(data.sessions ?? [], this.workspaceRoots);
+    if (!selection.session) {
       return { hitRate: null, costCny: 0, hasCost: false };
     }
 
-    const latest = filtered.reduce((current, session) =>
-      session.lastSeenMs > current.lastSeenMs ? session : current,
-    );
-
+    const latest = selection.session;
     return {
       session: latest,
       hitRate: latest.hitRate,
       costCny: latest.costCny,
       hasCost: sessionHasCost(latest),
+      unassigned: selection.unassigned,
     };
   }
+}
+
+export interface SessionSelection {
+  session?: SessionSummary;
+  unassigned: boolean;
+}
+
+// Sessions are matched by workspace; when nothing matches, only sessions with no
+// workspace information at all are eligible, so the bar does not go blank while
+// another workspace's numbers stay hidden.
+export function selectLatestSession(
+  sessions: SessionSummary[],
+  workspaceRoots: string[],
+): SessionSelection {
+  if (sessions.length === 0) {
+    return { unassigned: false };
+  }
+
+  if (workspaceRoots.length === 0) {
+    return { session: pickLatest(sessions), unassigned: false };
+  }
+
+  const matching = sessions.filter((session) => {
+    if (!session.workspacePath) {
+      return false;
+    }
+    const path = normalizePath(session.workspacePath);
+    return workspaceRoots.some((root) => isPathWithin(path, root));
+  });
+  if (matching.length > 0) {
+    return { session: pickLatest(matching), unassigned: false };
+  }
+
+  const unassigned = sessions.filter((session) => !session.workspacePath);
+  return unassigned.length > 0
+    ? { session: pickLatest(unassigned), unassigned: true }
+    : { unassigned: false };
+}
+
+function pickLatest(sessions: SessionSummary[]): SessionSummary {
+  return sessions.reduce((current, session) =>
+    session.lastSeenMs > current.lastSeenMs ? session : current,
+  );
 }
 
 function aggregateModels(calls: SessionCall[]): ModelBreakdown[] {
@@ -1434,23 +1416,6 @@ function formatTimeRange(firstSeenMs: number, lastSeenMs: number): string {
   return firstSeenMs < lastSeenMs
     ? `${formatLocalTime(firstSeenMs)} ~ ${formatLocalTime(lastSeenMs)}`
     : formatLocalTime(lastSeenMs);
-}
-
-function operationName(operation: string): string {
-  switch (operation) {
-    case 'chat':
-      return tr('模型调用', 'Model call');
-    case 'execute_tool':
-      return tr('工具调用', 'Tool call');
-    case 'invoke_agent':
-      return tr('代理调用', 'Agent invocation');
-    case 'create_agent':
-      return tr('创建代理', 'Create agent');
-    case 'execute_hook':
-      return tr('钩子执行', 'Hook');
-    default:
-      return operation || '-';
-  }
 }
 
 function sessionHasCost(session: SessionSummary): boolean {
