@@ -11,6 +11,26 @@ public sealed partial class SpanStore
     private bool _combinedAllDirty = true;
     private readonly HashSet<string> _combinedDirtySessions =
         new(StringComparer.Ordinal);
+    private long _combinedDirtyFromMs = long.MaxValue;
+    private long _combinedDirtyToMs = long.MinValue;
+
+    // Auxiliary calls carry no session id, so they cannot be rebuilt per session.
+    // Rebuilding the batch window is enough: a merge group is built from rows whose
+    // intervals overlap, and any row overlapping an in-window row overlaps the window.
+    private void MarkCombinedWindow(long startMs, long endMs)
+    {
+        if (startMs < _combinedDirtyFromMs)
+        {
+            _combinedDirtyFromMs = startMs;
+        }
+
+        if (endMs > _combinedDirtyToMs)
+        {
+            _combinedDirtyToMs = endMs;
+        }
+
+        _combinedDirty = true;
+    }
 
     public void EnsureCombinedSpans()
     {
@@ -52,9 +72,60 @@ public sealed partial class SpanStore
                 }
             }
 
+            if (!_combinedAllDirty && _combinedDirtyToMs >= _combinedDirtyFromMs)
+            {
+                var fromMs = _combinedDirtyFromMs;
+                var toMs = _combinedDirtyToMs;
+                var rebuilt = false;
+                for (var pass = 0; pass < CombinedWindowMaxPasses && !rebuilt; pass++)
+                {
+                    var raw = ReadRawSpans(
+                        connection,
+                        transaction,
+                        sessionId: null,
+                        fromMs,
+                        toMs);
+                    var (expandedFrom, expandedTo) = ExtendWindow(raw, fromMs, toMs);
+                    if (expandedTo - expandedFrom > CombinedWindowMaxSpanMs)
+                    {
+                        break;
+                    }
+
+                    if (expandedFrom == fromMs && expandedTo == toMs)
+                    {
+                        DeleteCombinedSpans(
+                            connection,
+                            transaction,
+                            sessionId: null,
+                            fromMs,
+                            toMs);
+                        InsertCombinedSpans(
+                            connection,
+                            transaction,
+                            MergeRawSpans(raw));
+                        rebuilt = true;
+                        break;
+                    }
+
+                    // Merge groups chain through overlapping intervals, so the
+                    // window has to grow until it contains every affected group.
+                    fromMs = expandedFrom;
+                    toMs = expandedTo;
+                }
+
+                if (!rebuilt)
+                {
+                    var all = ReadRawSpans(connection, transaction, sessionId: null);
+                    DeleteCombinedSpans(connection, transaction, sessionId: null);
+                    InsertCombinedSpans(connection, transaction, MergeRawSpans(all));
+                }
+            }
+
             transaction.Commit();
             _combinedAllDirty = false;
             _combinedDirtySessions.Clear();
+            _combinedDirtyFromMs = long.MaxValue;
+            _combinedDirtyToMs = long.MinValue;
             _combinedDirty = false;
         }
         finally
@@ -63,21 +134,65 @@ public sealed partial class SpanStore
         }
     }
 
+    private const int CombinedWindowMaxPasses = 4;
+    private const long CombinedWindowMaxSpanMs = 12 * 60 * 60 * 1000;
+
+    private static (long FromMs, long ToMs) ExtendWindow(
+        IReadOnlyList<CombinedSpan> rows,
+        long fromMs,
+        long toMs)
+    {
+        var lowest = fromMs;
+        var highest = toMs;
+        foreach (var row in rows)
+        {
+            if (row.StartTimeMs < lowest)
+            {
+                lowest = row.StartTimeMs;
+            }
+
+            var endMs = row.EndTimeMs ?? row.StartTimeMs;
+            if (endMs > highest)
+            {
+                highest = endMs;
+            }
+        }
+
+        return (lowest, highest);
+    }
+
     private static void DeleteCombinedSpans(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        string? sessionId)
+        string? sessionId,
+        long fromMs = 0,
+        long toMs = 0)
     {
         using var delete = connection.CreateCommand();
         delete.Transaction = transaction;
-        delete.CommandText = sessionId is null
-            ? "DELETE FROM spans WHERE otel_source = 'combined';"
-            : """
-              DELETE FROM spans
-              WHERE otel_source = 'combined' AND session_id = @session;
-              """;
-        if (sessionId is not null)
+        if (toMs > 0)
         {
+            delete.CommandText = """
+                DELETE FROM spans
+                WHERE otel_source = 'combined'
+                  AND (
+                        (start_time_ms BETWEEN @window_from AND @window_to)
+                        OR (end_time_ms >= @window_from AND start_time_ms < @window_from)
+                      );
+                """;
+            delete.Parameters.AddWithValue("@window_from", fromMs);
+            delete.Parameters.AddWithValue("@window_to", toMs);
+        }
+        else if (sessionId is null)
+        {
+            delete.CommandText = "DELETE FROM spans WHERE otel_source = 'combined';";
+        }
+        else
+        {
+            delete.CommandText = """
+                DELETE FROM spans
+                WHERE otel_source = 'combined' AND session_id = @session;
+                """;
             delete.Parameters.AddWithValue("@session", sessionId);
         }
 
@@ -216,13 +331,23 @@ public sealed partial class SpanStore
     private static List<CombinedSpan> ReadRawSpans(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        string? sessionId)
+        string? sessionId,
+        long fromMs = 0,
+        long toMs = 0)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sessionFilter = sessionId is null
             ? string.Empty
             : " AND session_id = @session";
+        var windowFilter = toMs > 0
+            ? """
+              AND (
+                    (start_time_ms BETWEEN @window_from AND @window_to)
+                    OR (end_time_ms >= @window_from AND start_time_ms < @window_from)
+                  )
+              """
+            : string.Empty;
         command.CommandText = $"""
             SELECT trace_id, span_id, name, service_name, otel_source, model,
                    session_id, is_main, input_tokens, output_tokens,
@@ -233,12 +358,17 @@ public sealed partial class SpanStore
                    subagent_name, finish_reasons, start_time_ms, end_time_ms,
                    received_at_ms
             FROM spans
-            WHERE COALESCE(otel_source, '') <> 'combined'{sessionFilter}
+            WHERE COALESCE(otel_source, '') <> 'combined'{sessionFilter}{windowFilter}
             ORDER BY start_time_ms;
             """;
         if (sessionId is not null)
         {
             command.Parameters.AddWithValue("@session", sessionId);
+        }
+        if (toMs > 0)
+        {
+            command.Parameters.AddWithValue("@window_from", fromMs);
+            command.Parameters.AddWithValue("@window_to", toMs);
         }
         var rows = new List<CombinedSpan>();
         using var reader = command.ExecuteReader();

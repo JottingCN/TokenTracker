@@ -443,6 +443,119 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void CombinedUtilityWindowMatchesFullRebuild()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "tu-1", "su-1", sessionId: null, "deepseek-flash",
+                    1_000, 100, 50, 10, 0.1,
+                    source: "copilot-chat"),
+                Span(
+                    "tu-2", "su-2", sessionId: null, "deepseek-flash",
+                    1_050, 100, 50, 10, 0.2,
+                    serviceName: "github-copilot",
+                    source: "agent-host"),
+                Span(
+                    "ts-1", "ss-1", "session-s", "deepseek-flash",
+                    2_000, 100, 0, 10, 0.3,
+                    source: "copilot-chat"),
+            });
+            store.EnsureCombinedSpans();
+
+            store.InsertMany(new[]
+            {
+                Span(
+                    "tv-1", "sv-1", sessionId: null, "kimi-k3.1-pro",
+                    500_000, 200, 100, 20, 0.4,
+                    source: "copilot-chat"),
+                Span(
+                    "tv-2", "sv-2", sessionId: null, "kimi-k3.1-pro",
+                    500_100, 200, 100, 20, 0.5,
+                    serviceName: "codex-app-server",
+                    source: "agent-host"),
+            });
+            store.EnsureCombinedSpans();
+
+            var incremental = SnapshotCombined(store);
+
+            // A fresh instance rebuilds every derived row from scratch.
+            var reopened = new SpanStore(databasePath);
+            reopened.EnsureCombinedSpans();
+
+            Assert.Equal(SnapshotCombined(reopened), incremental);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void SessionWorkspaceCacheSurvivesAndIsPrunedWithSpans()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "tw-1", "sw-1", "session-w", "deepseek-flash",
+                    1_000, 100, 0, 10, 0.1),
+            });
+            store.UpsertSessionWorkspaces(
+                new Dictionary<string, string> { ["session-w"] = @"d:\source\demo" });
+
+            Assert.Equal(@"d:\source\demo", store.GetSessionWorkspace("session-w"));
+            Assert.Null(store.GetSessionWorkspace("session-unknown"));
+
+            // Purging the session's spans drops its cached workspace as well.
+            store.DeleteOlderThan(5_000);
+
+            Assert.Null(store.GetSessionWorkspace("session-w"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static List<(long StartMs, string Model, long Input, long Output, string? Session)>
+        SnapshotCombined(SpanStore store) =>
+        store.GetCalls(new CallQuery
+        {
+            FromMs = 0,
+            Source = "combined",
+            Limit = 500,
+        })
+        .Select(row => (row.StartTimeMs, row.Model, row.InputTokens, row.OutputTokens, row.SessionId))
+        .OrderBy(item => item.StartTimeMs)
+        .ToList();
+
+    [Fact]
     public void TraceNodesMergeCrossSourceCallsAndDropCombinedRows()
     {
         var directory = Path.Combine(

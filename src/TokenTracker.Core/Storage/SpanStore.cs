@@ -320,8 +320,7 @@ public sealed partial class SpanStore
                 PRIMARY KEY (otel_source, series_key, end_time_ms)
             );
 
-            CREATE TABLE IF NOT EXISTS window_session_links (
-                window_session_id TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS window_session_links (                window_session_id TEXT NOT NULL,
                 chat_session_id TEXT NOT NULL,
                 service_name TEXT,
                 first_seen_ms INTEGER NOT NULL,
@@ -361,6 +360,12 @@ public sealed partial class SpanStore
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS session_workspaces (
+                session_id TEXT PRIMARY KEY,
+                workspace_path TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
             );
             """;
         command.ExecuteNonQuery();
@@ -424,6 +429,7 @@ public sealed partial class SpanStore
         {
             indexes.CommandText = """
                 CREATE INDEX IF NOT EXISTS ix_spans_start ON spans(start_time_ms);
+                CREATE INDEX IF NOT EXISTS ix_spans_end ON spans(end_time_ms);
                 CREATE INDEX IF NOT EXISTS ix_spans_session ON spans(session_id);
                 CREATE INDEX IF NOT EXISTS ix_spans_model ON spans(model);
                 CREATE INDEX IF NOT EXISTS ix_spans_received ON spans(received_at_ms);
@@ -663,22 +669,40 @@ public sealed partial class SpanStore
             transaction.Commit();
             if (resolved > 0)
             {
+                // Session ids moved between rows, so stale derived rows can sit
+                // anywhere in the affected traces and need a global rebuild.
                 _combinedAllDirty = true;
                 _combinedDirtySessions.Clear();
                 _combinedDirty = true;
             }
             else if (inserted > 0)
             {
+                long utilityFromMs = long.MaxValue;
+                long utilityToMs = long.MinValue;
                 foreach (var span in spans)
                 {
                     if (string.IsNullOrWhiteSpace(span.SessionId))
                     {
-                        _combinedAllDirty = true;
+                        if (span.StartTimeMs < utilityFromMs)
+                        {
+                            utilityFromMs = span.StartTimeMs;
+                        }
+
+                        var endMs = span.EndTimeMs ?? span.StartTimeMs;
+                        if (endMs > utilityToMs)
+                        {
+                            utilityToMs = endMs;
+                        }
                     }
                     else
                     {
                         _combinedDirtySessions.Add(span.SessionId);
                     }
+                }
+
+                if (utilityToMs >= utilityFromMs)
+                {
+                    MarkCombinedWindow(utilityFromMs, utilityToMs);
                 }
 
                 _combinedDirty = true;
@@ -2215,6 +2239,56 @@ public sealed partial class SpanStore
         return RecomputeCostsInRange(0, long.MaxValue);
     }
 
+    public void UpsertSessionWorkspaces(IReadOnlyDictionary<string, string> workspaces)
+    {
+        if (workspaces.Count == 0)
+        {
+            return;
+        }
+
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT OR REPLACE INTO session_workspaces (
+                    session_id, workspace_path, updated_at_ms
+                ) VALUES (@session, @path, @updated);
+                """;
+            AddParameter(command, "@session", SqliteType.Text);
+            AddParameter(command, "@path", SqliteType.Text);
+            AddParameter(command, "@updated", SqliteType.Integer);
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            foreach (var entry in workspaces)
+            {
+                command.Parameters["@session"].Value = entry.Key;
+                command.Parameters["@path"].Value = entry.Value;
+                command.Parameters["@updated"].Value = nowMs;
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public string? GetSessionWorkspace(string sessionId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT workspace_path FROM session_workspaces WHERE session_id = @session;
+            """;
+        command.Parameters.AddWithValue("@session", sessionId);
+        return command.ExecuteScalar() as string;
+    }
+
     public int DeleteOlderThan(long cutoffMs)
     {
         _writeLock.Wait();
@@ -2249,6 +2323,14 @@ public sealed partial class SpanStore
                 "DELETE FROM window_session_links WHERE last_seen_ms < @cutoff;";
             windowLinks.Parameters.AddWithValue("@cutoff", cutoffMs);
             windowLinks.ExecuteNonQuery();
+
+            using var sessionWorkspaces = connection.CreateCommand();
+            sessionWorkspaces.CommandText = """
+                DELETE FROM session_workspaces
+                WHERE session_id NOT IN (
+                    SELECT DISTINCT session_id FROM spans WHERE session_id IS NOT NULL);
+                """;
+            sessionWorkspaces.ExecuteNonQuery();
 
             _combinedAllDirty = true;
             _combinedDirtySessions.Clear();
