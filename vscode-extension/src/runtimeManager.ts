@@ -7,6 +7,7 @@ import {
   resolveServerRid,
   ServerAssetInfo,
 } from './serverDownloader';
+import { tr } from './i18n';
 
 export interface RuntimeInfo {
   buildId: string;
@@ -101,15 +102,15 @@ export async function prepareRuntime(
   }
 
   if (!asset && cachedReady) {
-    options.onProgress?.('无法检查服务端更新，使用已缓存版本');
+    options.onProgress?.(tr('无法检查服务端更新，使用已缓存版本', 'Unable to check for server updates; using the cached version'));
     return runtimeInfoFromState(cached!, dataDirectory, executableName);
   }
 
   if (!asset) {
-    throw resolveError ?? new Error('无法获取服务端版本');
+    throw resolveError ?? new Error(tr('无法获取服务端版本', 'Unable to resolve the server version'));
   }
 
-  options.onProgress?.(`准备服务端 ${asset.serverVersion}`);
+  options.onProgress?.(tr(`准备服务端 ${asset.serverVersion}`, `Preparing server ${asset.serverVersion}`));
   let archivePath: string;
   try {
     archivePath = await downloadServerArchive(asset, {
@@ -119,7 +120,7 @@ export async function prepareRuntime(
     });
   } catch (error) {
     if (cachedReady) {
-      options.onProgress?.('服务端下载失败，使用已缓存版本');
+      options.onProgress?.(tr('服务端下载失败，使用已缓存版本', 'Server download failed; using the cached version'));
       return runtimeInfoFromState(cached!, dataDirectory, executableName);
     }
     throw error;
@@ -130,7 +131,7 @@ export async function prepareRuntime(
   fs.mkdirSync(staging, { recursive: true });
 
   try {
-    options.onProgress?.('正在解压服务端');
+    options.onProgress?.(tr('正在解压服务端', 'Extracting the server'));
     const tarExecutable = process.platform === 'win32'
       ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
       : 'tar';
@@ -144,7 +145,7 @@ export async function prepareRuntime(
     const executablePath = path.join(runtimeDirectory, executableName);
 
     if (!fs.existsSync(path.join(staging, executableName))) {
-      throw new Error('服务端包中缺少可执行文件');
+      throw new Error(tr('服务端包中缺少可执行文件', 'The server archive does not contain the executable'));
     }
 
     if (!fs.existsSync(path.join(runtimeDirectory, '.ready'))) {

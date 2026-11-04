@@ -379,13 +379,25 @@ async function prepareAndStartServer(
   autoStart: boolean,
   idleExitSeconds: number,
 ): Promise<RunningServer> {
+  // Published builds ship no server/, so the first run downloads it over the network:
+  // that must be visible instead of a quiet status-bar spinner.
+  const bundled = fs.existsSync(
+    path.join(context.extensionPath, 'server', 'build.json'),
+  );
   const runtime = await vscode.window.withProgress(
     {
-      location: vscode.ProgressLocation.Window,
-      title: tr(
-        'Token Tracker 正在准备服务端',
-        'Token Tracker is preparing the server',
-      ),
+      location: bundled
+        ? vscode.ProgressLocation.Window
+        : vscode.ProgressLocation.Notification,
+      title: bundled
+        ? tr(
+            'Token Tracker 正在准备服务端',
+            'Token Tracker is preparing the server',
+          )
+        : tr(
+            'Token Tracker 首次运行需要下载本地服务端（约 8 MB，来自 GitHub Release，只在本机运行）',
+            'Token Tracker needs to download its local server on first run (~8 MB from a GitHub Release; it only runs on this machine)',
+          ),
       cancellable: false,
     },
     (progress) =>
@@ -469,6 +481,30 @@ async function checkServerUpdateInBackground(
     const message = error instanceof Error ? error.message : String(error);
     log(`update check failed: ${message}`);
   }
+}
+
+function promptServerFailure(message: string): void {
+  const retry = tr('重试', 'Retry');
+  const configure = tr('配置下载地址', 'Configure download URL');
+  void vscode.window
+    .showWarningMessage(
+      tr(
+        `Token Tracker 服务不可用：${message}`,
+        `Token Tracker server unavailable: ${message}`,
+      ),
+      retry,
+      configure,
+    )
+    .then((choice) => {
+      if (choice === retry) {
+        void vscode.commands.executeCommand('tokentracker.startServer');
+      } else if (choice === configure) {
+        void vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          'tokentracker.serverDownloadBaseUrl',
+        );
+      }
+    });
 }
 
 async function attachOrStartServer(
@@ -691,12 +727,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
           message,
           'tokentracker.startServer',
         );
-        void vscode.window.showErrorMessage(
-          tr(
-            `Token Tracker 启动失败：${message}`,
-            `Token Tracker failed to start: ${message}`,
-          ),
-        );
+        promptServerFailure(message);
       }
     }),
     vscode.commands.registerCommand('tokentracker.stopServer', async () => {
@@ -783,12 +814,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
         message,
         'tokentracker.startServer',
       );
-      void vscode.window.showWarningMessage(
-        tr(
-          `Token Tracker 服务不可用：${message}`,
-          `Token Tracker server unavailable: ${message}`,
-        ),
-      );
+      promptServerFailure(message);
     },
   );
 

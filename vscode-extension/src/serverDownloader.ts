@@ -6,6 +6,7 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import * as tls from 'node:tls';
 import { URL } from 'node:url';
+import { tr } from './i18n';
 
 export interface ServerAssetInfo {
   rid: string;
@@ -65,7 +66,7 @@ export function resolveServerRid(): string {
   }
 
   throw new Error(
-    `当前平台暂不支持自动下载服务端：${process.platform}/${process.arch}`,
+    tr(`当前平台暂不支持自动下载服务端：${process.platform}/${process.arch}`, `Automatic server download is not supported on this platform: ${process.platform}/${process.arch}`),
   );
 }
 
@@ -90,7 +91,7 @@ export async function resolveServerAsset(
   }
 
   if (!options.githubRepo) {
-    throw new Error('未配置服务端下载地址');
+    throw new Error(tr('未配置服务端下载地址', 'No server download URL is configured'));
   }
 
   const cached = readReleaseCache(options.storagePath, rid, extension, false);
@@ -98,7 +99,7 @@ export async function resolveServerAsset(
     return cached;
   }
 
-  options.onProgress?.('正在检查服务端版本');
+  options.onProgress?.(tr('正在检查服务端版本', 'Checking the server version'));
   try {
     const asset = await fetchLatestServerAsset(
       options.githubRepo,
@@ -111,7 +112,7 @@ export async function resolveServerAsset(
   } catch (error) {
     const stale = readReleaseCache(options.storagePath, rid, extension, true);
     if (stale) {
-      options.onProgress?.('检查服务端更新失败，使用缓存版本');
+      options.onProgress?.(tr('检查服务端更新失败，使用缓存版本', 'Update check failed; using the cached version'));
       return stale;
     }
     throw error;
@@ -130,7 +131,7 @@ export async function downloadServerArchive(
     `tokentracker-server-${asset.rid}.${extension}`,
   );
 
-  options.onProgress?.(`正在下载 ${asset.assetName}`);
+  options.onProgress?.(tr(`正在下载 ${asset.assetName}`, `Downloading ${asset.assetName}`));
   const headers: Record<string, string> =
     asset.archiveUrl.includes('api.github.com')
       ? { Accept: 'application/octet-stream' }
@@ -147,14 +148,14 @@ export async function downloadServerArchive(
       verifyHash(checksum, archivePath);
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) {
-        options.onProgress?.('未找到校验文件，跳过校验');
+        options.onProgress?.(tr('未找到校验文件，跳过校验', 'No checksum file found; skipping verification'));
       } else {
         fs.rmSync(archivePath, { force: true });
         throw error;
       }
     }
   } else {
-    options.onProgress?.('未找到校验文件，跳过校验');
+    options.onProgress?.(tr('未找到校验文件，跳过校验', 'No checksum file found; skipping verification'));
   }
 
   return archivePath;
@@ -180,7 +181,7 @@ async function fetchLatestServerAsset(
     );
   } catch (error) {
     if (error instanceof HttpError && error.status === 404) {
-      throw new Error('无法读取 GitHub Release，请检查仓库地址');
+      throw new Error(tr('无法读取 GitHub Release，请检查仓库地址', 'Unable to read the GitHub release; check the repository URL'));
     }
     if (
       error instanceof HttpError &&
@@ -195,7 +196,7 @@ async function fetchLatestServerAsset(
   try {
     releases = JSON.parse(body) as GitHubRelease[];
   } catch {
-    throw new Error('无法解析 GitHub Release 列表');
+    throw new Error(tr('无法解析 GitHub Release 列表', 'Unable to parse the GitHub release list'));
   }
 
   releases.sort(
@@ -232,7 +233,7 @@ async function fetchLatestServerAsset(
     };
   }
 
-  throw new Error(`未找到包含 ${rid} 服务端的 Release`);
+  throw new Error(tr(`未找到包含 ${rid} 服务端的 Release`, `No release found containing a ${rid} server build`));
 }
 
 function releaseTime(release: GitHubRelease): number {
@@ -249,7 +250,7 @@ function parseGitHubRepository(repositoryUrl: string): {
     repositoryUrl,
   );
   if (!match) {
-    throw new Error(`无法解析 GitHub 仓库地址：${repositoryUrl}`);
+    throw new Error(tr(`无法解析 GitHub 仓库地址：${repositoryUrl}`, `Unable to parse the GitHub repository URL: ${repositoryUrl}`));
   }
   return { owner: match[1], repo: match[2] };
 }
@@ -338,7 +339,7 @@ function verifyHash(checksum: string, archivePath: string): void {
     .digest('hex');
   if (actual.toLowerCase() !== match[1].toLowerCase()) {
     fs.rmSync(archivePath, { force: true });
-    throw new Error('服务端下载校验失败，请重试');
+    throw new Error(tr('服务端下载校验失败，请重试', 'The downloaded server failed checksum verification; please retry'));
   }
 }
 
@@ -360,7 +361,7 @@ function downloadFile(
         if (REDIRECT_CODES.has(status) && response.headers.location) {
           response.resume();
           if (redirects >= 5) {
-            reject(new Error('服务端下载重定向过多'));
+            reject(new Error(tr('服务端下载重定向过多', 'Too many redirects while downloading the server')));
             return;
           }
           resolve(
@@ -391,7 +392,7 @@ function downloadFile(
     );
 
     request.setTimeout(120_000, () => {
-      request.destroy(new Error('服务端下载超时'));
+      request.destroy(new Error(tr('服务端下载超时', 'Server download timed out')));
     });
     request.on('error', reject);
   });
