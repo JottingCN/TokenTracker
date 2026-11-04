@@ -51,7 +51,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'prices' | 'data'>('prices');
 
-  const load = async () => {
+  const load = async (keepDrafts = false) => {
     setLoading(true);
     try {
       const response = await fetch('/api/prices');
@@ -66,8 +66,21 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      setRows((await response.json()) as ModelPriceRow[]);
-      setDrafts({});
+      const data = (await response.json()) as ModelPriceRow[];
+      setRows(data);
+      if (keepDrafts) {
+        setDrafts((current) => {
+          const next: Record<string, ModelPriceRow> = {};
+          for (const [model, draft] of Object.entries(current)) {
+            if (data.some((item) => item.model === model)) {
+              next[model] = draft;
+            }
+          }
+          return next;
+        });
+      } else {
+        setDrafts({});
+      }
     } catch (error) {
       message.error(
         tr(
@@ -219,13 +232,23 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       if (!response.ok) {
         throw new Error(await response.text());
       }
+      const saved = (await response.json()) as ModelPriceRow;
+      // Refresh only this model: reloading the whole list would drop the
+      // unsaved edits still held for the other rows.
+      setRows((current) =>
+        current.map((item) => (item.model === saved.model ? saved : item)),
+      );
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[saved.model];
+        return next;
+      });
       message.success(
         tr(
           `已保存 ${row.model}，历史费用已重算`,
           `Saved ${row.model}; historical costs recalculated`,
         ),
       );
-      await load();
     } catch (error) {
       message.error(
         tr(
@@ -259,7 +282,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           `Deleted custom pricing for ${row.model}`,
         ),
       );
-      await load();
+      await load(true);
     } catch (error) {
       message.error(
         tr(
@@ -437,6 +460,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         step={money.settings.unit === 'credit' ? 0.01 : 0.001}
         precision={money.pricePrecision}
         controls={false}
+        inputMode="decimal"
         value={money.toPriceInput(cnyValue)}
         onChange={(next) =>
           update(row, {
@@ -573,6 +597,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
             step={1000}
             precision={0}
             controls={false}
+            inputMode="numeric"
             disabled={!enabled}
             placeholder="272000"
             value={draft.longContextThreshold ?? undefined}
@@ -683,7 +708,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       onClose={onClose}
       styles={{ body: { padding: 16 } }}
       extra={
-        <Button onClick={() => void load()} loading={loading}>
+        <Button onClick={() => void load(true)} loading={loading}>
           {tr('刷新', 'Refresh')}
         </Button>
       }
