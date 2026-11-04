@@ -473,6 +473,7 @@ export interface SystemPathInfo {
   exists: boolean;
   lastModifiedText: string | null;
   purpose: string;
+  monitor: string;
 }
 
 export interface SystemAccessInfo {

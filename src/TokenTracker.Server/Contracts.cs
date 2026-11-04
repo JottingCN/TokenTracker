@@ -79,7 +79,8 @@ public sealed record SystemPathInfo(
     string Kind,
     bool Exists,
     string? LastModifiedText,
-    string Purpose);
+    string Purpose,
+    string Monitor);
 
 public sealed record SystemAccessInfo(
     string Label,

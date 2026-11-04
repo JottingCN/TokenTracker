@@ -119,6 +119,51 @@ test('uses all sessions when no folder is open', () => {
   assert.equal(selectLatestSession(sessions, []).session.sessionId, 'b');
 });
 
+test('reports AHP connection changes so watchers can pause', () => {
+  const seen = [];
+  const controller = new StatusBarController(
+    0,
+    4,
+    '全部',
+    [],
+    { unit: 'cny', usdRate: 7.2, creditRate: 0.01 },
+    '$(pulse) {hit}',
+    () => {},
+    (connected) => seen.push(connected),
+  );
+
+  const summary = session('session-1', null, 20, {
+    firstSeenMs: 20,
+    inputText: '1,000',
+    cacheText: '500',
+    outputText: '10',
+    reasoningText: '0',
+    uncachedCostCny: 0.01,
+    cacheCostCny: 0.001,
+    outputCostCny: 0.002,
+    reasoningCostCny: 0,
+    hitRateText: '50%',
+    avgTtftText: '-',
+    tokensPerSecondText: '-',
+    calls: 1,
+    events: 0,
+  });
+
+  const payload = (connected) => ({
+    summary: { hitRate: 0.5, costCny: 0.01 },
+    sessions: [summary],
+    ahp: { connected },
+  });
+
+  // TypeScript-only privacy: the compiled members stay reachable at runtime.
+  controller.render(payload(true));
+  controller.render(payload(true));
+  controller.render(payload(false));
+
+  assert.deepEqual(seen, [true, false]);
+  controller.dispose();
+});
+
 test('tooltip carries no workspace attribution text', () => {
   const controller = new StatusBarController(
     0,

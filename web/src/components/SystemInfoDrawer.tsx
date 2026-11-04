@@ -261,7 +261,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 {
                   title: tr('状态', 'Status'),
                   key: 'status',
-                  width: 130,
+                  width: 150,
                   render: (_, row) => (
                     <Space direction="vertical" size={2}>
                       <Tag
@@ -272,6 +272,12 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                           ? tr('存在', 'Exists')
                           : tr('缺失', 'Missing')}
                       </Tag>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 11 }}
+                      >
+                        {row.monitor}
+                      </Typography.Text>
                       {row.lastModifiedText && (
                         <Typography.Text
                           type="secondary"

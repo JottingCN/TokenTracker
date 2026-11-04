@@ -21,6 +21,7 @@ let fallbackItem: vscode.StatusBarItem | undefined;
 let server: RunningServer | undefined;
 let output: vscode.OutputChannel | undefined;
 let logFile: string | undefined;
+let metadataWatchers: MetadataWatcherHandle | undefined;
 
 const LOG_MAX_BYTES = 1024 * 1024;
 
@@ -148,7 +149,15 @@ async function notifyMetadataChanged(): Promise<void> {
   statusBar?.refresh();
 }
 
-function registerMetadataWatchers(context: vscode.ExtensionContext): void {
+interface MetadataWatcherHandle {
+  setEnabled(active: boolean): void;
+}
+
+// Agent Host pushes title and workspace changes over AHP, so the file watchers are
+// only needed as the fallback while AHP is down; keeping them running adds churn.
+function registerMetadataWatchers(
+  context: vscode.ExtensionContext,
+): MetadataWatcherHandle {
   const targets: Array<[string, string, number]> = [];
   const sessionStateDirectory =
     process.env.TOKENTRACKER_SESSION_STATE_DIR ??
@@ -175,51 +184,94 @@ function registerMetadataWatchers(context: vscode.ExtensionContext): void {
     lastRefreshAt: number;
   }
   const schedules = new Map<number, RefreshSchedule>();
+  let watchers: vscode.FileSystemWatcher[] = [];
+  let active = false;
 
-  for (const [base, pattern, throttleMs] of targets) {
-    try {
-      const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(base), pattern),
+  const changedHandler =
+    (throttleMs: number) =>
+    (uri: vscode.Uri): void => {
+      // SQLite shared-memory locks are not metadata changes.
+      if (uri.fsPath.endsWith('-shm')) {
+        return;
+      }
+
+      const schedule = schedules.get(throttleMs) ?? { lastRefreshAt: 0 };
+      schedules.set(throttleMs, schedule);
+      if (schedule.timer) {
+        clearTimeout(schedule.timer);
+      }
+      const wait = Math.max(
+        METADATA_DEBOUNCE_MS,
+        throttleMs - (Date.now() - schedule.lastRefreshAt),
       );
-      const changed = (uri: vscode.Uri) => {
-        // SQLite shared-memory locks are not metadata changes.
-        if (uri.fsPath.endsWith('-shm')) {
-          return;
-        }
+      schedule.timer = setTimeout(() => {
+        schedule.timer = undefined;
+        schedule.lastRefreshAt = Date.now();
+        log(`session metadata changed: ${uri.fsPath}`);
+        void notifyMetadataChanged();
+      }, wait);
+    };
 
-        const schedule =
-          schedules.get(throttleMs) ?? { lastRefreshAt: 0 };
-        schedules.set(throttleMs, schedule);
-        if (schedule.timer) {
-          clearTimeout(schedule.timer);
-        }
-        const wait = Math.max(
-          METADATA_DEBOUNCE_MS,
-          throttleMs - (Date.now() - schedule.lastRefreshAt),
+  const createWatchers = () => {
+    for (const [base, pattern, throttleMs] of targets) {
+      try {
+        const watcher = vscode.workspace.createFileSystemWatcher(
+          new vscode.RelativePattern(vscode.Uri.file(base), pattern),
         );
-        schedule.timer = setTimeout(() => {
-          schedule.timer = undefined;
-          schedule.lastRefreshAt = Date.now();
-          log(`session metadata changed: ${uri.fsPath}`);
-          void notifyMetadataChanged();
-        }, wait);
-      };
-
-      watcher.onDidChange(changed);
-      watcher.onDidCreate(changed);
-      watcher.onDidDelete(changed);
-      context.subscriptions.push(watcher);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log(`metadata watcher failed: ${base}\\${pattern} (${message})`);
+        const changed = changedHandler(throttleMs);
+        watcher.onDidChange(changed);
+        watcher.onDidCreate(changed);
+        watcher.onDidDelete(changed);
+        watchers.push(watcher);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`metadata watcher failed: ${base}\\${pattern} (${message})`);
+      }
     }
-  }
 
-  log(
-    `metadata watchers: ${targets
-      .map(([base, pattern, throttle]) => `${base}\\${pattern}${throttle ? ` (${throttle}ms)` : ''}`)
-      .join(' | ')}`,
-  );
+    log(
+      `metadata watchers active: ${targets
+        .map(
+          ([base, pattern, throttle]) =>
+            `${base}\\${pattern}${throttle ? ` (${throttle}ms)` : ''}`,
+        )
+        .join(' | ')}`,
+    );
+  };
+
+  const disposeWatchers = () => {
+    for (const watcher of watchers) {
+      watcher.dispose();
+    }
+    watchers = [];
+    for (const schedule of schedules.values()) {
+      if (schedule.timer) {
+        clearTimeout(schedule.timer);
+        schedule.timer = undefined;
+      }
+    }
+  };
+
+  createWatchers();
+  active = true;
+  context.subscriptions.push({ dispose: disposeWatchers });
+
+  return {
+    setEnabled(next: boolean) {
+      if (next === active) {
+        return;
+      }
+
+      active = next;
+      if (next) {
+        createWatchers();
+        log('metadata watchers resumed: AHP offline');
+      } else {
+        disposeWatchers();
+        log('metadata watchers paused: AHP connected');
+      }
+    },
+  };
 }
 
 function disposeStatusBars(): void {
@@ -368,7 +420,7 @@ function useRunningServer(
       lastSnapshotDetail = detail;
       log(`status snapshot: ${detail}`);
     }
-  });
+  }, (connected) => metadataWatchers?.setEnabled(!connected));
   statusBar.start();
   context.subscriptions.push(statusBar);
 }
@@ -799,7 +851,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
     }),
   );
 
-  registerMetadataWatchers(context);
+  metadataWatchers = registerMetadataWatchers(context);
 
   // A healthy server is attached right away; the release check runs in the background.
   void attachOrStartServer(context, port, autoStart, range, idleExitSeconds).catch(

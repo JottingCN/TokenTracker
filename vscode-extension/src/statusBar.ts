@@ -156,6 +156,7 @@ interface DashboardSnapshot {
     costCny: number;
   };
   sessions: SessionSummary[];
+  ahp?: { connected: boolean } | null;
 }
 
 interface ModelBreakdown {
@@ -221,6 +222,7 @@ export class StatusBarController implements vscode.Disposable {
   private pollTimer: NodeJS.Timeout | undefined;
   private disposed = false;
   private workspaceRoots: string[];
+  private lastAhpConnected: boolean | undefined;
   private readonly breakdownCache = new Map<string, SessionDetails>();
   private pendingKey: string | undefined;
   private currentSession: SessionSummary | undefined;
@@ -233,6 +235,7 @@ export class StatusBarController implements vscode.Disposable {
     private money: MoneySettings,
     private statusBarFormat: string,
     private readonly onSnapshot?: (detail: string) => void,
+    private readonly onAhpStatus?: (connected: boolean) => void,
   ) {
     this.workspaceRoots = workspaceRoots.map(normalizePath);
 
@@ -395,6 +398,12 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   private render(data: DashboardSnapshot): void {
+    const ahpConnected = data.ahp?.connected === true;
+    if (ahpConnected !== this.lastAhpConnected) {
+      this.lastAhpConnected = ahpConnected;
+      this.onAhpStatus?.(ahpConnected);
+    }
+
     const latest = this.resolveLatest(data);
     const session = latest.session;
 

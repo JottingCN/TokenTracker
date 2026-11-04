@@ -122,7 +122,7 @@ code --install-extension tokentracker-*.vsix --force
 - **下载失败或 GitHub 限流**：稍后重试，或把 `tokentracker.serverDownloadBaseUrl` 指向镜像前缀（扩展会追加 `-<rid>.<zip|tar.gz>`）。代理支持 VS Code `http.proxy` 与 `HTTPS_PROXY` / `HTTP_PROXY`（`http://` CONNECT），暂不支持 SOCKS。
 - **端口被占用**：修改 `tokentracker.port`，并同步修改 Copilot 的 `otlpEndpoint`。
 - **版本不一致提示**：说明端口上的服务由外部启动，扩展不会替换它；如需切换，先停止外部进程再执行 `Token Tracker: 启动服务`。
-- **改名未刷新**：确认 `agent-host.db` 或 `workspace.yaml` 发生变化；`agent-host.db` 触发的刷新最多延迟 15 秒。
+- **改名未刷新**：确认 `agent-host.db` 或 `workspace.yaml` 发生变化；`agent-host.db` 触发的刷新最多延迟 15 秒。Agent Host 通过 AHP 连接时，标题与工作目录由 AHP 直接推送，此时扩展会暂停这两个文件的监控；看板“系统信息 → 读取与访问路径”会列出每个路径当前的实际用途。
 - **诊断日志**：输出面板 `Token Tracker`，或文件 `<globalStorage>/jottingcn.tokentracker/extension.log`（Windows `%APPDATA%\Code\User\globalStorage`、Linux `~/.config/Code/User/globalStorage`、macOS `~/Library/Application Support/Code/User/globalStorage`）。
 
 ## 隐私
