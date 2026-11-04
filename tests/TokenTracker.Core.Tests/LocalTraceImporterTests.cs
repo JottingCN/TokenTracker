@@ -30,15 +30,18 @@ public sealed class LocalTraceImporterTests
 
             var first = LocalTraceImporter.Import(store, new[] { sourcePath });
 
-            Assert.Equal(2, first.Scanned);
-            Assert.Equal(1, first.Matched);
-            Assert.Equal(1, first.Inserted);
+            Assert.Equal(3, first.Scanned);
+            Assert.Equal(2, first.Matched);
+            Assert.Equal(2, first.Inserted);
             Assert.Equal(0, first.Skipped);
             Assert.Equal(1, first.EventsMatched);
             Assert.Equal(1, first.EventsInserted);
             Assert.Empty(first.Errors);
 
-            var call = Assert.Single(store.GetCalls(0, includeUtility: true));
+            var calls = store.GetCalls(0, includeUtility: true);
+            var call = Assert.Single(
+                calls,
+                row => row.Model == "deepseek-flash");
             Assert.Equal("deepseek-flash", call.Model);
             Assert.Equal("session-import", call.SessionId);
             Assert.Equal(1_300, call.InputTokens);
@@ -47,6 +50,18 @@ public sealed class LocalTraceImporterTests
             Assert.Equal("1.5 AIC", call.AiuText);
             Assert.Null(call.CostCny);
             Assert.Equal(startMs, call.StartTimeMs);
+            Assert.Equal(250, call.TtftMs);
+            Assert.Equal("""["stop"]""", call.FinishReasons);
+            Assert.Equal("vscode-copilot", call.AgentName);
+            Assert.Null(call.ErrorType);
+
+            var buffered = Assert.Single(
+                calls,
+                row => row.Model == "kimi-k3.1-pro");
+            Assert.Equal("root-session", buffered.SessionId);
+            Assert.Equal("Error", buffered.ErrorType);
+            // A first-chunk value equal to the whole duration is buffering, not TTFT.
+            Assert.Null(buffered.TtftMs);
 
             var tool = Assert.Single(store.GetSessionTools("session-import"));
             Assert.Equal("read_file", tool.Tool);
@@ -58,10 +73,10 @@ public sealed class LocalTraceImporterTests
 
             var second = LocalTraceImporter.Import(store, new[] { sourcePath });
 
-            Assert.Equal(2, second.Scanned);
-            Assert.Equal(1, second.Matched);
+            Assert.Equal(3, second.Scanned);
+            Assert.Equal(2, second.Matched);
             Assert.Equal(0, second.Inserted);
-            Assert.Equal(1, second.Skipped);
+            Assert.Equal(2, second.Skipped);
             Assert.Equal(1, second.EventsMatched);
             Assert.Equal(0, second.EventsInserted);
         }
@@ -120,13 +135,24 @@ public sealed class LocalTraceImporterTests
                 operation_name, provider_name, conversation_id,
                 request_model, response_model,
                 input_tokens, output_tokens, cached_tokens, reasoning_tokens,
-                chat_session_id
+                chat_session_id, agent_name, ttft_ms
             ) VALUES (
                 'span-import', 'trace-import', 'chat', {{startMs}}, {{startMs + 1000}},
                 'chat', 'anthropic', 'conversation-import',
                 'auto', 'deepseek-flash',
                 1000, 100, 200, 0,
-                'session-import'
+                'session-import', 'copilot', 250
+            );
+
+            INSERT INTO spans (
+                span_id, trace_id, name, start_time_ms, end_time_ms,
+                status_code, operation_name, provider_name,
+                conversation_id, request_model, response_model,
+                input_tokens, output_tokens, cached_tokens, ttft_ms
+            ) VALUES (
+                'span-buffered', 'trace-buffered', 'chat', {{startMs + 3000}},
+                {{startMs + 4000}}, 2, 'chat', 'deepseek', 'conversation-import',
+                'auto', 'kimi-k3.1-pro', 500, 50, 0, 1000
             );
 
             INSERT INTO spans (
@@ -144,6 +170,12 @@ public sealed class LocalTraceImporterTests
             INSERT INTO span_attributes (span_id, key, value) VALUES
                 ('span-import', 'gen_ai.usage.cache_creation.input_tokens', '100'),
                 ('span-import', 'copilot_chat.copilot_usage_nano_aiu', '1500000000'),
+                ('span-import', 'copilot_chat.time_to_first_token', '250'),
+                ('span-import', 'gen_ai.response.finish_reasons', '["stop"]'),
+                ('span-import', 'gen_ai.agent.name', 'vscode-copilot'),
+                ('span-import', 'service.namespace', 'vscode.chat'),
+                ('span-buffered', 'gen_ai.response.time_to_first_chunk', '1.0'),
+                ('span-buffered', 'copilot_chat.parent_chat_session_id', 'root-session'),
                 ('span-tool', 'github.copilot.tool.parameters.edit_type', 'str_replace'),
                 ('span-tool', 'github.copilot.tool.parameters.skill_name', 'review');
             """;

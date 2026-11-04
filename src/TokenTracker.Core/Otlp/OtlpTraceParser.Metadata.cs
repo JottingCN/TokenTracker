@@ -146,14 +146,19 @@ public static partial class OtlpTraceParser
         JsonElement span,
         Dictionary<string, string> attributes)
     {
-        var explicitType = GetString(attributes, "error.type");
-        if (explicitType is not null)
-        {
-            return explicitType;
-        }
-
-        return IsErrorSpan(span) ? "Error" : null;
+        return ErrorTypeFrom(
+            GetString(attributes, "error.type"),
+            IsErrorSpan(span));
     }
+
+    internal static string? ErrorTypeFrom(
+        string? explicitType,
+        bool isError) =>
+        !string.IsNullOrWhiteSpace(explicitType)
+            ? explicitType
+            : isError
+                ? "Error"
+                : null;
 
     private static double? ParseHookDurationMs(
         Dictionary<string, string> attributes)

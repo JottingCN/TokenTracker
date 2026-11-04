@@ -141,19 +141,13 @@ public static class LocalTraceImporter
                    s.request_model, s.response_model,
                    s.input_tokens, s.output_tokens, s.cached_tokens,
                    s.reasoning_tokens, s.chat_session_id,
-                   (SELECT a.value FROM span_attributes a
-                    WHERE a.span_id = s.span_id
-                      AND a.key = 'gen_ai.usage.cache_creation.input_tokens'
-                    LIMIT 1),
-                   (SELECT a.value FROM span_attributes a
-                    WHERE a.span_id = s.span_id
-                      AND a.key = 'copilot_chat.copilot_usage_nano_aiu'
-                    LIMIT 1),
-                   s.parent_span_id
+                   s.parent_span_id, s.status_code, s.ttft_ms, s.agent_name
             FROM spans s
             WHERE s.operation_name = 'chat' OR s.name LIKE 'chat %'
             ORDER BY s.start_time_ms;
             """;
+
+        var attributes = ReadSpanAttributes(connection);
 
         long scanned = 0;
         using (var reader = command.ExecuteReader())
@@ -161,7 +155,7 @@ public static class LocalTraceImporter
             while (reader.Read())
             {
                 scanned++;
-                var record = ReadRecord(reader, source);
+                var record = ReadRecord(reader, source, attributes);
                 if (record is not null)
                 {
                     records.Add(record);
@@ -425,7 +419,61 @@ public static class LocalTraceImporter
         };
     }
 
-    private static OtlpSpanRecord? ReadRecord(SqliteDataReader reader, string source)
+    private static Dictionary<string, Dictionary<string, string>> ReadSpanAttributes(
+        SqliteConnection connection)
+    {
+        var result = new Dictionary<string, Dictionary<string, string>>(
+            StringComparer.Ordinal);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT span_id, key, value FROM span_attributes
+            WHERE key IN (
+                'gen_ai.usage.cache_creation.input_tokens',
+                'copilot_chat.copilot_usage_nano_aiu',
+                'error.type',
+                'gen_ai.response.finish_reasons',
+                'gen_ai.agent.name',
+                'gen_ai.provider.name',
+                'copilot_chat.time_to_first_token',
+                'copilot_chat.time_to_first_token_ms',
+                'copilot_chat.ttft_ms',
+                'gen_ai.server.time_to_first_token',
+                'gen_ai.response.time_to_first_token',
+                'gen_ai.response.time_to_first_chunk',
+                'service.namespace',
+                'copilot_chat.parent_chat_session_id',
+                'copilot_chat.session_id',
+                'gen_ai.conversation.id',
+                'copilot_chat.chat_session_id');
+            """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var spanId = reader.IsDBNull(0) ? null : reader.GetString(0);
+            var key = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (string.IsNullOrEmpty(spanId) || string.IsNullOrEmpty(key))
+            {
+                continue;
+            }
+
+            if (!result.TryGetValue(spanId, out var values))
+            {
+                values = new Dictionary<string, string>(StringComparer.Ordinal);
+                result[spanId] = values;
+            }
+
+            values[key] = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+        }
+
+        return result;
+    }
+
+    private static OtlpSpanRecord? ReadRecord(
+        SqliteDataReader reader,
+        string source,
+        Dictionary<string, Dictionary<string, string>> attributesBySpan)
     {
         var traceId = reader.IsDBNull(0) ? null : reader.GetString(0);
         var spanId = reader.IsDBNull(1) ? null : reader.GetString(1);
@@ -442,24 +490,32 @@ public static class LocalTraceImporter
 
         model = ModelPricing.NormalizeModel(model, source);
 
+        var attributes = attributesBySpan.TryGetValue(spanId, out var found)
+            ? found
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+        // The exporter keeps session identifiers both as columns and as attributes.
+        SeedAttribute(attributes, "gen_ai.conversation.id", reader.IsDBNull(6) ? null : reader.GetString(6));
+        SeedAttribute(attributes, "copilot_chat.session_id", reader.IsDBNull(13) ? null : reader.GetString(13));
+
+        var sessionId = OtlpTraceParser.ParseSessionId(attributes);
         var inputTokens = reader.GetInt64(9);
         var outputTokens = reader.IsDBNull(10) ? 0 : reader.GetInt64(10);
         var cacheReadTokens = reader.IsDBNull(11) ? 0 : reader.GetInt64(11);
         var reasoningTokens = reader.IsDBNull(12) ? 0 : reader.GetInt64(12);
-        var sessionId = FirstNonEmpty(
-            reader.IsDBNull(13) ? null : reader.GetString(13),
-            reader.IsDBNull(6) ? null : reader.GetString(6));
         var cacheCreationTokens =
-            ParseLong(reader.IsDBNull(14) ? null : reader.GetString(14)) ?? 0;
-        var nanoAiu = ParseLong(reader.IsDBNull(15) ? null : reader.GetString(15));
+            ParseLong(Value(attributes, "gen_ai.usage.cache_creation.input_tokens")) ?? 0;
+        var nanoAiu = ParseLong(Value(attributes, "copilot_chat.copilot_usage_nano_aiu"));
         var provider =
-            (reader.IsDBNull(5) ? null : reader.GetString(5)) ?? source;
+            Value(attributes, "gen_ai.provider.name") ??
+            (reader.IsDBNull(5) ? null : reader.GetString(5)) ??
+            source;
         var totalInputTokens = TokenSemantics.TotalInputTokens(
             provider,
             inputTokens,
             cacheReadTokens,
             cacheCreationTokens);
         var startMs = reader.GetInt64(3);
+        var endMs = reader.IsDBNull(4) ? (long?)null : reader.GetInt64(4);
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(startMs);
         var breakdown = ModelPricing.EvaluateDetailed(
             ModelPricing.GetPrice(model),
@@ -470,15 +526,36 @@ public static class LocalTraceImporter
             timestamp,
             cacheCreationTokens);
 
+        var hasExplicitTtft = OtlpTraceParser.HasExplicitTtft(attributes);
+        var ttftMs = OtlpTraceParser.ParseTtftMs(attributes);
+        if (ttftMs is null && !reader.IsDBNull(16))
+        {
+            ttftMs = OtlpTraceParser.SanitizeDurationMs(reader.GetDouble(16));
+        }
+
+        if (ttftMs is not null &&
+            endMs is long end &&
+            end > startMs &&
+            !hasExplicitTtft &&
+            ttftMs.Value >= (end - startMs) * 0.9)
+        {
+            // Same rule as live ingestion: a first-chunk value that reaches the
+            // total duration is buffering, not time to first token.
+            ttftMs = null;
+        }
+
+        var isError = !reader.IsDBNull(15) && reader.GetInt64(15) == 2;
+
         return new OtlpSpanRecord
         {
             TraceId = traceId!,
             SpanId = spanId!,
-            ParentSpanId = reader.IsDBNull(16) ? null : reader.GetString(16),
+            ParentSpanId = reader.IsDBNull(14) ? null : reader.GetString(14),
             Name = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
             StartTimeMs = startMs,
-            EndTimeMs = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            EndTimeMs = endMs,
             ServiceName = provider,
+            ServiceNamespace = Value(attributes, "service.namespace"),
             Source = source == "agent-host" ? "agent-host" : "copilot-chat",
             Model = model,
             SessionId = sessionId,
@@ -488,6 +565,7 @@ public static class LocalTraceImporter
             CacheReadTokens = cacheReadTokens,
             CacheCreationTokens = cacheCreationTokens,
             ReasoningTokens = reasoningTokens,
+            TtftMs = ttftMs,
             NanoAiu = nanoAiu,
             HitRate = totalInputTokens > 0
                 ? (double)cacheReadTokens / totalInputTokens
@@ -498,9 +576,34 @@ public static class LocalTraceImporter
             OutputCostCny = (double?)breakdown.OutputCost,
             ReasoningCostCny = (double?)breakdown.ReasoningCost,
             PricingPeriod = breakdown.Period,
+            ErrorType = OtlpTraceParser.ErrorTypeFrom(
+                Value(attributes, "error.type"),
+                isError),
+            ProviderName = provider,
+            AgentName = Value(attributes, "gen_ai.agent.name") ??
+                (reader.IsDBNull(17) ? null : reader.GetString(17)),
+            FinishReasons = Value(attributes, "gen_ai.response.finish_reasons"),
             ReceivedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
     }
+
+    private static void SeedAttribute(
+        Dictionary<string, string> attributes,
+        string key,
+        string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value) &&
+            !attributes.ContainsKey(key))
+        {
+            attributes[key] = value;
+        }
+    }
+
+    private static string? Value(Dictionary<string, string> attributes, string key) =>
+        attributes.TryGetValue(key, out var value) &&
+        !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
+            : null;
 
     private static string? FirstNonEmpty(string? first, string? second) =>
         !string.IsNullOrWhiteSpace(first)

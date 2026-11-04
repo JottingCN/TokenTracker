@@ -543,7 +543,7 @@ public static partial class OtlpTraceParser
             numeric == 2;
     }
 
-    private static long? ParseTtftMs(Dictionary<string, string> attributes)
+    internal static long? ParseTtftMs(Dictionary<string, string> attributes)
     {
         var explicitMs =
             ParseDouble(attributes, "copilot_chat.time_to_first_token_ms") ??
@@ -571,7 +571,7 @@ public static partial class OtlpTraceParser
             : null;
     }
 
-    private static bool HasExplicitTtft(
+    internal static bool HasExplicitTtft(
         Dictionary<string, string> attributes) =>
         ParseDouble(attributes, "copilot_chat.time_to_first_token_ms") is not null ||
         ParseDouble(attributes, "copilot_chat.ttft_ms") is not null ||
@@ -579,7 +579,7 @@ public static partial class OtlpTraceParser
         ParseDouble(attributes, "gen_ai.server.time_to_first_token") is not null ||
         ParseDouble(attributes, "gen_ai.response.time_to_first_token") is not null;
 
-    private static long? SanitizeDurationMs(double value)
+    internal static long? SanitizeDurationMs(double value)
     {
         if (!double.IsFinite(value) || value <= 0 || value >= 3_600_000)
         {
