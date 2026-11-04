@@ -208,7 +208,6 @@ interface LatestScope {
   hitRate: number | null;
   costCny: number;
   hasCost: boolean;
-  unassigned?: boolean;
 }
 
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
@@ -222,7 +221,6 @@ export class StatusBarController implements vscode.Disposable {
   private pollTimer: NodeJS.Timeout | undefined;
   private disposed = false;
   private workspaceRoots: string[];
-  private currentUnassigned = false;
   private readonly breakdownCache = new Map<string, SessionDetails>();
   private pendingKey: string | undefined;
   private currentSession: SessionSummary | undefined;
@@ -405,7 +403,6 @@ export class StatusBarController implements vscode.Disposable {
       session.inputTokens + session.outputTokens + session.cacheReadTokens <= 0
     ) {
       this.currentSession = undefined;
-      this.currentUnassigned = false;
       this.item.hide();
       this.onSnapshot?.(
         `hidden: no tokens for current workspace (range=${this.rangeLabel})`,
@@ -415,7 +412,6 @@ export class StatusBarController implements vscode.Disposable {
 
     this.item.show();
     this.currentSession = session;
-    this.currentUnassigned = Boolean(latest.unassigned);
     this.renderStatusText(session);
 
     const key = this.breakdownKey(session);
@@ -479,11 +475,8 @@ export class StatusBarController implements vscode.Disposable {
     );
     tooltip.appendMarkdown(
       `$(calendar) ${this.rangeLabel} · $(clock) ` +
-        `${formatTimeRange(session.firstSeenMs, session.lastSeenMs)}` +
-        (this.currentUnassigned
-          ? ` · $(folder) ${tr('工作区未确认', 'workspace unconfirmed')}`
-          : '') +
-        `\n`,
+        `${formatTimeRange(session.firstSeenMs, session.lastSeenMs)}
+`,
     );
 
     const models = details?.models ?? [];
@@ -702,29 +695,26 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       hitRate: latest.hitRate,
       costCny: latest.costCny,
       hasCost: sessionHasCost(latest),
-      unassigned: selection.unassigned,
     };
   }
 }
 
 export interface SessionSelection {
   session?: SessionSummary;
-  unassigned: boolean;
 }
 
-// Sessions are matched by workspace; when nothing matches, only sessions with no
-// workspace information at all are eligible, so the bar does not go blank while
-// another workspace's numbers stay hidden.
+// A window with an open folder only ever shows sessions attributed to that folder;
+// unattributed or other-workspace sessions stay hidden so numbers are never mixed.
 export function selectLatestSession(
   sessions: SessionSummary[],
   workspaceRoots: string[],
 ): SessionSelection {
   if (sessions.length === 0) {
-    return { unassigned: false };
+    return {};
   }
 
   if (workspaceRoots.length === 0) {
-    return { session: pickLatest(sessions), unassigned: false };
+    return { session: pickLatest(sessions) };
   }
 
   const matching = sessions.filter((session) => {
@@ -734,14 +724,8 @@ export function selectLatestSession(
     const path = normalizePath(session.workspacePath);
     return workspaceRoots.some((root) => isPathWithin(path, root));
   });
-  if (matching.length > 0) {
-    return { session: pickLatest(matching), unassigned: false };
-  }
 
-  const unassigned = sessions.filter((session) => !session.workspacePath);
-  return unassigned.length > 0
-    ? { session: pickLatest(unassigned), unassigned: true }
-    : { unassigned: false };
+  return matching.length > 0 ? { session: pickLatest(matching) } : {};
 }
 
 function pickLatest(sessions: SessionSummary[]): SessionSummary {

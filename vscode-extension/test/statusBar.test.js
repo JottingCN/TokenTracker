@@ -88,7 +88,6 @@ test('matches only sessions inside the current workspace', () => {
   ];
   const result = selectLatestSession(sessions, [root]);
   assert.equal(result.session.sessionId, 'a');
-  assert.equal(result.unassigned, false);
 });
 
 test('picks the most recent matching session', () => {
@@ -99,32 +98,28 @@ test('picks the most recent matching session', () => {
   assert.equal(selectLatestSession(sessions, [root]).session.sessionId, 'new');
 });
 
-test('falls back to workspace-unknown sessions instead of hiding', () => {
+test('a workspace window ignores unattributed sessions', () => {
   const sessions = [
     session('other', 'd:\\source\\project-b', 50),
     session('unknown-1', null, 10),
     session('unknown-2', undefined, 30),
   ];
   const result = selectLatestSession(sessions, [root]);
-  assert.equal(result.session.sessionId, 'unknown-2');
-  assert.equal(result.unassigned, true);
+  assert.equal(result.session, undefined);
 });
 
 test('never shows another workspace when every session is assigned', () => {
   const sessions = [session('other', 'd:\\source\\project-b', 50)];
   const result = selectLatestSession(sessions, [root]);
   assert.equal(result.session, undefined);
-  assert.equal(result.unassigned, false);
 });
 
 test('uses all sessions when no folder is open', () => {
   const sessions = [session('a', 'd:\\source\\project-a', 10), session('b', null, 20)];
-  const result = selectLatestSession(sessions, []);
-  assert.equal(result.session.sessionId, 'b');
-  assert.equal(result.unassigned, false);
+  assert.equal(selectLatestSession(sessions, []).session.sessionId, 'b');
 });
 
-test('renders the unconfirmed-workspace note in the tooltip', () => {
+test('tooltip carries no workspace attribution text', () => {
   const controller = new StatusBarController(
     0,
     4,
@@ -135,7 +130,7 @@ test('renders the unconfirmed-workspace note in the tooltip', () => {
     () => {},
   );
 
-  const summary = session('unknown-1', null, 20, {
+  const summary = session('session-1', root, 20, {
     firstSeenMs: 20,
     inputText: '1,000',
     cacheText: '500',
@@ -152,23 +147,18 @@ test('renders the unconfirmed-workspace note in the tooltip', () => {
     events: 0,
   });
 
-  const details = {
+  // TypeScript-only privacy: the compiled members stay reachable at runtime.
+  controller.updateTooltip(summary, {
     models: [],
     tools: [],
     hooks: [],
     agentRuns: [],
     events: [],
     calls: [],
-  };
+  });
 
-  // TypeScript-only privacy: the compiled members stay reachable at runtime.
-  const render = (unassigned) => {
-    controller.currentUnassigned = unassigned;
-    controller.updateTooltip(summary, details);
-    return statusBarItem.tooltip.value;
-  };
-
-  assert.match(render(true), /\$\(folder\) 工作区未确认/);
-  assert.doesNotMatch(render(false), /工作区未确认/);
+  const tooltip = statusBarItem.tooltip.value;
+  assert.doesNotMatch(tooltip, /工作区/);
+  assert.match(tooltip, /\$\(calendar\) 全部 · \$\(clock\)/);
   controller.dispose();
 });
