@@ -17,6 +17,13 @@ import type {
   SystemInfo,
   SystemPathInfo,
 } from '../types';
+import {
+  ahpStateLabel,
+  systemAccessLabel,
+  systemMonitorLabel,
+  systemPathLabel,
+  systemPathPurpose,
+} from '../utils/labels';
 import { useUi } from '../ui';
 
 interface SystemInfoDrawerProps {
@@ -93,6 +100,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             size="small"
             column={1}
             bordered
+            styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
             title={tr('服务', 'Server')}
             items={[
               {
@@ -129,9 +137,9 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               {
                 key: 'ahp',
                 label: 'AHP',
-                children: `${data.ahp.state} · ${tr('已连接', 'connected')}: ${
-                  data.ahp.connected ? tr('是', 'yes') : tr('否', 'no')
-                } · ${data.ahp.sessions} ${tr('会话', 'sessions')}`,
+                children: `${ahpStateLabel(data.ahp.state)} · ${
+                  data.ahp.sessions
+                } ${tr('会话', 'sessions')}`,
               },
             ]}
           />
@@ -140,6 +148,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             size="small"
             column={1}
             bordered
+            styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
             title={tr('数据存储', 'Storage')}
             items={[
               {
@@ -184,7 +193,9 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 label: tr('Span', 'Spans'),
                 children: `${tr('原始', 'raw')} ${formatNumber(
                   data.storage.rawSpans,
-                )} · combined ${formatNumber(data.storage.combinedSpans)}`,
+                )} · ${tr('综合', 'combined')} ${formatNumber(
+                  data.storage.combinedSpans,
+                )}`,
               },
               {
                 key: 'outcomes',
@@ -228,19 +239,24 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             </Typography.Title>
             <Table<SystemPathInfo>
               size="small"
+              bordered
               rowKey={(row) => `${row.kind}:${row.path}`}
               pagination={false}
               columns={[
                 {
                   title: tr('名称', 'Name'),
-                  dataIndex: 'label',
-                  key: 'label',
-                  width: 190,
-                  render: (value: string, row) => (
+                  key: 'name',
+                  width: 220,
+                  render: (_, row) => (
                     <Space direction="vertical" size={2}>
-                      <Typography.Text>{value}</Typography.Text>
+                      <Typography.Text
+                        ellipsis
+                        title={systemPathLabel(row.key)}
+                      >
+                        {systemPathLabel(row.key)}
+                      </Typography.Text>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        {row.purpose}
+                        {systemPathPurpose(row.key)}
                       </Typography.Text>
                     </Space>
                   ),
@@ -261,7 +277,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 {
                   title: tr('状态', 'Status'),
                   key: 'status',
-                  width: 150,
+                  width: 160,
                   render: (_, row) => (
                     <Space direction="vertical" size={2}>
                       <Tag
@@ -276,7 +292,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                         type="secondary"
                         style={{ fontSize: 11 }}
                       >
-                        {row.monitor}
+                        {systemMonitorLabel(row.monitor)}
                       </Typography.Text>
                       {row.lastModifiedText && (
                         <Typography.Text
@@ -294,18 +310,23 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             />
             <Table<SystemAccessInfo>
               size="small"
+              bordered
               style={{ marginTop: 8 }}
               rowKey={(row) => `${row.kind}:${row.target}`}
               pagination={false}
               columns={[
                 {
                   title: tr('访问', 'Access'),
-                  dataIndex: 'label',
-                  key: 'label',
-                  width: 190,
-                  render: (value: string, row) => (
+                  key: 'name',
+                  width: 220,
+                  render: (_, row) => (
                     <Space direction="vertical" size={2}>
-                      <Typography.Text>{value}</Typography.Text>
+                      <Typography.Text
+                        ellipsis
+                        title={systemAccessLabel(row.key)}
+                      >
+                        {systemAccessLabel(row.key)}
+                      </Typography.Text>
                       <Tag style={{ marginInlineEnd: 0 }}>{row.kind}</Tag>
                     </Space>
                   ),
@@ -332,6 +353,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             size="small"
             column={1}
             bordered
+            styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
             title={tr('监听', 'Receiver')}
             items={[
               {
@@ -366,6 +388,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             </Typography.Title>
             <Table<StorageTableInfo>
               size="small"
+              bordered
               rowKey="name"
               pagination={false}
               columns={columns}

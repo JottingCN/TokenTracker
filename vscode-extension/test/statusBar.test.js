@@ -59,9 +59,12 @@ Module._load = function (request, parent, isMain) {
 };
 
 const path = require('node:path');
-const { selectLatestSession, StatusBarController } = require(
-  path.join(__dirname, '..', 'out', 'statusBar.js'),
-);
+const {
+  selectLatestSession,
+  sessionName,
+  truncateForTip,
+  StatusBarController,
+} = require(path.join(__dirname, '..', 'out', 'statusBar.js'));
 
 function session(id, workspacePath, lastSeenMs, overrides = {}) {
   return {
@@ -176,6 +179,7 @@ test('tooltip carries no workspace attribution text', () => {
   );
 
   const summary = session('session-1', root, 20, {
+    title: '会话标题',
     firstSeenMs: 20,
     inputText: '1,000',
     cacheText: '500',
@@ -204,6 +208,32 @@ test('tooltip carries no workspace attribution text', () => {
 
   const tooltip = statusBarItem.tooltip.value;
   assert.doesNotMatch(tooltip, /工作区/);
+  assert.match(tooltip, /\*\*Token Tracker · 会话标题\*\*/);
   assert.match(tooltip, /\$\(calendar\) 全部 · \$\(clock\)/);
   controller.dispose();
+});
+
+test('names an untitled session with the localized fallback', () => {
+  assert.equal(
+    sessionName({ sessionId: 'e2940513-38f5-45a0-bd49-57c2a13071ab' }),
+    `未命名 · ${'e2940513'}…`,
+  );
+  assert.equal(
+    sessionName({ sessionId: 'e2940513-38f5-45a0', title: '  已命名  ' }),
+    '已命名',
+  );
+});
+
+test('clips long tool names so the tip cannot overflow', () => {
+  assert.equal(truncateForTip('edit_File', 48), 'edit_File');
+  assert.equal(truncateForTip('a'.repeat(48), 48), `${'a'.repeat(48)}`);
+  assert.equal(
+    truncateForTip('a'.repeat(80), 48),
+    `${'a'.repeat(47)}…`,
+  );
+  // Wide characters consume two columns each; the ellipsis stays inside the budget.
+  assert.equal(
+    truncateForTip('中'.repeat(60), 48),
+    `${'中'.repeat(23)}…`,
+  );
 });

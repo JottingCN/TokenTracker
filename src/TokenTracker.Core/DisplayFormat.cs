@@ -31,11 +31,7 @@ public static class DisplayFormat
     public static string Period(string? period) =>
         period switch
         {
-            "peak" => "高峰",
-            "idle" => "空闲",
-            "flat" => "固定",
-            "unknown" => "-",
-            null or "" => "-",
+            null or "" or "unknown" => "-",
             _ => period,
         };
 
@@ -44,23 +40,12 @@ public static class DisplayFormat
         {
             "extension-host" or "copilot-chat" => "Copilot Chat",
             "agent-host" or "github-copilot" => "Agent Host",
-            "combined" => "综合",
-            "unknown" => "未知",
-            null or "" => "未知",
+            null or "" => "unknown",
             _ => source!,
         };
 
     public static string Operation(string? operation) =>
-        operation switch
-        {
-            "chat" => "模型调用",
-            "execute_tool" => "工具调用",
-            "invoke_agent" => "代理调用",
-            "create_agent" => "创建代理",
-            "execute_hook" => "钩子执行",
-            null or "" => "-",
-            _ => operation,
-        };
+        string.IsNullOrWhiteSpace(operation) ? "-" : operation;
 
     public static string Duration(long? milliseconds) =>
         milliseconds is null
@@ -91,8 +76,7 @@ public static class DisplayFormat
             : sessionId;
     }
 
+    // Language-neutral: clients localize the missing-title fallback themselves.
     public static string SessionDisplay(string? title, string? sessionId) =>
-        string.IsNullOrWhiteSpace(title)
-            ? $"未命名 · {SessionShort(sessionId)}"
-            : title;
+        string.IsNullOrWhiteSpace(title) ? SessionShort(sessionId) : title;
 }

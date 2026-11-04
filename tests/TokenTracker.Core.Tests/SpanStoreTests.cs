@@ -326,6 +326,84 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void RecomputeUsesEndTimeForPeakPeriod()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+        var model = "boundary-recompute-model";
+        // 2026-11-04 is a Wednesday; the request crosses 14:00 Beijing
+        // (afternoon peak start) and must settle at the peak rate.
+        var startMs = new DateTimeOffset(2026, 11, 4, 5, 59, 55, TimeSpan.Zero)
+            .ToUnixTimeMilliseconds();
+        var endMs = new DateTimeOffset(2026, 11, 4, 6, 0, 8, TimeSpan.Zero)
+            .ToUnixTimeMilliseconds();
+
+        ModelPricing.SetOverrides(new[]
+        {
+            new KeyValuePair<string, ModelPrice>(
+                model,
+                new ModelPrice(
+                    new PriceTier(0.02m, 1m, 4m),
+                    new PriceTier(0.04m, 2m, 8m))),
+        });
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO spans (
+                        trace_id, span_id, name, start_time_ms, end_time_ms,
+                        service_name, otel_source, model, session_id, is_main,
+                        input_tokens, output_tokens, cache_read_tokens,
+                        reasoning_tokens, received_at_ms, pricing_period, cost_cny
+                    ) VALUES (
+                        'trace-b', 'span-b', 'chat', @start, @end,
+                        'copilot-chat', 'copilot-chat', @model,
+                        'session-1', 1, 1000, 10, 0, 0, @start, 'idle', 0.0014
+                    );
+                    """;
+                command.Parameters.AddWithValue("@start", startMs);
+                command.Parameters.AddWithValue("@end", endMs);
+                command.Parameters.AddWithValue("@model", model);
+                command.ExecuteNonQuery();
+            }
+
+            var stale = Assert.Single(store.GetCallsForSession(
+                "session-1",
+                source: "copilot-chat"));
+            Assert.Equal("idle", stale.PricingPeriod);
+
+            Assert.Equal(1, store.RecomputeCosts(model));
+
+            var row = Assert.Single(store.GetCallsForSession(
+                "session-1",
+                source: "copilot-chat"));
+            Assert.Equal("peak", row.PricingPeriod);
+            Assert.Equal(
+                0.00208,
+                Assert.IsType<double>(row.CostCny),
+                8);
+        }
+        finally
+        {
+            ModelPricing.SetOverrides(
+                Array.Empty<KeyValuePair<string, ModelPrice>>());
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void CallTextQueryMatchesModelSessionAndSessionList()
     {
         var directory = Path.Combine(

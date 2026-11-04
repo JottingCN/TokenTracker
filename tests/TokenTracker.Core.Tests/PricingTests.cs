@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text.Json;
+using TokenTracker.Core.Otlp;
 using TokenTracker.Core.Pricing;
 
 namespace TokenTracker.Core.Tests;
@@ -176,5 +178,88 @@ public sealed class PricingTests
             price, 272_001, 72_000, 0, 0, peak).CostCny);
         Assert.Equal(75m, ModelPricing.EvaluateDetailed(
             price, 272_001, 0, 1_000_000, 0, idle).OutputCost);
+    }
+
+    [Fact]
+    public void PeakFollowsCallEndTimeAcrossBoundary()
+    {
+        var model = "boundary-test-model";
+        ModelPricing.SetOverrides(new[]
+        {
+            new KeyValuePair<string, ModelPrice>(
+                model,
+                new ModelPrice(
+                    new PriceTier(0.02m, 1m, 4m),
+                    new PriceTier(0.04m, 2m, 8m))),
+        });
+        try
+        {
+            // 2026-11-04 is a Wednesday; lunch break is 12:00-14:00 Beijing.
+            var straddleStart = Utc("2026-11-04T05:59:55Z"); // 13:59:55
+            var straddleEnd = Utc("2026-11-04T06:00:08Z");   // 14:00:08
+            var idleStart = Utc("2026-11-04T05:50:00Z");     // 13:50:00
+            var idleEnd = Utc("2026-11-04T05:52:00Z");       // 13:52:00
+            var json = $$"""
+            {
+              "resourceSpans": [
+                {
+                  "resource": {
+                    "attributes": [
+                      { "key": "service.name", "value": { "stringValue": "copilot-chat" } }
+                    ]
+                  },
+                  "scopeSpans": [
+                    {
+                      "spans": [
+                        {
+                          "traceId": "trace-boundary",
+                          "spanId": "span-straddle",
+                          "name": "chat",
+                          "startTimeUnixNano": "{{straddleStart.ToUnixTimeMilliseconds() * 1_000_000L}}",
+                          "endTimeUnixNano": "{{straddleEnd.ToUnixTimeMilliseconds() * 1_000_000L}}",
+                          "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.request.model", "value": { "stringValue": "{{model}}" } },
+                            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "1000" } },
+                            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "10" } }
+                          ]
+                        },
+                        {
+                          "traceId": "trace-boundary",
+                          "spanId": "span-idle",
+                          "name": "chat",
+                          "startTimeUnixNano": "{{idleStart.ToUnixTimeMilliseconds() * 1_000_000L}}",
+                          "endTimeUnixNano": "{{idleEnd.ToUnixTimeMilliseconds() * 1_000_000L}}",
+                          "attributes": [
+                            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                            { "key": "gen_ai.request.model", "value": { "stringValue": "{{model}}" } },
+                            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "1000" } },
+                            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "10" } }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+
+            using var document = JsonDocument.Parse(json);
+            var spans = OtlpTraceParser.ParseTraces(
+                document,
+                straddleStart.ToUnixTimeMilliseconds());
+
+            Assert.Equal(2, spans.Count);
+            var straddle = Assert.Single(spans, span => span.SpanId == "span-straddle");
+            var idle = Assert.Single(spans, span => span.SpanId == "span-idle");
+            // The request settles at 14:00:08, inside the afternoon peak window.
+            Assert.Equal("peak", straddle.PricingPeriod);
+            Assert.Equal("idle", idle.PricingPeriod);
+        }
+        finally
+        {
+            ModelPricing.SetOverrides(Array.Empty<KeyValuePair<string, ModelPrice>>());
+        }
     }
 }

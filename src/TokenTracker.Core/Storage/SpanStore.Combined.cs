@@ -476,7 +476,8 @@ public sealed partial class SpanStore
                     cacheRead,
                     primary.OutputTokens,
                     reasoning,
-                    DateTimeOffset.FromUnixTimeMilliseconds(primary.StartTimeMs),
+                    DateTimeOffset.FromUnixTimeMilliseconds(
+                        primary.EndTimeMs ?? primary.StartTimeMs),
                     cacheCreation);
                 var cost = (double?)evaluation.CostCny;
                 var cacheCost = (double?)evaluation.CacheCost;

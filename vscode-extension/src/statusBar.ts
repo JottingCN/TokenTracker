@@ -11,6 +11,19 @@ import { serverUrl } from './serverManager';
 export const DEFAULT_STATUS_BAR_FORMAT =
   '$(pulse) {hit} · {ttft} · {speed} · {cost}';
 
+// The server keeps SessionDisplay language-neutral, so the missing-title
+// label has to be produced here where the display language is known.
+export function sessionName(session: SessionSummary): string {
+  const title = session.title?.trim();
+  if (title) {
+    return title;
+  }
+
+  const id = session.sessionId ?? '';
+  const short = id.length > 8 ? `${id.slice(0, 8)}…` : id;
+  return `${tr('未命名', 'Unnamed')} · ${short || '-'}`;
+}
+
 export function readStatusBarFormat(): string {
   const value = vscode.workspace
     .getConfiguration('tokentracker')
@@ -468,7 +481,8 @@ export class StatusBarController implements vscode.Disposable {
 `);
     };
 
-    const appendBullet = (name: string, parts: Array<string | null>) => {
+    const appendBullet = (rawName: string, parts: Array<string | null>) => {
+      const name = truncateForTip(rawName, 48);
       const detail = parts.filter((part): part is string => Boolean(part))
         .join(' · ');
       tooltip.appendMarkdown(
@@ -478,7 +492,7 @@ export class StatusBarController implements vscode.Disposable {
     };
 
     tooltip.appendMarkdown(
-      `**Token Tracker · ${escapeMarkdown(session.sessionDisplay)}**
+      `**Token Tracker · ${escapeMarkdown(sessionName(session))}**
 
 `,
     );
@@ -509,7 +523,10 @@ ${summaryMarkdown(modelTotals(row), this.money)}
           [
             tr('输入', 'Input'),
             session.inputText,
-            formatMoney(session.uncachedCostCny, this.money),
+            formatMoney(
+              session.uncachedCostCny + session.cacheCostCny,
+              this.money,
+            ),
           ],
           [
             tr('缓存', 'Cached'),
@@ -555,7 +572,7 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
           `${tr('平均', 'Avg')} ${formatDuration(row.avgDurationMs)}`,
           row.toolTypes.length > 0 ? row.toolTypes.join('/') : null,
           row.mcpToolNames.length > 0
-            ? `MCP ${row.mcpToolNames.join('/')}`
+            ? `MCP ${truncateForTip(row.mcpToolNames.join('/'), 48)}`
             : null,
           row.agentNames.length > 0 ? row.agentNames.join('/') : null,
           row.errorCount > 0 ? `$(error) ${row.errorCount}` : null,
@@ -964,7 +981,7 @@ function modelTable(
     [
       tr('输入', 'Input'),
       numberFormatter.format(inputTokens),
-      formatMoney(uncachedCost, money),
+      formatMoney(uncachedCost + cacheCost, money),
     ],
     [
       tr('缓存', 'Cached'),
@@ -1032,6 +1049,29 @@ function padDisplayEnd(value: string, width: number): string {
 
 function padDisplayStart(value: string, width: number): string {
   return ' '.repeat(Math.max(0, width - displayWidth(value))) + value;
+}
+
+// Telemetry-sourced tool names can be arbitrarily long; clip them so a single
+// unbreakable token does not stretch the tooltip past its hover width.
+export function truncateForTip(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) {
+    return value;
+  }
+
+  const budget = maxWidth - 1; // reserve one column for the ellipsis
+  let width = 0;
+  let clipped = '';
+  for (const character of value) {
+    const characterWidth = isWideCharacter(character.codePointAt(0) ?? 0)
+      ? 2
+      : 1;
+    if (width + characterWidth > budget) {
+      break;
+    }
+    width += characterWidth;
+    clipped += character;
+  }
+  return `${clipped}…`;
 }
 
 function formatRate(rate: number | null): string {
@@ -1167,7 +1207,7 @@ function resolveStatusValue(
     case 'model':
       return session.model || null;
     case 'session':
-      return session.sessionDisplay;
+      return sessionName(session);
     case 'icon':
       return '$(pulse)';
     default:

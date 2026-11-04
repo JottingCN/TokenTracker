@@ -467,17 +467,16 @@ export interface SystemInfo {
 }
 
 export interface SystemPathInfo {
-  label: string;
+  key: string;
   path: string;
   kind: string;
   exists: boolean;
   lastModifiedText: string | null;
-  purpose: string;
   monitor: string;
 }
 
 export interface SystemAccessInfo {
-  label: string;
+  key: string;
   target: string;
   kind: string;
 }

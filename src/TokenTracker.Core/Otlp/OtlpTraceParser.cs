@@ -239,7 +239,9 @@ public static partial class OtlpTraceParser
             ttftMs = null;
         }
 
-        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(startMs);
+        // Peak/off-peak follows the call's end time: usage settles when the
+        // request completes, so one crossing into a peak window bills as peak.
+        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(endMs ?? startMs);
         var hitRate = totalInputTokens > 0
             ? (double)cacheReadTokens / totalInputTokens
             : (double?)null;

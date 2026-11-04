@@ -74,16 +74,15 @@ public sealed record SystemAhpInfo(
     int Sessions);
 
 public sealed record SystemPathInfo(
-    string Label,
+    string Key,
     string Path,
     string Kind,
     bool Exists,
     string? LastModifiedText,
-    string Purpose,
     string Monitor);
 
 public sealed record SystemAccessInfo(
-    string Label,
+    string Key,
     string Target,
     string Kind);
 

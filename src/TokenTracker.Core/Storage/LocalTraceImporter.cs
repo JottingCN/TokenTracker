@@ -516,7 +516,8 @@ public static class LocalTraceImporter
             cacheCreationTokens);
         var startMs = reader.GetInt64(3);
         var endMs = reader.IsDBNull(4) ? (long?)null : reader.GetInt64(4);
-        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(startMs);
+        // Same end-time peak rule as live ingestion.
+        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(endMs ?? startMs);
         var breakdown = ModelPricing.EvaluateDetailed(
             ModelPricing.GetPrice(model),
             totalInputTokens,

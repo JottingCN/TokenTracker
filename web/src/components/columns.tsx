@@ -204,7 +204,10 @@ export function sessionColumns(
       width: 100,
       align: 'right',
       render: (_, row) =>
-        tokenWithCost(row.inputText, formatMoney(row.uncachedCostCny)),
+        tokenWithCost(
+          row.inputText,
+          formatMoney(row.uncachedCostCny + row.cacheCostCny),
+        ),
     },
     {
       title: translate('缓存', 'Cached'),
@@ -404,7 +407,10 @@ export function callColumns(
       width: 110,
       align: 'right',
       render: (_, row) =>
-        tokenWithCost(row.inputText, formatMoney(row.uncachedCostCny)),
+        tokenWithCost(
+          row.inputText,
+          formatMoney(row.uncachedCostCny + row.cacheCostCny),
+        ),
     },
     {
       title: translate('缓存', 'Cached'),

@@ -293,7 +293,7 @@ public sealed class SessionMetadataProviderTests
     }
 
     [Fact]
-    public void RowFallsBackToUnnamedSessionWithoutTitle()
+    public void RowFallsBackToShortIdWithoutTitle()
     {
         var row = new SessionRow
         {
@@ -301,7 +301,7 @@ public sealed class SessionMetadataProviderTests
             Model = "deepseek-flash",
         };
 
-        Assert.Equal("未命名 · 12345678…", row.SessionDisplay);
+        Assert.Equal("12345678…", row.SessionDisplay);
 
         var titled = row with { Title = "标题" };
         Assert.Equal("标题", titled.SessionDisplay);

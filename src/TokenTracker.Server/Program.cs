@@ -232,18 +232,17 @@ app.MapGet("/api/system", () =>
     var access = metadata.GetAccessInfo();
     var watchedPaths = new List<SystemPathInfo>();
 
-    void AddPath(string label, string? path, string kind, string purpose, string mode)
+    void AddPath(string key, string? path, string kind, string mode)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
             watchedPaths.Add(new SystemPathInfo(
-                label,
+                key,
                 "-",
                 kind,
                 false,
                 null,
-                purpose,
-                "未使用"));
+                "unused"));
             return;
         }
 
@@ -269,78 +268,70 @@ app.MapGet("/api/system", () =>
         }
 
         watchedPaths.Add(new SystemPathInfo(
-            label,
+            key,
             path,
             kind,
             exists,
             modified,
-            purpose,
-            exists ? MonitorText(mode) : "未使用"));
+            exists ? MonitorKey(mode) : "unused"));
     }
 
-    string MonitorText(string mode) => mode switch
+    string MonitorKey(string mode) => mode switch
     {
-        "watch" => ahp.Connected ? "AHP 在线，暂停监控" : "扩展监控中",
-        "poll" => "AHP 端点轮询中",
-        "import" => "仅导入时读取",
-        _ => "查询时读取",
+        "watch" => ahp.Connected ? "paused-ahp" : "watching",
+        "poll" => "polling",
+        "import" => "import-only",
+        _ => "on-query",
     };
 
     AddPath(
-        "会话状态目录",
+        "session-state",
         access.SessionRoot,
         "directory",
-        "只读 workspace.yaml 的会话标题与工作目录",
         "watch");
     AddPath(
-        "Agent Host 标题库",
+        "agent-host-db",
         access.AgentHostDatabase,
         "file",
-        "只读 agent-host.db 中的会话标题与工作目录",
         "watch");
     foreach (var directory in access.CopilotUserDataDirectories)
     {
         AddPath(
-            "Chat 标题索引",
+            "chat-title-index",
             Path.Combine(directory, "globalStorage", "state.vscdb"),
             "file",
-            "只读 chat.ChatSessionStore.index 的会话标题/工作区",
             "read");
         AddPath(
-            "工作区标题索引目录",
+            "workspace-title-index",
             Path.Combine(directory, "workspaceStorage"),
             "directory",
-            "只读各工作区 state.vscdb 中的标题索引",
             "read");
         AddPath(
-            "Copilot Chat 本地 Trace 库",
+            "copilot-trace-db",
             Path.Combine(
                 directory,
                 "globalStorage",
                 "github.copilot-chat",
                 "agent-traces.db"),
             "file",
-            "仅在执行“导入本地 OTel 数据”时读取",
             "import");
     }
 
     foreach (var directory in access.AhpUserDataDirectories)
     {
         AddPath(
-            "AHP 本地端点目录",
+            "ahp-endpoint-dir",
             Path.Combine(
                 directory,
                 "agent-host",
                 "local-endpoint",
                 "entries"),
             "directory",
-            "只读端点描述文件，用于连接 AHP 同步标题",
             "poll");
         AddPath(
-            "Agent Host 本地 Trace 库",
+            "agent-host-trace-db",
             Path.Combine(directory, "agent-host", "otel", "agent-host-traces.db"),
             "file",
-            "仅在执行“导入本地 OTel 数据”时读取",
             "import");
     }
 
@@ -349,12 +340,9 @@ app.MapGet("/api/system", () =>
         HolidayService.DefaultUrlTemplate;
     var accesses = new List<SystemAccessInfo>
     {
-        new("节假日 API", holidayApi, "http"),
-        new("OTLP 接收端点", endpoint, "http"),
-        new(
-            "AHP 标题同步",
-            "named pipe / UDS / TCP（由 local-endpoint entries 解析）",
-            "ipc"),
+        new("holiday-api", holidayApi, "http"),
+        new("otlp-endpoint", endpoint, "http"),
+        new("ahp-title-sync", "named pipe / UDS / TCP", "ipc"),
     };
 
     return Results.Json(

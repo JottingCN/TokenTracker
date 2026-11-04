@@ -2124,6 +2124,7 @@ public sealed partial class SpanStore
                 string TraceId,
                 string SpanId,
                 long StartMs,
+                long EndMs,
                 long Input,
                 long Cached,
                 long CacheCreation,
@@ -2133,7 +2134,7 @@ public sealed partial class SpanStore
             {
                 select.Transaction = transaction;
                 select.CommandText = $"""
-                    SELECT model, trace_id, span_id, start_time_ms,
+                    SELECT model, trace_id, span_id, start_time_ms, end_time_ms,
                            input_tokens, cache_read_tokens, cache_creation_tokens,
                            output_tokens, reasoning_tokens
                     FROM spans
@@ -2148,11 +2149,12 @@ public sealed partial class SpanStore
                         reader.GetString(1),
                         reader.GetString(2),
                         reader.GetInt64(3),
-                        reader.GetInt64(4),
+                        reader.IsDBNull(4) ? reader.GetInt64(3) : reader.GetInt64(4),
                         reader.GetInt64(5),
                         reader.GetInt64(6),
                         reader.GetInt64(7),
-                        reader.GetInt64(8)));
+                        reader.GetInt64(8),
+                        reader.GetInt64(9)));
                 }
             }
 
@@ -2183,7 +2185,8 @@ public sealed partial class SpanStore
                 var price = span.Model.Length == 0
                     ? null
                     : ModelPricing.GetPrice(span.Model);
-                var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(span.StartMs);
+                // End-time peak rule; EndMs already falls back to StartMs above.
+                var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(span.EndMs);
                 var detail = ModelPricing.EvaluateDetailed(
                     price,
                     span.Input,

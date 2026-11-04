@@ -30,10 +30,12 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
     {
       label: tr('输入 tokens', 'Input tokens'),
       value: summary ? number.format(summary.inputTokens) : '-',
-      cost: summary ? formatMoney(summary.uncachedCostCny) : '-',
+      cost: summary
+        ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
+        : '-',
       hint: tr(
-        '输入 tokens 包含缓存命中部分；下方费用仅为未缓存输入费用，缓存费用见“缓存命中”卡片。',
-        'Input tokens include cached tokens; the cost shown is uncached input only. Cache cost is shown in the cached card.',
+        '输入 tokens 与下方费用均为总计（含缓存命中部分）；缓存命中、思考为专项展示。估算费用 = 输入金额 + 输出金额。',
+        'Input tokens and the cost shown are totals including cached tokens; cached and reasoning are special breakdowns. Estimated cost = input cost + output cost.',
       ),
     },
     {
