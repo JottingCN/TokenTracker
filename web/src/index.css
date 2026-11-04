@@ -32,6 +32,14 @@ body {
   overflow-y: auto !important;
 }
 
+.tt-price-table .ant-input-number-input {
+  text-align: right;
+}
+
+.tt-price-table .ant-table-cell {
+  vertical-align: middle;
+}
+
 .tt-fill-table .ant-table-body {
   min-height: var(--tt-table-body-height, 0px);
 }

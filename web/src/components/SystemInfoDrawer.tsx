@@ -79,7 +79,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
       title={tr('系统信息', 'System info')}
       open={open}
       onClose={onClose}
-      width={640}
+      width="min(820px, 92vw)"
     >
       {loading ? (
         <div style={{ padding: 24, textAlign: 'center' }}>
@@ -232,28 +232,28 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               pagination={false}
               columns={[
                 {
-                  title: tr('用途', 'Purpose'),
+                  title: tr('名称', 'Name'),
                   dataIndex: 'label',
                   key: 'label',
-                  width: 180,
+                  width: 190,
+                  render: (value: string, row) => (
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text>{value}</Typography.Text>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {row.purpose}
+                      </Typography.Text>
+                    </Space>
+                  ),
                 },
                 {
                   title: tr('路径', 'Path'),
                   dataIndex: 'path',
                   key: 'path',
                   render: (value: string) => (
-                    <Typography.Text copyable style={{ fontSize: 12 }}>
-                      {value}
-                    </Typography.Text>
-                  ),
-                },
-                {
-                  title: tr('说明', 'Purpose'),
-                  dataIndex: 'purpose',
-                  key: 'purpose',
-                  width: 260,
-                  render: (value: string) => (
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    <Typography.Text
+                      copyable
+                      style={{ fontSize: 12, wordBreak: 'break-all' }}
+                    >
                       {value}
                     </Typography.Text>
                   ),
@@ -261,10 +261,13 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 {
                   title: tr('状态', 'Status'),
                   key: 'status',
-                  width: 190,
+                  width: 130,
                   render: (_, row) => (
-                    <Space size={6}>
-                      <Tag color={row.exists ? 'green' : 'default'}>
+                    <Space direction="vertical" size={2}>
+                      <Tag
+                        color={row.exists ? 'green' : 'default'}
+                        style={{ marginInlineEnd: 0 }}
+                      >
                         {row.exists
                           ? tr('存在', 'Exists')
                           : tr('缺失', 'Missing')}
@@ -293,24 +296,26 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                   title: tr('访问', 'Access'),
                   dataIndex: 'label',
                   key: 'label',
-                  width: 180,
+                  width: 190,
+                  render: (value: string, row) => (
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text>{value}</Typography.Text>
+                      <Tag style={{ marginInlineEnd: 0 }}>{row.kind}</Tag>
+                    </Space>
+                  ),
                 },
                 {
                   title: tr('目标', 'Target'),
                   dataIndex: 'target',
                   key: 'target',
                   render: (value: string) => (
-                    <Typography.Text copyable style={{ fontSize: 12 }}>
+                    <Typography.Text
+                      copyable
+                      style={{ fontSize: 12, wordBreak: 'break-all' }}
+                    >
                       {value}
                     </Typography.Text>
                   ),
-                },
-                {
-                  title: tr('类型', 'Kind'),
-                  dataIndex: 'kind',
-                  key: 'kind',
-                  width: 80,
-                  render: (value: string) => <Tag>{value}</Tag>,
                 },
               ]}
               dataSource={data.accesses}

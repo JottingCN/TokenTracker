@@ -3,6 +3,7 @@ import {
   Alert,
   App as AntApp,
   Button,
+  Card,
   Drawer,
   Input,
   InputNumber,
@@ -449,8 +450,8 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   };
 
   const actionCell = (row: ModelPriceRow) => (
-    <Space size={4}>
-      <Button size="small" type="primary" onClick={() => void save(row)}>
+    <Space size={0}>
+      <Button size="small" type="link" onClick={() => void save(row)}>
         {tr('保存', 'Save')}
       </Button>
       {row.customized && (
@@ -467,7 +468,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           cancelText={tr('取消', 'Cancel')}
           onConfirm={() => remove(row)}
         >
-          <Button size="small" danger>
+          <Button size="small" type="link" danger>
             {tr('删除', 'Delete')}
           </Button>
         </Popconfirm>
@@ -489,13 +490,10 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         }
 
         const statusTag = row.customized ? (
-          <Tag color="blue" bordered={false}>
-            {tr('自定义', 'Custom')}
-          </Tag>
+          <Tag color="blue">{tr('自定义', 'Custom')}</Tag>
         ) : (
-          <Tag bordered={false}>{tr('未定价', 'Unpriced')}</Tag>
+          <Tag>{tr('未定价', 'Unpriced')}</Tag>
         );
-
         return (
           <Space size={6} wrap={false} style={{ maxWidth: '100%' }}>
             <Typography.Text
@@ -554,7 +552,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('输入阈值', 'Input threshold'),
+      title: tr('输入阈值（tokens）', 'Threshold (tokens)'),
       key: 'longContextThreshold',
       width: 128,
       align: 'right',
@@ -576,8 +574,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
             precision={0}
             controls={false}
             disabled={!enabled}
-            placeholder={tr('例如 272000', 'e.g. 272000')}
-            addonAfter="tokens"
+            placeholder="272000"
             value={draft.longContextThreshold ?? undefined}
             onChange={(value) =>
               update(row, {
@@ -706,93 +703,99 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                   gap: 12,
                 }}
               >
-        <Space wrap size="middle">
-          <Space size={6}>
-            <Typography.Text>{tr('费用单位', 'Cost unit')}</Typography.Text>
-            <Select
-              value={money.settings.unit}
-              onChange={(unit) => money.setSettings({ unit })}
-              style={{ width: 150 }}
-              options={[
-                { value: 'cny', label: tr('人民币（CNY）', 'CNY') },
-                { value: 'usd', label: tr('美元（USD）', 'USD') },
-                { value: 'credit', label: tr('积分', 'Credits') },
-              ]}
-            />
-          </Space>
-          {money.settings.unit === 'usd' && (
-            <InputNumber
-              size="small"
-              min={0.01}
-              step={0.1}
-              precision={4}
-              addonBefore="1 USD ="
-              addonAfter="CNY"
-              value={money.settings.usdRate}
-              onChange={(value) =>
-                money.setSettings({
-                  usdRate: typeof value === 'number' ? value : 7.2,
-                })
-              }
-            />
-          )}
-          {money.settings.unit === 'credit' && (
-            <InputNumber
-              size="small"
-              min={0.0001}
-              step={0.001}
-              precision={4}
-              addonBefore={tr('1 积分 =', '1 credit =')}
-              addonAfter="CNY"
-              value={money.settings.creditRate}
-              onChange={(value) =>
-                money.setSettings({
-                  creditRate: typeof value === 'number' ? value : 0.01,
-                })
-              }
-            />
-          )}
-        </Space>
+                <Space wrap size="middle">
+                  <Space size={6}>
+                    <Typography.Text>{tr('费用单位', 'Cost unit')}</Typography.Text>
+                    <Select
+                      value={money.settings.unit}
+                      onChange={(unit) => money.setSettings({ unit })}
+                      style={{ width: 150 }}
+                      options={[
+                        { value: 'cny', label: tr('人民币（CNY）', 'CNY') },
+                        { value: 'usd', label: tr('美元（USD）', 'USD') },
+                        { value: 'credit', label: tr('积分', 'Credits') },
+                      ]}
+                    />
+                  </Space>
+                  {money.settings.unit === 'usd' && (
+                    <InputNumber
+                      size="small"
+                      min={0.01}
+                      step={0.1}
+                      precision={4}
+                      addonBefore="1 USD ="
+                      addonAfter="CNY"
+                      value={money.settings.usdRate}
+                      onChange={(value) =>
+                        money.setSettings({
+                          usdRate: typeof value === 'number' ? value : 7.2,
+                        })
+                      }
+                    />
+                  )}
+                  {money.settings.unit === 'credit' && (
+                    <InputNumber
+                      size="small"
+                      min={0.0001}
+                      step={0.001}
+                      precision={4}
+                      addonBefore={tr('1 积分 =', '1 credit =')}
+                      addonAfter="CNY"
+                      value={money.settings.creditRate}
+                      onChange={(value) =>
+                        money.setSettings({
+                          creditRate: typeof value === 'number' ? value : 0.01,
+                        })
+                      }
+                    />
+                  )}
+                  <Space.Compact style={{ width: 380 }}>
+                    <Input
+                      placeholder={tr(
+                        '新增模型 ID，例如 kimi-k3.1-pro',
+                        'Model ID, e.g. kimi-k3.1-pro',
+                      )}
+                      value={newModel}
+                      onChange={(event) => setNewModel(event.target.value)}
+                      onPressEnter={addModel}
+                    />
+                    <Button type="primary" onClick={addModel}>
+                      {tr('新增', 'Add')}
+                    </Button>
+                  </Space.Compact>
+                </Space>
 
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {tr(
-            '费用单位作用于看板显示与价格输入；价格保存时换算为 CNY 存入数据库。',
-            'The unit applies to dashboard values and price inputs; prices are stored in CNY.',
-          )}
-        </Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {tr(
+                    '费用单位作用于看板显示与价格输入；价格保存时换算为 CNY 存入数据库。',
+                    'The unit applies to dashboard values and price inputs; prices are stored in CNY.',
+                  )}
+                </Typography.Text>
 
-        <Space.Compact style={{ width: 460 }}>
-          <Input
-            placeholder={tr(
-              '新增模型 ID，例如 kimi-k3.1-pro',
-              'Model ID, e.g. kimi-k3.1-pro',
-            )}
-            value={newModel}
-            onChange={(event) => setNewModel(event.target.value)}
-            onPressEnter={addModel}
-          />
-          <Button type="primary" onClick={addModel}>
-            {tr('新增', 'Add')}
-          </Button>
-        </Space.Compact>
-
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {tr(
-            '模型来自已有调用记录或手动新增；未定价模型可直接填写价格。保存后会立即重算该模型的历史费用并同步刷新看板。',
-            'Models come from existing call records or manual additions. Fill in a price for unpriced models; saving recalculates that model’s historical costs.',
-          )}
-        </Typography.Text>
-
-        <Table
-          size="small"
-          bordered
-          rowKey="key"
-          columns={columns}
-          dataSource={displayRows}
-          loading={loading}
-          pagination={false}
-          scroll={{ x: 1230, y: tableHeight(340) }}
-        />
+                <Card
+                  size="small"
+                  title={`${tr('模型价格', 'Model prices')}(${rows.length})`}
+                  extra={
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {tr(
+                        '未定价模型填写价格后保存，即可重算该模型的历史费用',
+                        'Set a price for an unpriced model and save to recalculate its history',
+                      )}
+                    </Typography.Text>
+                  }
+                  styles={{ body: { padding: 0 } }}
+                >
+                  <Table
+                    className="tt-price-table"
+                    size="small"
+                    rowKey="key"
+                    columns={columns}
+                    dataSource={displayRows}
+                    loading={loading}
+                    pagination={false}
+                    scroll={{ x: 1230, y: tableHeight(340) }}
+                  />
+                </Card>
 
         <Alert
           type="info"
