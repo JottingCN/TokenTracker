@@ -395,8 +395,8 @@ async function prepareAndStartServer(
             'Token Tracker is preparing the server',
           )
         : tr(
-            'Token Tracker 首次运行需要下载本地服务端（约 8 MB，来自 GitHub Release，只在本机运行）',
-            'Token Tracker needs to download its local server on first run (~8 MB from a GitHub Release; it only runs on this machine)',
+            'Token Tracker 首次运行需要下载本地服务端（来自 GitHub Release，只在本机运行）',
+            'Token Tracker needs to download its local server on first run (from a GitHub Release; it only runs on this machine)',
           ),
       cancellable: false,
     },

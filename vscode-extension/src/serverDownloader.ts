@@ -15,6 +15,7 @@ export interface ServerAssetInfo {
   checksumUrl?: string;
   releaseTag: string;
   serverVersion: string;
+  sizeBytes?: number;
 }
 
 export interface ServerDownloadOptions {
@@ -39,7 +40,7 @@ interface GitHubRelease {
   prerelease?: boolean;
   created_at?: string;
   published_at?: string;
-  assets?: Array<{ name?: string; url?: string }>;
+  assets?: Array<{ name?: string; url?: string; size?: number }>;
 }
 
 class HttpError extends Error {
@@ -131,7 +132,12 @@ export async function downloadServerArchive(
     `tokentracker-server-${asset.rid}.${extension}`,
   );
 
-  options.onProgress?.(tr(`正在下载 ${asset.assetName}`, `Downloading ${asset.assetName}`));
+  options.onProgress?.(
+    tr(
+      `正在下载 ${asset.assetName}${formatSizeSuffix(asset.sizeBytes)}`,
+      `Downloading ${asset.assetName}${formatSizeSuffix(asset.sizeBytes, true)}`,
+    ),
+  );
   const headers: Record<string, string> =
     asset.archiveUrl.includes('api.github.com')
       ? { Accept: 'application/octet-stream' }
@@ -211,7 +217,7 @@ async function fetchLatestServerAsset(
     }
 
     const assets = (release.assets ?? []).filter(
-      (asset): asset is { name: string; url: string } =>
+      (asset): asset is { name: string; url: string; size?: number } =>
         Boolean(asset.name && asset.url),
     );
     const archive = assets.find((asset) => pattern.test(asset.name));
@@ -230,6 +236,7 @@ async function fetchLatestServerAsset(
       releaseTag: release.tag_name ?? 'unknown',
       serverVersion:
         parseServerVersion(archive.name, rid, extension) ?? 'unknown',
+      sizeBytes: archive.size,
     };
   }
 
@@ -326,6 +333,15 @@ function writeReleaseCache(
   } catch {
     // Cache is best-effort.
   }
+}
+
+function formatSizeSuffix(bytes: number | undefined, english = false): string {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) {
+    return '';
+  }
+
+  const megabytes = Math.round(bytes / 104857.6) / 10;
+  return english ? ` (~${megabytes} MB)` : `（约 ${megabytes} MB）`;
 }
 
 function verifyHash(checksum: string, archivePath: string): void {

@@ -23,7 +23,7 @@
 
 ### 1. 安装
 
-推荐安装 VSIX 扩展。首次激活会按平台从最新的服务端 Release 下载自包含包并校验 SHA-256（约 8 MB，自动读取 VS Code `http.proxy` / `HTTPS_PROXY`）：
+推荐安装 VSIX 扩展。首次激活会按平台从最新的服务端 Release 下载自包含包并校验 SHA-256（Windows 约 12 MB，Linux / macOS 约 29 MB，随服务端版本变化，下载进度会显示实际大小；自动读取 VS Code `http.proxy` / `HTTPS_PROXY`）：
 
 ```bash
 code --install-extension tokentracker-*.vsix --force
