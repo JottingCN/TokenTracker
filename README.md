@@ -112,7 +112,7 @@ TokenTracker.Server.exe      # Windows
 ## 隐私
 
 - 解析与统计全部在本机完成，不上传数据、不引入遥测。
-- 只保存 token 计数与非内容元数据；即使开启 `captureContent`，也不会写入 prompt、回复、工具参数/结果、文件路径或命令内容。
+- 只保存 token 计数与非内容元数据；即使开启 `captureContent`，也不会写入 prompt、回复、工具参数/结果、单次调用的文件路径或命令内容。会话的工作区根目录会作为归属信息缓存在本地，用于 Agent Host 未连接时仍能匹配当前文件夹。
 - 所有客户端断开后，服务按 `idleExitSeconds` 自动退出，不常驻后台。
 
 ## 常见问题

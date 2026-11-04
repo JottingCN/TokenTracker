@@ -48,6 +48,7 @@ cd web && npm run build                   # 输出到服务端 wwwroot
 # VS Code 扩展
 cd vscode-extension && npm install
 npm run compile        # tsc → out/（不提交）
+npm test               # node --test：状态栏工作区选择与 Tip 渲染（先 pretest 编译）
 npm run sync-server    # AOT 发布服务端到 server/（需 vcvarsall.bat x64）
 npm run build          # compile + sync-server（本地离线开发用）
 npm run package        # 生成 tokentracker-*.vsix（排除 server/）
@@ -119,7 +120,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 ### 工作区路径
 
 优先使用 `agent-host.db` 的 `working_directories` / `launch_working_directories`，
-其次 AHP `workingDirectories` 与 `ChatSessionStore` 索引的 `workingDirectory`，缺失时回退到 `workspace.yaml` 的 `cwd`。状态栏按该路径匹配当前 VS Code 工作区。
+其次 AHP `workingDirectories` 与 `ChatSessionStore` 索引的 `workingDirectory`，缺失时回退到 `workspace.yaml` 的 `cwd`；
+再缺失时回退 `session_workspaces` 缓存（由 `SessionWorkspaceCache` 在解析成功时批量写入，`DashboardService` 每次构建 payload 后 flush）。`agent-host.db` 里查不到子代理会话的工作目录时，需沿 `chats_v2` 的 `owner_session_uri` / `parent_chat` 回溯到父会话取，且两种存放形态（`chats_v2.working_directories` 与 `session_chat_state.*_working_directories`）都要接受。状态栏按该路径匹配当前 VS Code 工作区。
 
 ### 元数据刷新
 
@@ -133,8 +135,9 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 ### 状态栏 / Tip
 
 - 状态栏：当前工作区最新会话的命中率、平均 TTFT、平均生成速度与费用；默认模板 `$(pulse) {hit} · {ttft} · {speed} · {cost}`，可通过 `tokentracker.statusBarFormat` 自定义占位符与格式（如 `{hit:0.00%}`、`{ttft:0.0s}`、`{cost:0.000000}`），缺失的可选项自动省略。
+- 状态栏按工作区过滤后若一条都不匹配，回退到**工作区未知**（`workspacePath` 为空）的最近会话，不要整条隐藏；此时 Tip 首行追加 `$(folder) 工作区未确认`。其他工作区的会话仍不显示。
 - 状态栏与 Tip 的费用单位由 `tokentracker.costUnit` 决定（`cny` / `usd` / `credit`，按 `usdRate` / `creditRate` 换算）。
-- Tip：标题为正文加粗 `Token Tracker · 会话名`（不使用大号标题）；时间范围与统计范围合并为一行；每个模型独立成节，加粗显示 `模型名 - 最后使用时间`，展示按显示宽度对齐的四类 token 明细表格，以及次数、总用时、平均耗时、命中率、TTFT、速度与费用；多于一个模型时在末尾展示合计；额外展示事件统计与工具调用 Top 5。
+- Tip：标题为正文加粗 `Token Tracker · 会话名`（不使用大号标题）；时间范围与统计范围合并为一行；每个模型独立成节，节标题为 `模型名 · 最后使用时间`，展示按显示宽度对齐的四类 token 明细表格，以及次数、总用时、平均耗时、命中率、TTFT、速度与费用；多于一个模型时在末尾展示合计。工具调用节标题带 `N 次 · M 种工具`，Hook 节标题带 `N 次 · M 组`，各自只列 Top 5。不在 Tip 中展示 Agent 运行与“其他事件”统计（看板会话页仍完整展示）。
 - 不在 Tip 中显示工作区信息。
 
 ### 辅助调用
@@ -142,7 +145,7 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 当前实现把没有 `session_id` 的 span 视为辅助调用（`is_main = 0`）。该分类是推断，不是 Copilot 显式标记。
 - 辅助调用并入 Dashboard 汇总与按模型统计；会话列表仅含主调用；“调用明细”独立菜单展示全部调用（含辅助调用），支持关键字、来源、主/辅助、定价状态与时段检索，并按来源分别计数。辅助调用通常无法可靠归属具体会话。
 - 来源（Copilot Chat `github.copilot.chat.otel`、Agent Host `chat.agentHost.otel`）只用于接收端归因；Web 与扩展默认展示**综合**数据，不提供来源切换和来源标签。`source=combined`（旧 `source=all` 作为别名）表示跨来源同一会话/模型/输入输出且 span 时间区间重叠的调用合并为一条，优先保留有效 TTFT、缓存、推理等字段（费用按合并后的 token 重新计算），原始来源记录仍保留供合并与诊断使用。接收端优先用路径区分：`/otlp/copilot-chat`、`/otlp/agent-host`（同时接受 `/v1/traces` 后缀，旧路径 `/otlp/extension-host` 作为别名）；旧 `/v1/traces` 再按资源属性判定。Agent Host 统一带 `service.namespace=vscode.agent-host`，其 `service.name` 可能为 `github-copilot`、`claude-code`、`codex-app-server`、`vscode-agent-host`；Copilot Chat 默认为 `copilot-chat` 且通常无 namespace。无法判断时写入 `unknown`，不要默认归入 Copilot Chat。会话页事件统计来自 `session_events`（`execute_tool` / `invoke_agent` 等），工具统计按 `gen_ai.tool.name` 汇总；工具事件同时保存 `gen_ai.tool.type`、`github.copilot.tool.parameters.edit_type` 与 `...skill_name`。仅事件、没有 chat span 的会话也会进入会话列表（调用列显示 `0 (N 事件)`）。
-- 调用明细使用服务端分页（`total` / `offset` / `limit`，单页上限 500），不要重新引入固定 2000 条截断；文本检索在服务端匹配会话标题（元数据）、模型与会话 ID 后直接分页。combined 行按“脏会话”增量重建，只在相关会话新增/变更时更新。
+- 调用明细使用服务端分页（`total` / `offset` / `limit`，单页上限 500），不要重新引入固定 2000 条截断；文本检索在服务端匹配会话标题（元数据）、模型与会话 ID 后直接分页。combined 行按“脏会话”增量重建，只在相关会话新增/变更时更新；无 `session_id` 的辅助调用按批次时间窗增量重建（窗口沿重叠区间扩展，超过 12 小时或 4 轮仍不收敛才回退全量重建），**不要恢复“辅助调用批次 → 全表重建”**：实测 2 万 span 时全量重建单次读取消耗 3~12 秒 CPU，窗口重建只需 0.16 秒。窗口查询必须写成可用 `ix_spans_start` / `ix_spans_end` 的 OR 形式，`COALESCE(end_time_ms, start_time_ms)` 会退化成全表扫描。
 - 左侧“系统信息”抽屉读取 `GET /api/system`，展示数据库路径/大小、表与行数、原始/综合 span、outcome 指标、监听与读取路径、AHP 状态；页脚状态栏已移除。
 
 ### OpenTelemetry 数据源
@@ -159,8 +162,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - Trace 拓扑始终排除 combined 派生行；综合视图在时间区间重叠时合并跨来源重复的 chat 节点并重挂子节点。拓扑按开始时间排序、用 depth 缩进展示层级、节点显示 chat 输入/输出/缓存 token；不要引入 git graph；超过 5000 节点保留最新一段，前端虚拟滚动并阻止滚动链到页面，支持全屏查看。
 - 结果指标（编辑接受率、LOC、存活率、反馈/操作、PR/cloud、Agent 编辑）从 `metric_points` 按查询时累计 delta 聚合。metrics 的 `session.id` 是 VS Code 窗口级，归属顺序：自带 `gen_ai.conversation.id` / `copilot_chat.session_id` 直接归属 → 带 `gen_ai.tool.call.id` 时按 `session_events.call_id` 归属 → 否则记录 `window_session_id`，仅当该窗口在 `window_session_links` 中只有一个 chat session 时归属（`attribution_method=window`，置信度 0.6），多会话窗口保留 `window-only`，不要强行分摊。Dashboard 全局指标只按原始 metric point 统计一次。
 - 只统计 `gen_ai.operation.name=chat` 的 span，避免与 `invoke_agent` / `execute_tool` 重复计数。
-- 隐私约束：trace/metric 解析只保存非内容元数据 allowlist；即使 `captureContent` 开启，也不写入 prompt/response、工具参数/结果、file path、command、raw MCP server name、session title 或身份字段。
-- `POST /api/import-local` 只读导入 chat span、工具/Hook 事件与 `invoke_agent`，按 `(trace_id, span_id)` / tool call id 去重。
+- 隐私约束：trace/metric 解析只保存非内容元数据 allowlist；即使 `captureContent` 开启，也不写入 prompt/response、工具参数/结果、单次调用的 file path、command、raw MCP server name、session title 或身份字段。唯一例外是 `session_workspaces` 保存的**会话工作区根目录**，它来自本机 VS Code 元数据（AHP / agent-host.db / workspace.yaml），不来自遥测内容，仅用于工作区归属匹配。
+- `POST /api/import-local` 只读导入 chat span、工具/Hook 事件与 `invoke_agent`，按 `(trace_id, span_id)` / tool call id 去重。导入 chat span 必须复用在线解析的同一套规则（`ParseSessionId`、`ParseTtftMs` + `HasExplicitTtft` 的首块 ≥90% 丢弃、`ErrorTypeFrom`、provider/agent/finish_reasons/service.namespace），字段来自 `spans` 表的 `ttft_ms`/`agent_name`/`status_code` 列与 `span_attributes` 批量读取；只按列拼 session_id 会丢掉子代理归属和 TTFT、生成速度。
 
 ### 费用与定价
 
@@ -172,7 +175,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 
 ### 存储与迁移
 
-- 本地库只存需要的数据：span 元数据、`session_events`、`agent_runs`、outcome `metric_points`、`window_session_links`、价格、节假日、设置。不保存原始 `attributes`、日志事件、可由 span 推导的 token/TTFT/duration 指标。
+- 本地库只存需要的数据：span 元数据、`session_events`、`agent_runs`、outcome `metric_points`、`window_session_links`、`session_workspaces`（会话工作目录缓存）、价格、节假日、设置。不保存原始 `attributes`、日志事件、可由 span 推导的 token/TTFT/duration 指标；会话标题仍只在查询时解析，不入库。
+- 工作目录来源（AHP `workingDirectories` / `agent-host.db` / `workspace.yaml`）大多要求 Agent Host 在线。服务端在解析成功时把 `session_id → workspace_path` 写入 `session_workspaces`，解析不到时回退读该表，因此 AHP 掉线后工作区归属不会丢；`DeleteOlderThan` 会清掉已无 span 的会话缓存。
 - SQLite schema 变更使用幂等迁移（`EnsureColumn` / `CREATE TABLE IF NOT EXISTS`）。**建索引必须放在列迁移之后**：索引引用尚未添加的列会让 DDL 批次中断、后续表缺失并在启动时崩溃。
 - 插件仍在开发期，不考虑历史数据兼容：不要新增旧库迁移、旧字段回填或版本兼容分支（扩展侧已移除旧数据库复制逻辑）。
 
@@ -210,8 +214,8 @@ git tag server-v1.0.0 && git push origin server-v1.0.0 # 服务端
 
 ## 验证要求
 
-1. 修改核心逻辑：运行全部单元测试。
-2. 修改扩展 TypeScript：`npm run compile`（`out/` 不提交）；验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
+1. 修改核心逻辑：运行全部单元测试。工作区缓存的回写/回退/批量阈值由 `SessionWorkspaceCacheTests` 覆盖，`session_workspaces` 与 span 一起清理由 `SpanStoreTests.SessionWorkspaceCacheSurvivesAndIsPrunedWithSpans` 覆盖。
+2. 修改扩展 TypeScript：`npm run compile`（`out/` 不提交）；状态栏的工作区选择与 Tip 标注由 `vscode-extension/test/statusBar.test.js`（`npm test`，Node 内置 runner + `vscode` 桩模块，不引入测试依赖）覆盖；验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
 3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功。
 4. 涉及扩展行为时，用**隔离** VS Code 实例验证：
 
@@ -225,6 +229,8 @@ Code.exe --new-window \
 
 - 通过 `<temp-profile>/User/globalStorage/jottingcn.tokentracker/extension.log` 检查激活与快照日志。
 - 可用临时端口（如 4330+）与临时数据库副本，避免影响正在使用的 4318 服务。
+- 需要检查状态栏文本或 Tip 结构时，可用桩 `vscode` 模块（`MarkdownString` / `createStatusBarItem` / `getConfiguration`）配合 `NODE_PATH` 直接加载 `out/statusBar.js` 驱动真实 `StatusBarController`，打印 `item.tooltip.value` 即可断言渲染结果，不必启动 GUI 窗口。
+- 需要对比服务端负载时，先向临时库灌入合成 span，再按“辅助调用批次 → 综合读取”的顺序计时；换 `TOKENTRACKER_PORT` 与 `TOKENTRACKER_DATA_DIR` 起独立实例，验证完只清理自己启动的进程。
 - 验证“健康实例不被重启 / 后台更新检查失败不影响使用”时，先用临时数据目录手动起一个 `TOKENTRACKER_BUILD_ID=legacy-build-1` 的服务再激活扩展，确认 `server ready startedHere=false` 早于 `update check:` 日志且进程未变。
 
 ## 禁止事项
