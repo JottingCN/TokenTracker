@@ -84,6 +84,7 @@ internal sealed class AgentHostTitleReader
             var ownerUri = "copilotcli:/" + sessionId;
             var byOwner = QueryByOwner(connection, ownerUri);
             var workspacePath = bySdk.WorkspacePath ?? byOwner.WorkspacePath;
+            workspacePath ??= QueryWorkspaceFromOwner(connection, sessionId, ownerUri);
 
             if (bySdk.Title is not null)
             {
@@ -104,9 +105,68 @@ internal sealed class AgentHostTitleReader
         }
     }
 
-    private static (string? Title, bool UserNamed, string? WorkspacePath)
-        QueryBySdkSessionId(SqliteConnection connection, string sessionId)
+    // A subagent reports its own chat id, but working directories are stored on the
+    // owning session, so walk the chat chain until one of them carries a directory.
+    private static string? QueryWorkspaceFromOwner(
+        SqliteConnection connection,
+        string sessionId,
+        string ownerUri)
     {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH RECURSIVE chain(chat_uri, owner_session_uri, parent_chat, working_directories, depth) AS (
+                SELECT chat_uri, owner_session_uri, parent_chat, working_directories, 0
+                FROM chats_v2
+                WHERE owner_session_uri = @uri
+                   OR (provider_data IS NOT NULL AND (
+                        provider_data LIKE @pattern OR provider_data LIKE @quoted_id))
+                UNION ALL
+                SELECT c.chat_uri, c.owner_session_uri, c.parent_chat,
+                       c.working_directories, chain.depth + 1
+                FROM chats_v2 c
+                JOIN chain ON c.chat_uri = chain.parent_chat
+                WHERE chain.depth < 4
+            )
+            SELECT chain.working_directories,
+                   s.working_directories,
+                   s.launch_working_directories
+            FROM chain
+            LEFT JOIN session_chat_state s ON s.session_uri = chain.owner_session_uri
+            WHERE COALESCE(
+                      chain.working_directories,
+                      s.working_directories,
+                      s.launch_working_directories) IS NOT NULL
+            ORDER BY chain.depth
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@uri", ownerUri);
+        command.Parameters.AddWithValue("@pattern", $"%\"sdkSessionId\":\"{sessionId}\"%");
+        command.Parameters.AddWithValue("@quoted_id", $"%\"{sessionId}\"%");
+
+        try
+        {
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            return ParseWorkingDirectories(
+                       reader.IsDBNull(0) ? null : reader.GetString(0))
+                   ?? ParseWorkingDirectories(
+                       reader.IsDBNull(1) ? null : reader.GetString(1))
+                   ?? ParseWorkingDirectories(
+                       reader.IsDBNull(2) ? null : reader.GetString(2));
+        }
+        catch (SqliteException)
+        {
+            // Older or newer agent-host schemas simply have no match here.
+            return null;
+        }
+    }
+
+    private static (string? Title, bool UserNamed, string? WorkspacePath)
+        QueryBySdkSessionId(SqliteConnection connection, string sessionId)    {
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT c.metadata,

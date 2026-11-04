@@ -40,6 +40,7 @@ public sealed class DashboardService
     private readonly Dictionary<string, (DateTimeOffset At, OutcomeSummary Value)>
         _outcomeCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan OutcomeCacheTtl = TimeSpan.FromMinutes(2);
+    private readonly SessionWorkspaceCache _workspaces;
 
     public DashboardService(
         SpanStore store,
@@ -53,6 +54,7 @@ public sealed class DashboardService
         _counters = counters;
         _settings = settings;
         _endpoint = endpoint;
+        _workspaces = new SessionWorkspaceCache(store);
     }
 
     public DashboardPayload GetDashboard(
@@ -119,6 +121,8 @@ public sealed class DashboardService
             .Select(row => WithTitle(row, metadataCache))
             .ToList();
 
+        _workspaces.Flush();
+
         return new DashboardPayload(
             _store.GetSummary(fromMs, includeUtility: true, toMs, source),
             _store.GetModels(fromMs, toMs, includeUtility: true, source).ToList(),
@@ -167,6 +171,8 @@ public sealed class DashboardService
         EnsureCombined(source);
         var metadataCache = new Dictionary<string, SessionMetadata?>(
             StringComparer.OrdinalIgnoreCase);
+        _workspaces.Flush();
+
         return new ModelPayload(
             _store.GetModelSummary(
                 model,
@@ -323,6 +329,8 @@ public sealed class DashboardService
                 .ToList();
         }
 
+        _workspaces.Flush();
+
         return new CallsPayload(calls, total, pageOffset, pageSize);
     }
 
@@ -394,6 +402,8 @@ public sealed class DashboardService
 
         var metadata = _metadata.Get(sessionId);
         var tools = _store.GetSessionTools(sessionId, detailSource).ToList();
+        _workspaces.Flush();
+
         return new SessionPayload(
             summary,
             calls,
@@ -703,6 +713,15 @@ public sealed class DashboardService
         if (!cache.TryGetValue(sessionId, out var metadata))
         {
             metadata = _metadata.Get(sessionId);
+            var workspacePath = _workspaces.Resolve(sessionId, metadata?.WorkspacePath);
+            if (!string.IsNullOrWhiteSpace(workspacePath) &&
+                metadata?.WorkspacePath != workspacePath)
+            {
+                metadata = metadata is null
+                    ? new SessionMetadata(sessionId, null, false, workspacePath)
+                    : metadata with { WorkspacePath = workspacePath };
+            }
+
             cache[sessionId] = metadata;
         }
 

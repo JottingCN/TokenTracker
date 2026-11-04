@@ -307,6 +307,66 @@ public sealed class SessionMetadataProviderTests
         Assert.Equal("标题", titled.SessionDisplay);
     }
 
+    [Fact]
+    public void ResolvesWorkspaceFromOwningSessionOfSubagentChat()
+    {
+        var root = CreateRoot();
+        var agentHostDb = Path.Combine(root, "agent-host.db");
+
+        try
+        {
+            using (var connection = new SqliteConnection($"Data Source={agentHostDb}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE chats_v2 (
+                        chat_uri TEXT PRIMARY KEY,
+                        owner_session_uri TEXT,
+                        parent_chat TEXT,
+                        chat_order INTEGER,
+                        working_directories TEXT,
+                        provider_data TEXT,
+                        metadata TEXT
+                    );
+                    CREATE TABLE session_chat_state (
+                        session_uri TEXT PRIMARY KEY,
+                        chat_uri TEXT,
+                        title TEXT,
+                        working_directories TEXT,
+                        launch_working_directories TEXT
+                    );
+                    INSERT INTO chats_v2 (chat_uri, owner_session_uri, chat_order, provider_data)
+                    VALUES ('ahp-chat://default/child', 'copilotcli:/parent-session', 0,
+                            '{"sdkSessionId":"child-session"}');
+                    INSERT INTO chats_v2 (
+                        chat_uri, owner_session_uri, chat_order,
+                        working_directories, provider_data)
+                    VALUES ('ahp-chat://default/child2', 'copilotcli:/parent-2', 0,
+                            '["d:\\work\\other"]', '{"sdkSessionId":"child-session-2"}');
+                    INSERT INTO session_chat_state (session_uri, title, working_directories)
+                    VALUES ('copilotcli:/parent-session', '父会话标题',
+                            '["d:\\source\\demo"]');
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            var provider = new SessionMetadataProvider(root, agentHostDb);
+
+            // Subagents report their own chat id, which has no working directory row.
+            Assert.Equal(@"d:\source\demo", provider.Get("child-session")!.WorkspacePath);
+            // Some builds store the directory on the chat row instead.
+            Assert.Equal(
+                @"d:\work\other",
+                provider.Get("child-session-2")!.WorkspacePath);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string CreateRoot()
     {
         var root = Path.Combine(
