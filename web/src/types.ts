@@ -411,9 +411,18 @@ export interface Subscription {
   includeCalls?: boolean;
 }
 
-export interface ModelPriceRow {
+export interface ModelProfile {
   model: string;
-  customized: boolean;
+  provider: string | null;
+  iconKind: 'letter' | 'image' | null;
+  iconLetter: string | null;
+  iconColor: string | null;
+  iconImage: string | null;
+}
+
+export interface ModelSettingsRow extends ModelProfile {
+  priced: boolean;
+  hasProfile: boolean;
   calls: number;
   peakAware: boolean;
   cachedInput: number;

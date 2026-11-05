@@ -26,7 +26,7 @@ import type { MenuProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { ModelIcon } from './components/ModelIcon';
-import { PriceSettingsDrawer } from './components/PriceSettingsDrawer';
+import { ModelSettingsDrawer } from './components/ModelSettingsDrawer';
 import { SystemInfoDrawer } from './components/SystemInfoDrawer';
 import { CallsPage } from './pages/CallsPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -37,8 +37,10 @@ import type {
   AhpSessionInfo,
   DashboardPayload,
 } from './types';
-import { translate, useUi } from './ui';
-import { providerOf, shortModelName } from './utils/model';
+import { useUi } from './ui';
+import { LOCALES, t } from './i18n';
+import { leafModelName, providerOf, shortModelName } from './utils/model';
+import { useModelProfiles } from './utils/modelProfiles';
 
 const { Header, Sider, Content } = Layout;
 const SIDER_KEY = 'tokentracker.siderCollapsed';
@@ -79,13 +81,16 @@ function parseRoute(): Route {
   return { view: 'dashboard' };
 }
 
-function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
+function buildMenu(
+  dashboard: DashboardPayload | null,
+  profiles: Record<string, { provider: string | null }>,
+): MenuProps['items'] {
   const items: NonNullable<MenuProps['items']> = [
-    { key: 'home', icon: <HomeOutlined />, label: translate('主页', 'Home') },
+    { key: 'home', icon: <HomeOutlined />, label: t('home') },
     {
       key: 'calls',
       icon: <HistoryOutlined />,
-      label: translate('调用明细', 'Call details'),
+      label: t('call.details'),
     },
   ];
   if (!dashboard) {
@@ -94,7 +99,10 @@ function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
 
   const groups = new Map<string, string[]>();
   for (const row of dashboard.models) {
-    const provider = providerOf(row.model);
+    const provider = providerOf(
+      row.model,
+      profiles[row.model.toLowerCase()]?.provider,
+    );
     const list = groups.get(provider) ?? [];
     list.push(row.model);
     groups.set(provider, list);
@@ -143,14 +151,8 @@ function buildMenu(dashboard: DashboardPayload | null): MenuProps['items'] {
 type RangeMode = number | 'custom';
 
 export default function App() {
-  const {
-    lang,
-    tr,
-    themeMode,
-    setThemeMode,
-    languageMode,
-    setLanguageMode,
-  } = useUi();
+  const { locale, themeMode, setThemeMode, languageMode, setLanguageMode, t } =
+    useUi();
   const [route, setRoute] = useState<Route>(parseRoute);
   const [rangeMode, setRangeMode] = useState<RangeMode>(2);
   const [siderCollapsed, setSiderCollapsed] =
@@ -164,6 +166,7 @@ export default function App() {
     title?: string;
     subtitle?: string;
   } | null>(null);
+  const { profiles } = useModelProfiles();
 
   useEffect(() => {
     const handler = () => setRoute(parseRoute());
@@ -201,63 +204,60 @@ export default function App() {
         : 'warning';
   const ahpText = dashboard?.ahp
     ? dashboard.ahp.connected
-      ? tr(
-          `AHP 已连接 · ${dashboard.ahp.sessions} 会话`,
-          `AHP connected · ${dashboard.ahp.sessions} sessions`,
-        )
+      ? t('ahp.connected.sessions', { sessions: dashboard.ahp.sessions })
       : dashboard.ahp.state === 'connecting'
-        ? tr('AHP 连接中', 'AHP connecting')
+        ? t('ahp.connecting')
         : dashboard.ahp.state === 'disabled'
-          ? tr('AHP 不可用', 'AHP unavailable')
-          : tr('AHP 未连接', 'AHP not connected')
+          ? t('ahp.unavailable')
+          : t('ahp.not.connected')
     : null;
   const ahpStateText = dashboard?.ahp
     ? dashboard.ahp.connected
-      ? tr('已连接', 'Connected')
+      ? t('connected')
       : dashboard.ahp.state === 'connecting'
-        ? tr('连接中', 'Connecting')
+        ? t('connecting')
         : dashboard.ahp.state === 'disabled'
-          ? tr('不可用', 'Unavailable')
-          : tr('未连接', 'Not connected')
+          ? t('unavailable')
+          : t('not.connected')
     : '-';
   const ahpSessionColumns: ColumnsType<AhpSessionInfo> = [
     {
-      title: tr('标题', 'Title'),
+      title: t('title'),
       dataIndex: 'title',
       key: 'title',
       width: 220,
       ellipsis: true,
     },
     {
-      title: tr('来源', 'Provider'),
+      title: t('provider'),
       dataIndex: 'provider',
       key: 'provider',
       width: 100,
       ellipsis: true,
     },
     {
-      title: tr('状态', 'Status'),
+      title: t('status'),
       dataIndex: 'status',
       key: 'status',
       width: 100,
       render: (status: string) => {
         if (status === 'in_progress') {
-          return <Tag color="processing">{tr('进行中', 'In progress')}</Tag>;
+          return <Tag color="processing">{t('in.progress')}</Tag>;
         }
         if (status === 'input_needed') {
-          return <Tag color="warning">{tr('等待输入', 'Needs input')}</Tag>;
+          return <Tag color="warning">{t('needs.input')}</Tag>;
         }
         if (status === 'error') {
-          return <Tag color="error">{tr('错误', 'Error')}</Tag>;
+          return <Tag color="error">{t('error')}</Tag>;
         }
         if (status === 'idle') {
-          return <Tag>{tr('空闲', 'Idle')}</Tag>;
+          return <Tag>{t('idle')}</Tag>;
         }
-        return <Tag>{tr('未知', 'Unknown')}</Tag>;
+        return <Tag>{t('unknown')}</Tag>;
       },
     },
     {
-      title: tr('工作区', 'Workspace'),
+      title: t('workspace'),
       dataIndex: 'workspacePath',
       key: 'workspace',
       width: 240,
@@ -265,7 +265,7 @@ export default function App() {
       render: (workspacePath: string | null) => workspacePath || '-',
     },
     {
-      title: tr('活动', 'Activity'),
+      title: t('activity'),
       dataIndex: 'activity',
       key: 'activity',
       width: 140,
@@ -273,7 +273,7 @@ export default function App() {
       render: (activity: string | null) => activity || '-',
     },
     {
-      title: tr('最近修改', 'Modified'),
+      title: t('modified'),
       dataIndex: 'modifiedAt',
       key: 'modified',
       width: 120,
@@ -283,7 +283,7 @@ export default function App() {
       },
     },
     {
-      title: tr('会话数', 'Chats'),
+      title: t('chats'),
       dataIndex: 'chats',
       key: 'chats',
       width: 70,
@@ -292,8 +292,8 @@ export default function App() {
   ];
 
   const menuItems = useMemo(
-    () => buildMenu(dashboard),
-    [dashboard, lang],
+    () => buildMenu(dashboard, profiles),
+    [dashboard, profiles, locale],
   );
 
   useEffect(() => {
@@ -304,9 +304,19 @@ export default function App() {
     setOpenKeys((current) =>
       current.length > 0
         ? current
-        : [...new Set(dashboard.models.map((row) => `provider:${providerOf(row.model)}`))],
+        : [
+            ...new Set(
+              dashboard.models.map(
+                (row) =>
+                  `provider:${providerOf(
+                    row.model,
+                    profiles[row.model.toLowerCase()]?.provider,
+                  )}`,
+              ),
+            ),
+          ],
     );
-  }, [dashboard, siderCollapsed]);
+  }, [dashboard, profiles, siderCollapsed]);
 
   const selectedKeys =
     route.view === 'dashboard'
@@ -364,23 +374,28 @@ export default function App() {
   const pageMeta =
     route.view === 'dashboard'
       ? {
-          title: tr('主页', 'Home'),
-          subtitle: tr('汇总与趋势', 'Overview'),
+          title: t('home'),
+          subtitle: t('overview'),
         }
       : route.view === 'calls'
         ? {
-            title: tr('调用明细', 'Call details'),
-            subtitle: tr('多维度检索', 'Search and filters'),
+            title: t('call.details'),
+            subtitle: t('search.and.filters'),
           }
         : route.view === 'model'
           ? {
-              title: `${providerOf(route.id)} · ${shortModelName(route.id)}`,
+              // The full leaf id matches the tables, while the short name would
+              // collapse names such as "glm-5" to a bare version number.
+              title: `${providerOf(
+                route.id,
+                profiles[route.id.toLowerCase()]?.provider,
+              )} · ${leafModelName(route.id)}`,
               subtitle: route.id,
             }
           : {
               title:
                 sessionMeta?.title ??
-                `${tr('会话', 'Session')} · ${
+                `${t('session')} · ${
                   route.id.length > 12 ? `${route.id.slice(0, 8)}…` : route.id
                 }`,
               subtitle: sessionMeta?.subtitle ?? route.id,
@@ -435,8 +450,8 @@ export default function App() {
               <Tooltip
                 title={
                   siderCollapsed
-                    ? tr('展开导航', 'Expand navigation')
-                    : tr('收起导航', 'Collapse navigation')
+                    ? t('expand.navigation')
+                    : t('collapse.navigation')
                 }
               >
                 <Button
@@ -486,8 +501,8 @@ export default function App() {
                 placement="right"
                 title={
                   connected
-                    ? tr('实时连接', 'Live')
-                    : tr('连接断开', 'Disconnected')
+                    ? t('live')
+                    : t('disconnected')
                 }
               >
                 <span>
@@ -497,8 +512,8 @@ export default function App() {
                       siderCollapsed
                         ? undefined
                         : connected
-                          ? tr('实时连接', 'Live')
-                          : tr('连接断开', 'Disconnected')
+                          ? t('live')
+                          : t('disconnected')
                     }
                   />
                 </span>
@@ -506,10 +521,7 @@ export default function App() {
               {ahpText && (
                 <Tooltip
                   placement="right"
-                  title={tr(
-                    'AHP 用于同步 Agent Host 的实时会话标题；点击查看详情。',
-                    'AHP syncs live Agent Host session titles; click for details.',
-                  )}
+                  title={t('ahp.syncs.live.agent.host.session.titles.click.for')}
                 >
                   <span
                     role="button"
@@ -544,12 +556,12 @@ export default function App() {
                   {
                     key: 'system',
                     icon: <InfoCircleOutlined />,
-                    label: tr('系统信息', 'System info'),
+                    label: t('system.info'),
                   },
                   {
                     key: 'settings',
                     icon: <SettingOutlined />,
-                    label: tr('设置', 'Settings'),
+                    label: t('settings'),
                   },
                 ]}
                 onClick={({ key }) => {
@@ -635,12 +647,12 @@ export default function App() {
                 onChange={onRangeChange}
                 style={{ width: 120 }}
                 options={[
-                  { value: 0, label: tr('今天', 'Today') },
-                  { value: 1, label: tr('昨天', 'Yesterday') },
-                  { value: 2, label: tr('近 7 天', 'Last 7 days') },
-                  { value: 3, label: tr('近 30 天', 'Last 30 days') },
-                  { value: 4, label: tr('全部', 'All') },
-                  { value: 'custom', label: tr('自定义', 'Custom') },
+                  { value: 0, label: t('today') },
+                  { value: 1, label: t('yesterday') },
+                  { value: 2, label: t('last.7.days') },
+                  { value: 3, label: t('last.30.days') },
+                  { value: 4, label: t('all') },
+                  { value: 'custom', label: t('custom') },
                 ]}
               />
               {rangeMode === 'custom' && (
@@ -668,9 +680,9 @@ export default function App() {
                 onChange={setThemeMode}
                 style={{ width: 132 }}
                 options={[
-                  { value: 'auto', label: tr('主题：自动', 'Theme: Auto') },
-                  { value: 'light', label: tr('浅色', 'Light') },
-                  { value: 'dark', label: tr('深色', 'Dark') },
+                  { value: 'auto', label: t('theme.auto') },
+                  { value: 'light', label: t('light') },
+                  { value: 'dark', label: t('dark') },
                 ]}
               />
               <Select
@@ -678,9 +690,11 @@ export default function App() {
                 onChange={setLanguageMode}
                 style={{ width: 120 }}
                 options={[
-                  { value: 'auto', label: tr('语言：自动', 'Language: Auto') },
-                  { value: 'zh', label: '中文' },
-                  { value: 'en', label: 'English' },
+                  { value: 'auto', label: t('language.auto') },
+                  ...LOCALES.map((locale) => ({
+                    value: locale.id,
+                    label: locale.label,
+                  })),
                 ]}
               />
             </Space>
@@ -740,7 +754,7 @@ export default function App() {
         </Layout>
       </Layout>
 
-      <PriceSettingsDrawer
+      <ModelSettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
@@ -751,7 +765,7 @@ export default function App() {
       />
 
       <Modal
-        title={tr('AHP 连接详情', 'AHP connection details')}
+        title={t('ahp.connection.details')}
         open={ahpOpen}
         onCancel={() => setAhpOpen(false)}
         footer={null}
@@ -764,37 +778,28 @@ export default function App() {
           items={[
             {
               key: 'state',
-              label: tr('状态', 'Status'),
+              label: t('status'),
               children: ahpStateText,
             },
             {
               key: 'sessions',
-              label: tr('会话数', 'Sessions'),
+              label: t('sessions'),
               children: dashboard?.ahp?.sessions ?? '-',
             },
             {
               key: 'transport',
-              label: tr('连接方式', 'Transport'),
-              children: tr(
-                '本地命名管道 / Unix Socket / TCP',
-                'Local named pipe / Unix socket / TCP',
-              ),
+              label: t('transport'),
+              children: t('local.named.pipe.unix.socket.tcp'),
             },
             {
               key: 'purpose',
-              label: tr('用途', 'Purpose'),
-              children: tr(
-                '同步 Agent Host 的实时会话标题与工作区；不读取对话内容。',
-                'Syncs live Agent Host session titles and workspaces; conversation content is not read.',
-              ),
+              label: t('purpose'),
+              children: t('syncs.live.agent.host.session.titles.and.workspaces'),
             },
             {
               key: 'fallback',
-              label: tr('降级', 'Fallback'),
-              children: tr(
-                'AHP 不可用时回退到 agent-host.db 与 ChatSessionStore 索引。',
-                'Falls back to agent-host.db and the ChatSessionStore index when unavailable.',
-              ),
+              label: t('fallback'),
+              children: t('falls.back.to.agent.host.db.and.the.chatsessionstore'),
             },
           ]}
         />

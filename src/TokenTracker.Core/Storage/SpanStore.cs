@@ -10,6 +10,17 @@ public sealed record StoredModelPrice(
     ModelPrice Price,
     long UpdatedAtMs);
 
+// Presentation metadata kept separately from pricing so a model can be named and
+// iconed before it is priced. model is the natural key (COLLATE NOCASE).
+public sealed record StoredModelProfile(
+    string Model,
+    string? Provider,
+    string? IconKind,
+    string? IconLetter,
+    string? IconColor,
+    string? IconImage,
+    long UpdatedAtMs);
+
 public sealed partial class SpanStore
 {
     private const string SourceCaseSql =
@@ -348,6 +359,16 @@ public sealed partial class SpanStore
                 peak_cache_write REAL,
                 long_cache_write REAL,
                 long_peak_cache_write REAL,
+                updated_at_ms INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS model_profiles (
+                model TEXT PRIMARY KEY COLLATE NOCASE,
+                provider TEXT,
+                icon_kind TEXT,
+                icon_letter TEXT,
+                icon_color TEXT,
+                icon_image TEXT,
                 updated_at_ms INTEGER NOT NULL
             );
 
@@ -1350,13 +1371,14 @@ public sealed partial class SpanStore
     public IReadOnlyList<CallRow> GetCallsForSession(
         string sessionId,
         long fromMs = 0,
-        int limit = 1000,
+        long toMs = long.MaxValue,
+        int limit = int.MaxValue,
         string? source = null) =>
         GetCalls(new CallQuery
         {
             SessionId = sessionId,
             FromMs = fromMs,
-            ToMs = long.MaxValue,
+            ToMs = toMs,
             IncludeUtility = true,
             Source = source,
             Limit = limit,
@@ -2110,6 +2132,99 @@ public sealed partial class SpanStore
             using var connection = OpenConnection();
             using var command = connection.CreateCommand();
             command.CommandText = "DELETE FROM model_prices WHERE model = @model;";
+            command.Parameters.AddWithValue("@model", model);
+            return command.ExecuteNonQuery() > 0;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public IReadOnlyList<StoredModelProfile> GetModelProfiles()
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT model, provider, icon_kind, icon_letter, icon_color,
+                   icon_image, updated_at_ms
+            FROM model_profiles;
+            """;
+
+        var rows = new List<StoredModelProfile>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new StoredModelProfile(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.GetInt64(6)));
+        }
+
+        return rows;
+    }
+
+    public void UpsertModelProfile(StoredModelProfile profile)
+    {
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO model_profiles (
+                    model, provider, icon_kind, icon_letter, icon_color,
+                    icon_image, updated_at_ms
+                ) VALUES (
+                    @model, @provider, @icon_kind, @icon_letter, @icon_color,
+                    @icon_image, @updated_at_ms
+                )
+                ON CONFLICT(model) DO UPDATE SET
+                    provider = excluded.provider,
+                    icon_kind = excluded.icon_kind,
+                    icon_letter = excluded.icon_letter,
+                    icon_color = excluded.icon_color,
+                    icon_image = excluded.icon_image,
+                    updated_at_ms = excluded.updated_at_ms;
+                """;
+            command.Parameters.AddWithValue("@model", profile.Model);
+            command.Parameters.AddWithValue(
+                "@provider",
+                (object?)profile.Provider ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "@icon_kind",
+                (object?)profile.IconKind ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "@icon_letter",
+                (object?)profile.IconLetter ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "@icon_color",
+                (object?)profile.IconColor ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "@icon_image",
+                (object?)profile.IconImage ?? DBNull.Value);
+            command.Parameters.AddWithValue("@updated_at_ms", profile.UpdatedAtMs);
+            command.ExecuteNonQuery();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public bool DeleteModelProfile(string model)
+    {
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "DELETE FROM model_profiles WHERE model = @model;";
             command.Parameters.AddWithValue("@model", model);
             return command.ExecuteNonQuery() > 0;
         }

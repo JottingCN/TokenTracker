@@ -1,6 +1,7 @@
 import { Card, theme, Tooltip } from 'antd';
 import type { Summary } from '../types';
 import { useUi } from '../ui';
+import { intlLocale } from '../i18n';
 import { formatMoney, useMoney } from '../utils/money';
 import { useGridColumns } from '../utils/useGridColumns';
 
@@ -17,78 +18,63 @@ interface CardDefinition {
 }
 
 export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
-  const { lang, tr } = useUi();
+  const { locale, t } = useUi();
   const { token } = theme.useToken();
   useMoney();
-  const number = new Intl.NumberFormat(lang === 'zh' ? 'zh-CN' : 'en-US');
+  const number = new Intl.NumberFormat(intlLocale(locale));
 
   const cards: CardDefinition[] = [
     {
-      label: tr('调用', 'Calls'),
+      label: t('calls'),
       value: summary ? number.format(summary.calls) : '-',
     },
     {
-      label: tr('输入 tokens', 'Input tokens'),
+      label: t('input.tokens'),
       value: summary ? number.format(summary.inputTokens) : '-',
       cost: summary
         ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
         : '-',
-      hint: tr(
-        '输入 tokens 与下方费用均为总计（含缓存命中部分）。',
-        'Input tokens and the cost shown are totals including cached tokens.',
-      ),
+      hint: t('input.tokens.and.the.cost.shown.are.totals.including'),
     },
     {
-      label: tr('缓存命中 tokens', 'Cached tokens'),
+      label: t('cached.tokens'),
       value: summary ? number.format(summary.cacheReadTokens) : '-',
       cost: summary ? formatMoney(summary.cacheCostCny) : '-',
-      hint: tr(
-        '缓存费用包含缓存读取与缓存写入。',
-        'Cache cost includes cache reads and cache writes.',
-      ),
+      hint: t('cache.cost.includes.cache.reads.and.cache.writes'),
     },
     {
-      label: tr('命中率', 'Hit rate'),
+      label: t('hit.rate'),
       value:
         summary && summary.hitRate !== null
           ? `${(summary.hitRate * 100).toFixed(1)}%`
           : '-',
     },
     {
-      label: tr('输出 tokens', 'Output tokens'),
+      label: t('output.tokens'),
       value: summary ? number.format(summary.outputTokens) : '-',
       cost: summary ? formatMoney(summary.outputCostCny) : '-',
-      hint: tr(
-        '输出 token 包含思考 token，费用按输出单价计算。',
-        'Output tokens include reasoning tokens and are priced at the output rate.',
-      ),
+      hint: t('output.tokens.include.reasoning.tokens.and.are.priced'),
     },
     {
-      label: tr('思考 tokens', 'Reasoning tokens'),
+      label: t('reasoning.tokens'),
       value: summary ? summary.reasoningTokensText : '-',
       cost:
         summary && summary.reasoningTokens > 0
           ? formatMoney(summary.reasoningCostCny)
           : '-',
-      hint: tr(
-        '思考 token 是输出 token 的一部分，对应费用已计入输出费用，不重复累加。',
-        'Reasoning tokens are part of output; their cost is already included in output cost.',
-      ),
+      hint: t('reasoning.tokens.are.part.of.output.their.cost.is'),
     },
     {
-      label: tr('估算费用', 'Estimated cost'),
+      label: t('estimated.cost'),
       value: summary ? formatMoney(summary.costCny) : '-',
-      hint: tr(
-        '估算费用 = 输入金额 + 输出金额；缓存命中、思考为专项展示，不重复累加。',
-        'Estimated cost = input cost + output cost; cached and reasoning are special breakdowns and are not added again.',
-      ),
+      hint: t('estimated.cost.input.cost.output.cost.cached.and'),
     },
     lastCard ?? {
-      label: tr('会话数', 'Sessions'),
+      label: t('sessions'),
       value: summary ? number.format(summary.sessions) : '-',
     },
     {
-      label: tr('未定价调用', 'Unpriced calls'),
+      label: t('unpriced.calls'),
       value: summary ? number.format(summary.unpricedCalls) : '-',
     },
   ];

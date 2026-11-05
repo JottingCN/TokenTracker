@@ -4,6 +4,7 @@ import { Empty, Spin, Tag, Tree, Typography } from 'antd';
 import dayjs from 'dayjs';
 import type { TraceNode, TracePayload } from '../types';
 import { useUi } from '../ui';
+import { intlLocale, type Locale } from '../i18n';
 import { useAutoTableHeight } from '../utils/useAutoTableHeight';
 import { useViewportHeight } from '../utils/useViewportHeight';
 
@@ -16,7 +17,7 @@ interface TraceTreeProps {
 }
 
 export function TraceTree({ sessionId, expanded = false, version }: TraceTreeProps) {
-  const { lang, tr } = useUi();
+  const { locale, t } = useUi();
   const [nodes, setNodes] = useState<TraceNode[] | null>(null);
   const [loadedFor, setLoadedFor] = useState<string>();
   const loading = loadedFor !== sessionId;
@@ -54,7 +55,7 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
     () =>
       (nodes ?? []).map((node) => ({
         key: node.id,
-        title: <TraceNodeTitle node={node} lang={lang} />,
+        title: <TraceNodeTitle node={node} locale={locale} />,
       })),
     [nodes],
   );
@@ -71,7 +72,7 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
     return (
       <Empty
         image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description={tr('暂无 Trace 数据', 'No trace data')}
+        description={t('no.trace.data')}
       />
     );
   }
@@ -95,10 +96,7 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
         type="secondary"
         style={{ display: 'block', marginBottom: 8, fontSize: 12 }}
       >
-        {tr(
-          '按开始时间排列，缩进表示父子层级；数据较多时使用虚拟滚动。',
-          'Sorted by start time; indentation shows parent links. Virtual scrolling is used for large traces.',
-        )}
+        {t('sorted.by.start.time.indentation.shows.parent.links')}
       </Typography.Text>
       <Tree
         treeData={treeData}
@@ -113,11 +111,15 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
 }
 
 const compactFormatters = {
-  zh: new Intl.NumberFormat('zh-CN', {
+  'zh-CN': new Intl.NumberFormat('zh-CN', {
     notation: 'compact',
     maximumFractionDigits: 1,
   }),
-  en: new Intl.NumberFormat('en-US', {
+  'zh-TW': new Intl.NumberFormat('zh-TW', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }),
+  'en-US': new Intl.NumberFormat('en-US', {
     notation: 'compact',
     maximumFractionDigits: 1,
   }),
@@ -125,12 +127,12 @@ const compactFormatters = {
 
 function TraceNodeTitle({
   node,
-  lang,
+  locale,
 }: {
   node: TraceNode;
-  lang: 'zh' | 'en';
+  locale: Locale;
 }) {
-  const tokenFormatter = compactFormatters[lang];
+  const tokenFormatter = compactFormatters[intlLocale(locale)];
   return (
     <span style={{ paddingLeft: node.depth * 18 }}>
       {node.depth > 0 && (

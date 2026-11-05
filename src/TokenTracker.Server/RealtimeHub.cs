@@ -6,9 +6,16 @@ public sealed class RealtimeHub
 {
     public static readonly TimeSpan FallbackInterval = TimeSpan.FromSeconds(60);
 
+    // Metrics arrive in batches every few seconds, and each notification rebuilds
+    // every subscriber's full payload. A short coalescing window keeps a burst of
+    // ingests from triggering one rebuild per batch while staying imperceptible.
+    private static readonly TimeSpan NotifyCoalesceInterval =
+        TimeSpan.FromMilliseconds(500);
+
     private readonly ConcurrentDictionary<long, RealtimeConnection> _connections = new();
     private long _nextId;
     private long _lastHttpActivityMs;
+    private int _notifyPending;
 
     // Polling clients (no WebSocket) never appear in _connections, so HTTP API
     // calls also count as activity; otherwise the server exits under a live client.
@@ -42,10 +49,27 @@ public sealed class RealtimeHub
 
     public void NotifyChanged()
     {
-        foreach (var connection in _connections.Values)
+        if (Interlocked.Exchange(ref _notifyPending, 1) == 1)
         {
-            connection.Signal();
+            return;
         }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(NotifyCoalesceInterval).ConfigureAwait(false);
+            }
+            catch (TaskCanceledException)
+            {
+            }
+
+            Interlocked.Exchange(ref _notifyPending, 0);
+            foreach (var connection in _connections.Values)
+            {
+                connection.Signal();
+            }
+        });
     }
 }
 

@@ -9,10 +9,8 @@ import {
 import {
   Button,
   Card,
-  Col,
   Empty,
   Modal,
-  Row,
   Space,
   Table,
   Tabs,
@@ -22,6 +20,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { OutcomeCard } from '../components/OutcomeCard';
+import { SignalCard } from '../components/SignalCard';
 import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
 import { TraceTree } from '../components/TraceTree';
@@ -34,6 +33,7 @@ import type {
   ToolCallRow,
 } from '../types';
 import { useUi } from '../ui';
+import { intlLocale } from '../i18n';
 import {
   formatLatency,
   formatTime,
@@ -56,8 +56,8 @@ export function SessionPage({
   onOpenCalls,
 }: SessionPageProps) {
   useMoney();
-  const { lang, tr } = useUi();
-  const number = new Intl.NumberFormat(lang === 'zh' ? 'zh-CN' : 'en-US');
+  const { locale, t } = useUi();
+  const number = new Intl.NumberFormat(intlLocale(locale));
   const shortId =
     sessionId.length > 20 ? `${sessionId.slice(0, 8)}…` : sessionId;
   const listHeight = useViewportHeight(0.3, 240, 420);
@@ -99,7 +99,7 @@ export function SessionPage({
       ].join('|')
     : '';
   const pageTitle =
-    data?.title?.trim() || `${tr('未命名', 'Unnamed')} · ${shortId}`;
+    data?.title?.trim() || `${t('unnamed')} · ${shortId}`;
   const pageSubtitle = data?.workspacePath || sessionId;
 
   useEffect(() => {
@@ -109,6 +109,17 @@ export function SessionPage({
   useEffect(() => {
     setActiveScope('all');
   }, [sessionId]);
+
+  // Switching the time range can drop the selected model from the payload; fall
+  // back to the combined tab instead of rendering dashes everywhere.
+  useEffect(() => {
+    if (
+      activeScope !== 'all' &&
+      !modelScopes.some((row) => row.model === activeScope)
+    ) {
+      setActiveScope('all');
+    }
+  }, [activeScope, modelScopes]);
 
   const togglePanel = (panel: string) => {
     setOpenPanels((current) =>
@@ -120,27 +131,27 @@ export function SessionPage({
 
   const eventColumns: ColumnsType<SessionEventRow> = [
     {
-      title: tr('事件类型', 'Event'),
+      title: t('event'),
       key: 'operation',
       width: 130,
       render: (_, row) => operationLabel(row.operation),
     },
     {
-      title: tr('次数', 'Count'),
+      title: t('count'),
       key: 'count',
       width: 80,
       align: 'right',
       render: (_, row) => number.format(row.count),
     },
     {
-      title: tr('平均耗时', 'Avg duration'),
+      title: t('avg.duration'),
       key: 'avgDuration',
       width: 110,
       align: 'right',
       render: (_, row) => formatLatency(row.avgDurationMs),
     },
     {
-      title: tr('失败', 'Errors'),
+      title: t('errors'),
       key: 'errors',
       width: 70,
       align: 'right',
@@ -154,7 +165,7 @@ export function SessionPage({
         ),
     },
     {
-      title: tr('最近', 'Last seen'),
+      title: t('last.seen'),
       key: 'lastSeen',
       width: 120,
       align: 'right',
@@ -164,7 +175,7 @@ export function SessionPage({
 
   const toolColumns: ColumnsType<ToolCallRow> = [
     {
-      title: tr('工具', 'Tool'),
+      title: t('tool'),
       key: 'tool',
       width: 180,
       ellipsis: true,
@@ -175,14 +186,14 @@ export function SessionPage({
       ),
     },
     {
-      title: tr('类型', 'Type'),
+      title: t('type'),
       key: 'toolType',
       width: 110,
       ellipsis: true,
       render: (_, row) => row.toolTypeText,
     },
     {
-      title: tr('细分', 'Details'),
+      title: t('details'),
       key: 'toolDetail',
       width: 190,
       render: (_, row) => {
@@ -190,12 +201,12 @@ export function SessionPage({
           ...row.editTypes.map((value) => ({
             key: `edit:${value}`,
             color: 'blue',
-            label: `${tr('编辑', 'Edit')}: ${value}`,
+            label: `${t('edit')}: ${value}`,
           })),
           ...row.skillNames.map((value) => ({
             key: `skill:${value}`,
             color: 'purple',
-            label: `${tr('技能', 'Skill')}: ${value}`,
+            label: `${t('skill')}: ${value}`,
           })),
         ];
         return tags.length === 0 ? (
@@ -212,56 +223,56 @@ export function SessionPage({
       },
     },
     {
-      title: tr('MCP Server', 'MCP server'),
+      title: t('mcp.server'),
       key: 'mcpServer',
       width: 160,
       ellipsis: true,
       render: (_, row) => row.mcpServerHashText,
     },
     {
-      title: tr('MCP 工具', 'MCP tool'),
+      title: t('mcp.tool'),
       key: 'mcpTool',
       width: 160,
       ellipsis: true,
       render: (_, row) => row.mcpToolNameText,
     },
     {
-      title: tr('错误', 'Error'),
+      title: t('error'),
       key: 'errorType',
       width: 130,
       ellipsis: true,
       render: (_, row) => row.errorTypeText,
     },
     {
-      title: tr('Agent', 'Agent'),
+      title: t('agent'),
       key: 'agentName',
       width: 150,
       ellipsis: true,
       render: (_, row) => row.agentNameText,
     },
     {
-      title: tr('调用次数', 'Calls'),
+      title: t('calls'),
       key: 'calls',
       width: 90,
       align: 'right',
       render: (_, row) => number.format(row.calls),
     },
     {
-      title: tr('平均耗时', 'Avg duration'),
+      title: t('avg.duration'),
       key: 'avgDuration',
       width: 110,
       align: 'right',
       render: (_, row) => formatLatency(row.avgDurationMs),
     },
     {
-      title: tr('最长耗时', 'Max duration'),
+      title: t('max.duration'),
       key: 'maxDuration',
       width: 110,
       align: 'right',
       render: (_, row) => formatLatency(row.maxDurationMs),
     },
     {
-      title: tr('失败', 'Errors'),
+      title: t('errors'),
       key: 'errors',
       width: 70,
       align: 'right',
@@ -275,7 +286,7 @@ export function SessionPage({
         ),
     },
     {
-      title: tr('最近', 'Last seen'),
+      title: t('last.seen'),
       key: 'lastSeen',
       width: 120,
       align: 'right',
@@ -285,53 +296,53 @@ export function SessionPage({
 
   const agentRunColumns: ColumnsType<AgentRunRow> = [
     {
-      title: tr('层级', 'Scope'),
+      title: t('scope'),
       key: 'scope',
       width: 90,
       render: (_, row) =>
         row.isRoot ? (
-          <Tag>{tr('根', 'Root')}</Tag>
+          <Tag>{t('root')}</Tag>
         ) : (
-          <Tag color="purple">{tr('子代理', 'Subagent')}</Tag>
+          <Tag color="purple">{t('subagent')}</Tag>
         ),
     },
     {
-      title: tr('Agent', 'Agent'),
+      title: t('agent'),
       key: 'agent',
       width: 160,
       ellipsis: true,
       render: (_, row) => row.agentText,
     },
     {
-      title: tr('类型', 'Type'),
+      title: t('type'),
       key: 'agentType',
       width: 100,
       ellipsis: true,
       render: (_, row) => row.agentTypeText,
     },
     {
-      title: tr('提供商', 'Provider'),
+      title: t('provider'),
       key: 'provider',
       width: 120,
       ellipsis: true,
       render: (_, row) => row.providerText,
     },
     {
-      title: tr('模型', 'Model'),
+      title: t('model'),
       key: 'model',
       width: 180,
       ellipsis: true,
       render: (_, row) => row.modelText,
     },
     {
-      title: tr('轮次', 'Turns'),
+      title: t('turns'),
       key: 'turns',
       width: 70,
       align: 'right',
       render: (_, row) => row.turnText,
     },
     {
-      title: tr('输入 / 缓存 / 输出', 'Input / Cache / Output'),
+      title: t('input.cache.output'),
       key: 'tokens',
       width: 190,
       align: 'right',
@@ -339,7 +350,7 @@ export function SessionPage({
         `${row.inputText} / ${row.cacheText} / ${row.outputText}`,
     },
     {
-      title: tr('仓库 / 分支', 'Repo / Branch'),
+      title: t('repo.branch'),
       key: 'repo',
       width: 220,
       ellipsis: true,
@@ -371,21 +382,21 @@ export function SessionPage({
       },
     },
     {
-      title: tr('耗时', 'Duration'),
+      title: t('duration'),
       key: 'duration',
       width: 100,
       align: 'right',
       render: (_, row) => row.durationText,
     },
     {
-      title: tr('开始', 'Start'),
+      title: t('start'),
       key: 'start',
       width: 120,
       align: 'right',
       render: (_, row) => formatTime(row.startTimeMs),
     },
     {
-      title: tr('错误', 'Error'),
+      title: t('error'),
       key: 'error',
       width: 120,
       ellipsis: true,
@@ -400,41 +411,41 @@ export function SessionPage({
 
   const hookColumns: ColumnsType<HookSummaryRow> = [
     {
-      title: tr('Hook', 'Hook'),
+      title: t('hook'),
       key: 'hookType',
       width: 160,
       ellipsis: true,
       render: (_, row) => row.hookTypeText,
     },
     {
-      title: tr('决策', 'Decision'),
+      title: t('decision'),
       key: 'decision',
       width: 100,
       render: (_, row) => row.decisionText,
     },
     {
-      title: tr('结果', 'Result'),
+      title: t('result'),
       key: 'result',
       width: 140,
       ellipsis: true,
       render: (_, row) => row.resultKindText,
     },
     {
-      title: tr('次数', 'Calls'),
+      title: t('calls'),
       key: 'count',
       width: 80,
       align: 'right',
       render: (_, row) => row.countText,
     },
     {
-      title: tr('平均耗时', 'Avg duration'),
+      title: t('avg.duration'),
       key: 'avgDuration',
       width: 110,
       align: 'right',
       render: (_, row) => row.avgDurationText,
     },
     {
-      title: tr('失败', 'Errors'),
+      title: t('errors'),
       key: 'errors',
       width: 70,
       align: 'right',
@@ -448,14 +459,14 @@ export function SessionPage({
         ),
     },
     {
-      title: tr('作用工具', 'Tools'),
+      title: t('tools'),
       key: 'tools',
       width: 220,
       ellipsis: true,
       render: (_, row) => row.toolNamesText,
     },
     {
-      title: tr('最近', 'Last seen'),
+      title: t('last.seen'),
       key: 'lastSeen',
       width: 120,
       align: 'right',
@@ -476,30 +487,30 @@ export function SessionPage({
       >
         <Space size={6}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {tr('会话 ID', 'Session ID')}：
+            {t('session.id')}：
           </Typography.Text>
           <Typography.Text code copyable style={{ fontSize: 12 }}>
             {sessionId}
           </Typography.Text>
         </Space>
         <Space size={6}>
-          <Tooltip title={tr('在调用明细分页中筛选该会话', 'Filter call details by this session')}>
+          <Tooltip title={t('filter.call.details.by.this.session')}>
             <Button
               size="small"
               icon={<FilterOutlined />}
               disabled={!onOpenCalls}
               onClick={() => onOpenCalls?.(sessionId)}
             >
-              {tr('查看明细', 'View calls')}
+              {t('view.calls')}
             </Button>
           </Tooltip>
-          <Tooltip title={tr('刷新标题和元数据', 'Refresh title and metadata')}>
+          <Tooltip title={t('refresh.title.and.metadata')}>
             <Button
               size="small"
               icon={<ReloadOutlined />}
               onClick={refresh}
             >
-              {tr('刷新', 'Refresh')}
+              {t('refresh')}
             </Button>
           </Tooltip>
         </Space>
@@ -513,7 +524,7 @@ export function SessionPage({
           items={[
             {
               key: 'all',
-              label: `${tr('全部模型', 'All models')}(${modelScopes.length})`,
+              label: `${t('all.models')}(${modelScopes.length})`,
             },
             ...modelScopes.map((row) => ({
               key: row.model,
@@ -526,19 +537,21 @@ export function SessionPage({
       <SummaryCards
         summary={summary ?? null}
         lastCard={{
-          label: tr('事件数', 'Events'),
+          label: t('events'),
           value: data ? number.format(eventTotal) : '-',
         }}
       />
 
       <OutcomeCard outcomes={data?.outcomes} />
 
+      <SignalCard signalHealth={data?.signalHealth} />
+
       <LatencyCards
         summary={summary}
         extra={
           <Card size="small" style={{ height: '100%' }}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {tr('工具调用', 'Tool calls')}
+              {t('tool.calls')}
             </Typography.Text>
             <div
               style={{
@@ -551,12 +564,7 @@ export function SessionPage({
               {data ? number.format(toolTotal) : '-'}
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              {data
-                ? tr(
-                    `${number.format(data.tools.length)} 种工具`,
-                    `${number.format(data.tools.length)} tools`,
-                  )
-                : '-'}
+              {data ? t('tools.count', { count: number.format(data.tools.length) }) : '-'}
             </Typography.Text>
           </Card>
         }
@@ -564,12 +572,15 @@ export function SessionPage({
 
       <Card
         size="small"
-        title={`${tr('Agent 运行', 'Agent runs')}(${data?.agentRuns.length ?? 0})`}
+        styles={collapsedBodyStyle(openPanels.includes('agents'))}
+        title={`${t('agent.runs')}(${data?.agentRuns.length ?? 0})`}
         extra={
           <Space size={8}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {tr('root tokens 不计入合计', 'Root tokens excluded from totals')}
-            </Typography.Text>
+            {data && data.agentRuns.length > 0 && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('root.tokens.excluded.from.totals')}
+              </Typography.Text>
+            )}
             <CollapseToggle
               panel="agents"
               open={openPanels.includes('agents')}
@@ -582,7 +593,7 @@ export function SessionPage({
           (data && data.agentRuns.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={tr('暂无 Agent 运行数据', 'No agent runs yet')}
+              description={t('no.agent.runs.yet')}
             />
           ) : (
             <Table
@@ -599,7 +610,8 @@ export function SessionPage({
 
       <Card
         size="small"
-        title={`${tr('Hook 执行', 'Hook executions')}(${data?.hooks.length ?? 0})`}
+        styles={collapsedBodyStyle(openPanels.includes('hooks'))}
+        title={`${t('hook.executions')}(${data?.hooks.length ?? 0})`}
         extra={
           <CollapseToggle
             panel="hooks"
@@ -612,7 +624,7 @@ export function SessionPage({
           (data && data.hooks.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={tr('暂无 Hook 数据', 'No hook data yet')}
+              description={t('no.hook.data.yet')}
             />
           ) : (
             <Table
@@ -631,9 +643,11 @@ export function SessionPage({
 
       <Card
         size="small"
-        title={
-          <Space size={2}>
-            <Tooltip title={tr('全页查看', 'Open full page')}>
+        styles={collapsedBodyStyle(openPanels.includes('trace'))}
+        title={t('trace.topology')}
+        extra={
+          <Space size={8}>
+            <Tooltip title={t('open.full.page')}>
               <Button
                 size="small"
                 type="text"
@@ -641,18 +655,6 @@ export function SessionPage({
                 onClick={() => setTraceExpanded(true)}
               />
             </Tooltip>
-            <span>{tr('Trace 拓扑', 'Trace topology')}</span>
-          </Space>
-        }
-        extra={
-          <Space size={8}>
-            {data && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {`${tr('指标点', 'Metrics')} ${number.format(
-                  data.signalHealth.metricPoints,
-                )}`}
-              </Typography.Text>
-            )}
             <CollapseToggle
               panel="trace"
               open={openPanels.includes('trace')}
@@ -667,7 +669,7 @@ export function SessionPage({
       </Card>
 
       <Modal
-        title={tr('Trace 拓扑', 'Trace topology')}
+        title={t('trace.topology')}
         open={traceExpanded}
         onCancel={() => setTraceExpanded(false)}
         footer={null}
@@ -678,16 +680,14 @@ export function SessionPage({
         <TraceTree sessionId={sessionId} version={traceVersion} expanded />
       </Modal>
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24}>
-          <Card
-            size="small"
-            title={`${tr('事件统计', 'Event statistics')}(${eventTotal})`}
-          >
+      <Card
+        size="small"
+        title={`${t('event.statistics')}(${eventTotal})`}
+      >
             {data && data.events.length === 0 ? (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={tr('暂无数据', 'No data')}
+                description={t('no.data')}
               />
             ) : (
               <Table
@@ -700,20 +700,16 @@ export function SessionPage({
                 scroll={{ x: 630, y: listHeight }}
               />
             )}
-          </Card>
-        </Col>
-        <Col xs={24}>
-          <Card
-            size="small"
-            title={`${tr('工具调用统计', 'Tool call statistics')}(${toolTotal})`}
-          >
+      </Card>
+
+      <Card
+        size="small"
+        title={`${t('tool.call.statistics')}(${toolTotal})`}
+      >
             {data && data.tools.length === 0 ? (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={tr(
-                  '暂无工具调用数据（需接收 execute_tool span）',
-                  'No tool call data yet (requires execute_tool spans)',
-                )}
+                description={t('no.tool.call.data.yet.requires.execute.tool.spans')}
               />
             ) : (
               <Table
@@ -726,11 +722,15 @@ export function SessionPage({
                 scroll={{ x: 1800, y: listHeight }}
               />
             )}
-          </Card>
-        </Col>
-      </Row>
+      </Card>
     </Space>
   );
+}
+
+// A collapsed section should read as a single title row; without this the empty
+// card body still adds padding and breaks the rhythm of the page.
+function collapsedBodyStyle(open: boolean) {
+  return open ? undefined : { body: { display: 'none' } };
 }
 
 // Collapsible sections keep the session page short: the title row stays visible
@@ -744,17 +744,17 @@ function CollapseToggle({
   open: boolean;
   onToggle: (panel: string) => void;
 }) {
-  const { tr } = useUi();
+  const { t } = useUi();
   return (
     <Button
       size="small"
       type="text"
       aria-expanded={open}
-      aria-label={open ? tr('收起', 'Collapse') : tr('展开', 'Expand')}
+      aria-label={open ? t('collapse') : t('expand')}
       icon={open ? <UpOutlined /> : <DownOutlined />}
       onClick={() => onToggle(panel)}
     >
-      {open ? tr('收起', 'Collapse') : tr('展开', 'Expand')}
+      {open ? t('collapse') : t('expand')}
     </Button>
   );
 }

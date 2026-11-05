@@ -13,25 +13,19 @@ interface LatencyCardsProps {
 // Shared by the session and model pages so both report identical latency
 // figures; extremes only consider successful calls, which the server filters.
 export function LatencyCards({ summary, extra }: LatencyCardsProps) {
-  const { tr } = useUi();
+  const { t } = useUi();
 
   return (
-    <Card size="small" title={tr('响应与速度', 'Latency and speed')}>
+    <Card size="small" title={t('latency.and.speed')}>
       <Row gutter={[12, 12]}>
         <Col xs={24} md={extra ? 8 : 12}>
           <MetricCard
-            label={tr('平均首次响应', 'Average TTFT')}
-            tooltip={tr(
-              '首次响应时间（TTFT）：请求发出到收到首个输出 token 的平均耗时',
-              'Average time from request to the first output token.',
-            )}
+            label={t('average.ttft')}
+            tooltip={t('average.time.from.request.to.the.first.output.token')}
             value={formatLatency(summary?.avgTtftMs)}
             note={
               summary
-                ? tr(
-                    `${summary.ttftSamples} 次调用包含 TTFT 数据`,
-                    `${summary.ttftSamples} calls include TTFT data`,
-                  )
+                ? t('ttft.samples', { count: summary.ttftSamples })
                 : '-'
             }
             // Lower TTFT is better, so the minimum is the fastest call.
@@ -41,16 +35,10 @@ export function LatencyCards({ summary, extra }: LatencyCardsProps) {
         </Col>
         <Col xs={24} md={extra ? 8 : 12}>
           <MetricCard
-            label={tr('平均生成速度', 'Average generation speed')}
-            tooltip={tr(
-              '生成速度 = 输出 token 总数 / 生成耗时（总耗时减首 token 等待）',
-              'Generation speed = total output tokens / generation time (duration minus TTFT).',
-            )}
+            label={t('average.generation.speed')}
+            tooltip={t('generation.speed.total.output.tokens.generation.time')}
             value={formatSpeed(summary?.tokensPerSecond)}
-            note={tr(
-              '有效样本优先；不足时按总耗时',
-              'Valid samples first; falls back to total duration',
-            )}
+            note={t('requires.ttft.and.at.least.5.output.tokens')}
             // Higher speed is better, so the maximum is the fastest call.
             fastest={formatSpeed(summary?.maxTokensPerSecond)}
             slowest={formatSpeed(summary?.minTokensPerSecond)}
@@ -84,12 +72,9 @@ function MetricCard({
   fastest: string;
   slowest: string;
 }) {
-  const { tr } = useUi();
+  const { t } = useUi();
   const { token } = theme.useToken();
-  const extremeHint = tr(
-    '仅统计正确响应（无错误）的调用',
-    'Successful calls only (no errors)',
-  );
+  const extremeHint = t('successful.calls.only.no.errors');
 
   return (
     <Card size="small" style={{ height: '100%' }}>
@@ -125,7 +110,7 @@ function MetricCard({
                 whiteSpace: 'nowrap',
               }}
             >
-              {tr('最快', 'Fastest')} {fastest}
+              {t('fastest')} {fastest}
             </span>
           </Tooltip>
           <Tooltip title={extremeHint}>
@@ -138,7 +123,7 @@ function MetricCard({
                 whiteSpace: 'nowrap',
               }}
             >
-              {tr('最慢', 'Slowest')} {slowest}
+              {t('slowest')} {slowest}
             </span>
           </Tooltip>
         </div>

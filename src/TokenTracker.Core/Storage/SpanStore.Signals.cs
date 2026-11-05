@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Pricing;
 
@@ -804,7 +804,9 @@ public sealed partial class SpanStore
 
     public SignalHealthRow GetSignalHealth(
         string? sessionId = null,
-        string? source = null)
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
     {
         using var connection = OpenConnection();
         var sourceFilter = string.IsNullOrWhiteSpace(source)
@@ -813,6 +815,10 @@ public sealed partial class SpanStore
         var sessionFilter = string.IsNullOrWhiteSpace(sessionId)
             ? string.Empty
             : " AND session_id = @session_id";
+        var agentRangeFilter =
+            " AND start_time_ms >= @from AND start_time_ms < @to";
+        var metricRangeFilter =
+            " AND end_time_ms >= @from AND end_time_ms < @to";
 
         long agentRuns;
         long agentLast;
@@ -820,8 +826,11 @@ public sealed partial class SpanStore
         {
             command.CommandText =
                 "SELECT COUNT(*), COALESCE(MAX(start_time_ms), 0) " +
-                $"FROM agent_runs WHERE 1 = 1{sessionFilter}{sourceFilter};";
+                "FROM agent_runs WHERE 1 = 1" +
+                $"{agentRangeFilter}{sessionFilter}{sourceFilter};";
             AddScopeParameters(command, sessionId, source);
+            command.Parameters.AddWithValue("@from", fromMs);
+            command.Parameters.AddWithValue("@to", toMs);
             using var reader = command.ExecuteReader();
             reader.Read();
             agentRuns = reader.GetInt64(0);
@@ -835,8 +844,10 @@ public sealed partial class SpanStore
             command.CommandText =
                 "SELECT COUNT(*), COALESCE(MAX(start_time_ms), 0) " +
                 "FROM session_events WHERE operation = 'execute_hook'" +
-                $"{sessionFilter}{sourceFilter};";
+                $"{agentRangeFilter}{sessionFilter}{sourceFilter};";
             AddScopeParameters(command, sessionId, source);
+            command.Parameters.AddWithValue("@from", fromMs);
+            command.Parameters.AddWithValue("@to", toMs);
             using var reader = command.ExecuteReader();
             reader.Read();
             hookEvents = reader.GetInt64(0);
@@ -849,8 +860,11 @@ public sealed partial class SpanStore
         {
             command.CommandText =
                 "SELECT COUNT(*), COALESCE(MAX(end_time_ms), 0) " +
-                $"FROM metric_points WHERE 1 = 1{sourceFilter};";
+                "FROM metric_points WHERE 1 = 1" +
+                $"{metricRangeFilter}{sourceFilter};";
             AddScopeParameters(command, null, source);
+            command.Parameters.AddWithValue("@from", fromMs);
+            command.Parameters.AddWithValue("@to", toMs);
             using var reader = command.ExecuteReader();
             reader.Read();
             metricPoints = reader.GetInt64(0);
@@ -1136,45 +1150,89 @@ public sealed partial class SpanStore
             metricFilter = $" AND metric_name IN ({string.Join(", ", parameters)})";
         }
 
+        // Only the requested window is aggregated; the one sample immediately
+        // before @from is joined back per series so counter deltas stay correct.
+        // Previously the window function ordered the whole table (< @to) and
+        // discarded the rows before @from afterwards, which made every refresh
+        // scan the entire metric history.
         command.CommandText = $"""
-            WITH ordered AS (
+            WITH windowed AS (
                 SELECT metric_name, attrs, metric_kind, start_time_ms,
                        end_time_ms, value, count, sum,
-                       LAG(value) OVER (
-                           PARTITION BY otel_source, series_key
-                           ORDER BY end_time_ms) AS prev_value,
-                       LAG(count) OVER (
-                           PARTITION BY otel_source, series_key
-                           ORDER BY end_time_ms) AS prev_count,
-                       LAG(sum) OVER (
-                           PARTITION BY otel_source, series_key
-                           ORDER BY end_time_ms) AS prev_sum,
-                       LAG(start_time_ms) OVER (
-                           PARTITION BY otel_source, series_key
-                           ORDER BY end_time_ms) AS prev_start
+                       otel_source, series_key
                 FROM metric_points
-                WHERE end_time_ms < @to{sourceFilter}{metricFilter}{sessionFilter}
-            ),
-            deltas AS (
-                SELECT metric_name, attrs, end_time_ms,
-                       CASE WHEN metric_kind = 'gauge' THEN value
-                            WHEN prev_value IS NULL
-                              OR start_time_ms <> prev_start
-                              OR value < prev_value THEN value
-                            ELSE value - prev_value END AS delta_value,
-                       CASE WHEN prev_count IS NULL
-                              OR start_time_ms <> prev_start
-                              OR count < prev_count THEN count
-                            ELSE count - prev_count END AS delta_count,
-                       CASE WHEN prev_sum IS NULL
-                              OR start_time_ms <> prev_start
-                              OR sum < prev_sum THEN sum
-                            ELSE sum - prev_sum END AS delta_sum
-                FROM ordered
                 WHERE end_time_ms >= @from
+                  AND end_time_ms < @to{sourceFilter}{metricFilter}{sessionFilter}
+            ),
+            lagged AS (
+                SELECT w.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY w.otel_source, w.series_key
+                           ORDER BY w.end_time_ms) AS rn,
+                       LAG(w.value) OVER (
+                           PARTITION BY w.otel_source, w.series_key
+                           ORDER BY w.end_time_ms) AS prev_value,
+                       LAG(w.count) OVER (
+                           PARTITION BY w.otel_source, w.series_key
+                           ORDER BY w.end_time_ms) AS prev_count,
+                       LAG(w.sum) OVER (
+                           PARTITION BY w.otel_source, w.series_key
+                           ORDER BY w.end_time_ms) AS prev_sum,
+                       LAG(w.start_time_ms) OVER (
+                           PARTITION BY w.otel_source, w.series_key
+                           ORDER BY w.end_time_ms) AS prev_start
+                FROM windowed w
+            ),
+            prior AS (
+                SELECT l.otel_source, l.series_key, p.value, p.count, p.sum,
+                       p.start_time_ms
+                FROM lagged l
+                JOIN metric_points p
+                  ON p.otel_source = l.otel_source
+                 AND p.series_key = l.series_key
+                 AND p.end_time_ms = (
+                     SELECT MAX(q.end_time_ms)
+                     FROM metric_points q
+                     WHERE q.otel_source = l.otel_source
+                       AND q.series_key = l.series_key
+                       AND q.end_time_ms < @from)
+                WHERE l.rn = 1
             )
-            SELECT metric_name, attrs, delta_value, delta_count, delta_sum
-            FROM deltas;
+            SELECT l.metric_name, l.attrs,
+                   CASE WHEN l.metric_kind = 'gauge' THEN l.value
+                        WHEN l.rn > 1 THEN
+                            CASE WHEN l.start_time_ms <> l.prev_start
+                                   OR l.value < l.prev_value THEN l.value
+                                 ELSE l.value - l.prev_value END
+                        WHEN pr.start_time_ms IS NULL THEN l.value
+                        WHEN l.start_time_ms <> pr.start_time_ms
+                             OR l.value < pr.value THEN l.value
+                        ELSE l.value - pr.value END AS delta_value,
+                   CASE WHEN l.rn > 1 THEN
+                            CASE WHEN l.prev_count IS NULL
+                                   OR l.start_time_ms <> l.prev_start
+                                   OR l.count < l.prev_count THEN l.count
+                                 ELSE l.count - l.prev_count END
+                        WHEN pr.start_time_ms IS NULL OR pr.count IS NULL
+                            THEN l.count
+                        WHEN l.start_time_ms <> pr.start_time_ms
+                             OR l.count < pr.count THEN l.count
+                        ELSE l.count - pr.count END AS delta_count,
+                   CASE WHEN l.rn > 1 THEN
+                            CASE WHEN l.prev_sum IS NULL
+                                   OR l.start_time_ms <> l.prev_start
+                                   OR l.sum < l.prev_sum THEN l.sum
+                                 ELSE l.sum - l.prev_sum END
+                        WHEN pr.start_time_ms IS NULL OR pr.sum IS NULL
+                            THEN l.sum
+                        WHEN l.start_time_ms <> pr.start_time_ms
+                             OR l.sum < pr.sum THEN l.sum
+                        ELSE l.sum - pr.sum END AS delta_sum
+            FROM lagged l
+            LEFT JOIN prior pr
+              ON pr.otel_source = l.otel_source
+             AND pr.series_key = l.series_key
+            ORDER BY l.end_time_ms;
             """;
         command.Parameters.AddWithValue("@from", fromMs);
         command.Parameters.AddWithValue("@to", toMs);

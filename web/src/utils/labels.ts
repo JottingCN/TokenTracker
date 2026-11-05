@@ -1,18 +1,18 @@
 import dayjs from 'dayjs';
-import { translate } from '../ui';
+import { t, type MessageKey } from '../i18n';
 
 export function operationLabel(operation: string): string {
   switch (operation) {
     case 'chat':
-      return translate('模型调用', 'Model call');
+      return t('model.call');
     case 'execute_tool':
-      return translate('工具调用', 'Tool call');
+      return t('tool.call');
     case 'invoke_agent':
-      return translate('代理调用', 'Agent invocation');
+      return t('agent.invocation');
     case 'create_agent':
-      return translate('创建代理', 'Create agent');
+      return t('create.agent');
     case 'execute_hook':
-      return translate('钩子执行', 'Hook execution');
+      return t('hook.execution');
     default:
       return operation || '-';
   }
@@ -42,77 +42,51 @@ export function formatTime(unixMs: number): string {
   return dayjs(unixMs).format('MM-DD HH:mm');
 }
 
-type LocalizedText = readonly [zh: string, en: string];
-
-const SYSTEM_PATH_LABELS: Record<string, LocalizedText> = {
-  'session-state': ['会话状态目录', 'Session state directory'],
-  'agent-host-db': ['Agent Host 标题库', 'Agent Host title store'],
-  'chat-title-index': ['Chat 标题索引', 'Chat title index'],
-  'workspace-title-index': [
-    '工作区标题索引目录',
-    'Workspace title index directory',
-  ],
-  'copilot-trace-db': ['Copilot Chat 本地 Trace 库', 'Copilot Chat local trace store'],
-  'ahp-endpoint-dir': ['AHP 本地端点目录', 'AHP local endpoint directory'],
-  'agent-host-trace-db': ['Agent Host 本地 Trace 库', 'Agent Host local trace store'],
+const SYSTEM_PATH_LABELS: Record<string, MessageKey> = {
+  'session-state': 'session.state.directory',
+  'agent-host-db': 'agent.host.title.store',
+  'chat-title-index': 'chat.title.index',
+  'workspace-title-index': 'workspace.title.index.directory',
+  'copilot-trace-db': 'copilot.chat.local.trace.store',
+  'ahp-endpoint-dir': 'ahp.local.endpoint.directory',
+  'agent-host-trace-db': 'agent.host.local.trace.store',
 };
 
-const SYSTEM_PATH_PURPOSES: Record<string, LocalizedText> = {
-  'session-state': [
-    '只读 workspace.yaml 的会话标题与工作目录',
-    'Reads session titles and working directories from workspace.yaml',
-  ],
-  'agent-host-db': [
-    '只读 agent-host.db 中的会话标题与工作目录',
-    'Reads session titles and working directories from agent-host.db',
-  ],
-  'chat-title-index': [
-    '只读 chat.ChatSessionStore.index 的会话标题/工作区',
-    'Reads session titles and workspaces from chat.ChatSessionStore.index',
-  ],
-  'workspace-title-index': [
-    '只读各工作区 state.vscdb 中的标题索引',
-    'Reads title indexes from every workspace state.vscdb',
-  ],
-  'copilot-trace-db': [
-    '仅在执行“导入本地 OTel 数据”时读取',
-    'Read only when importing local OTel data',
-  ],
-  'ahp-endpoint-dir': [
-    '只读端点描述文件，用于连接 AHP 同步标题',
-    'Reads endpoint descriptors used to connect to AHP for titles',
-  ],
-  'agent-host-trace-db': [
-    '仅在执行“导入本地 OTel 数据”时读取',
-    'Read only when importing local OTel data',
-  ],
+const SYSTEM_PATH_PURPOSES: Record<string, MessageKey> = {
+  'session-state': 'reads.workspace.yaml',
+  'agent-host-db': 'reads.agent.host.db',
+  'chat-title-index': 'reads.chat.title.index',
+  'workspace-title-index': 'reads.workspace.title.index',
+  'copilot-trace-db': 'read.on.otlp.import',
+  'ahp-endpoint-dir': 'reads.ahp.endpoint.descriptors',
+  'agent-host-trace-db': 'read.on.otlp.import',
 };
 
-const SYSTEM_MONITOR_LABELS: Record<string, LocalizedText> = {
-  watching: ['扩展监控中', 'Watched by the extension'],
-  'paused-ahp': ['AHP 在线，暂停监控', 'Paused while AHP is connected'],
-  polling: ['AHP 端点轮询中', 'Polling AHP endpoints'],
-  'import-only': ['仅导入时读取', 'Read only on import'],
-  'on-query': ['查询时读取', 'Read on query'],
-  unused: ['未使用', 'Not used'],
+const SYSTEM_MONITOR_LABELS: Record<string, MessageKey> = {
+  watching: 'watched.by.extension',
+  'paused-ahp': 'paused.while.ahp.connected',
+  polling: 'polling.ahp.endpoints',
+  'import-only': 'read.only.on.import',
+  'on-query': 'read.on.query',
+  unused: 'not.used',
 };
 
-const SYSTEM_ACCESS_LABELS: Record<string, LocalizedText> = {
-  'holiday-api': ['节假日 API', 'Holiday API'],
-  'otlp-endpoint': ['OTLP 接收端点', 'OTLP receiver endpoint'],
-  'ahp-title-sync': ['AHP 标题同步', 'AHP title sync'],
+const SYSTEM_ACCESS_LABELS: Record<string, MessageKey> = {
+  'holiday-api': 'holiday.api',
+  'otlp-endpoint': 'otlp.receiver.endpoint',
+  'ahp-title-sync': 'ahp.title.sync',
 };
 
-const AHP_STATE_LABELS: Record<string, LocalizedText> = {
-  connected: ['已连接', 'Connected'],
-  connecting: ['连接中', 'Connecting'],
-  searching: ['搜索端点中', 'Searching endpoints'],
-  disabled: ['不可用', 'Unavailable'],
+const AHP_STATE_LABELS: Record<string, MessageKey> = {
+  connected: 'connected',
+  connecting: 'connecting',
+  searching: 'searching.endpoints',
+  disabled: 'unavailable',
 };
 
-function localize(table: Record<string, LocalizedText>, key: string): string {
-  const text = table[key];
-  return text ? translate(text[0], text[1]) : key;
+function localize(table: Record<string, MessageKey>, key: string): string {
+  const messageKey = table[key];
+  return messageKey ? t(messageKey) : key;
 }
 
 export function systemPathLabel(key: string): string {

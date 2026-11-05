@@ -2,27 +2,50 @@ import { useEffect, useState } from 'react';
 import {
   Alert,
   App as AntApp,
+  AutoComplete,
   Button,
   Card,
   Drawer,
   Input,
   InputNumber,
+  Modal,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Switch,
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
+  Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { ModelPriceRow, SettingsPayload } from '../types';
+import type { ModelSettingsRow, SettingsPayload } from '../types';
 import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
 import { tableHeight } from '../utils/tableHeight';
+import { providerOf } from '../utils/model';
+import { MODEL_ICON_COLORS, ModelIcon } from './ModelIcon';
+import { useModelProfiles } from '../utils/modelProfiles';
 
-interface PriceSettingsDrawerProps {
+const PROVIDER_SUGGESTIONS = [
+  'DeepSeek',
+  'OpenAI',
+  'Anthropic',
+  'Google',
+  'Meta',
+  'Kimi',
+  '小米 MiMo',
+  'MiniMax',
+  '智谱 GLM',
+  'Alibaba',
+  'xAI',
+  'Mistral',
+];
+
+interface ModelSettingsDrawerProps {
   open: boolean;
   onClose: () => void;
 }
@@ -40,37 +63,46 @@ interface PriceDisplayRow {
   segmentRowSpan: number;
 }
 
-export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps) {
+export function ModelSettingsDrawer({ open, onClose }: ModelSettingsDrawerProps) {
   const { message } = AntApp.useApp();
   const money = useMoney();
-  const { tr } = useUi();
-  const [rows, setRows] = useState<ModelPriceRow[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, ModelPriceRow>>({});
+  const { t } = useUi();
+  const { refresh: refreshProfiles } = useModelProfiles();
+  const [rows, setRows] = useState<ModelSettingsRow[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, ModelSettingsRow>>({});
   const [loading, setLoading] = useState(false);
   const [newModel, setNewModel] = useState('');
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'prices' | 'data'>('prices');
+  const [activeTab, setActiveTab] = useState<'models' | 'prices' | 'data'>(
+    'models',
+  );
+  const [editor, setEditor] = useState<ModelSettingsRow | null>(null);
+  const [editorProvider, setEditorProvider] = useState('');
+  const [editorKind, setEditorKind] = useState<'auto' | 'letter' | 'image'>(
+    'auto',
+  );
+  const [editorLetter, setEditorLetter] = useState('');
+  const [editorColor, setEditorColor] = useState(MODEL_ICON_COLORS[0]);
+  const [editorImage, setEditorImage] = useState<string | null>(null);
+  const [editorSaving, setEditorSaving] = useState(false);
 
   const load = async (keepDrafts = false) => {
     setLoading(true);
     try {
-      const response = await fetch('/api/prices');
+      const response = await fetch('/api/models');
       if (response.status === 404) {
         throw new Error(
-          tr(
-            '服务端版本过旧，请更新并重启 Token Tracker 服务',
-            'The server is too old. Update and restart Token Tracker.',
-          ),
+          t('the.server.is.too.old.update.and.restart.token.tracker'),
         );
       }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      const data = (await response.json()) as ModelPriceRow[];
+      const data = (await response.json()) as ModelSettingsRow[];
       setRows(data);
       if (keepDrafts) {
         setDrafts((current) => {
-          const next: Record<string, ModelPriceRow> = {};
+          const next: Record<string, ModelSettingsRow> = {};
           for (const [model, draft] of Object.entries(current)) {
             if (data.some((item) => item.model === model)) {
               next[model] = draft;
@@ -83,10 +115,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       }
     } catch (error) {
       message.error(
-        tr(
-          `读取价格失败: ${(error as Error).message}`,
-          `Failed to load prices: ${(error as Error).message}`,
-        ),
+        t('failed.to.load.prices', { error: (error as Error).message }),
       );
     } finally {
       setLoading(false);
@@ -131,164 +160,192 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       const data = (await response.json()) as SettingsPayload;
       setRetentionDays(data.retentionDays);
       message.success(
-        tr('数据保留设置已保存', 'Retention setting saved'),
+        t('retention.setting.saved'),
       );
     } catch (error) {
       message.error(
-        tr(
-          `保存失败: ${(error as Error).message}`,
-          `Save failed: ${(error as Error).message}`,
-        ),
+        t('save.failed', { error: (error as Error).message }),
       );
     }
   };
 
-  const draftOf = (row: ModelPriceRow) => drafts[row.model] ?? row;
+  const draftOf = (row: ModelSettingsRow) => drafts[row.model] ?? row;
 
-  const update = (row: ModelPriceRow, patch: Partial<ModelPriceRow>) =>
+  const update = (row: ModelSettingsRow, patch: Partial<ModelSettingsRow>) =>
     setDrafts((current) => ({
       ...current,
       [row.model]: { ...(current[row.model] ?? row), ...patch },
     }));
 
-  const save = async (row: ModelPriceRow) => {
-    const draft = draftOf(row);
+  const priceFields = (draft: ModelSettingsRow) => {
     const longEnabled = (draft.longContextThreshold ?? 0) > 0;
-    try {
-      const response = await fetch('/api/prices', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: draft.model,
-          peakAware: draft.peakAware,
-          cachedInput: draft.cachedInput,
-          uncachedInput: draft.uncachedInput,
-          output: draft.output,
-          peakCachedInput: draft.peakAware
-            ? (draft.peakCachedInput ?? draft.cachedInput)
-            : null,
-          peakUncachedInput: draft.peakAware
-            ? (draft.peakUncachedInput ?? draft.uncachedInput)
-            : null,
-          peakOutput: draft.peakAware ? (draft.peakOutput ?? draft.output) : null,
-          longContextThreshold: longEnabled
-            ? Math.round(draft.longContextThreshold as number)
-            : null,
-          longCachedInput: longEnabled
-            ? (draft.longCachedInput ?? draft.cachedInput)
-            : null,
-          longUncachedInput: longEnabled
-            ? (draft.longUncachedInput ?? draft.uncachedInput)
-            : null,
-          longOutput: longEnabled ? (draft.longOutput ?? draft.output) : null,
-          longPeakCachedInput:
-            longEnabled && draft.peakAware
-              ? (draft.longPeakCachedInput ??
-                draft.longCachedInput ??
-                draft.peakCachedInput ??
-                draft.cachedInput)
-              : null,
-          longPeakUncachedInput:
-            longEnabled && draft.peakAware
-              ? (draft.longPeakUncachedInput ??
-                draft.longUncachedInput ??
-                draft.peakUncachedInput ??
-                draft.uncachedInput)
-              : null,
-          longPeakOutput:
-            longEnabled && draft.peakAware
-              ? (draft.longPeakOutput ?? draft.longOutput ?? draft.peakOutput ?? draft.output)
-              : null,
-          cacheWrite: draft.cacheWrite ?? draft.uncachedInput,
-          peakCacheWrite: draft.peakAware
-            ? (draft.peakCacheWrite ??
-              draft.cacheWrite ??
-              draft.peakUncachedInput ??
-              draft.uncachedInput)
-            : null,
-          longCacheWrite: longEnabled
-            ? (draft.longCacheWrite ??
-              draft.longUncachedInput ??
-              draft.uncachedInput)
-            : null,
-          longPeakCacheWrite:
-            longEnabled && draft.peakAware
-              ? (draft.longPeakCacheWrite ??
-                draft.longCacheWrite ??
-                draft.longUncachedInput ??
-                draft.peakUncachedInput ??
-                draft.uncachedInput)
-              : null,
-        }),
-      });
-      if (response.status === 404) {
-        throw new Error(
-          tr(
-            '服务端版本过旧，请更新并重启 Token Tracker 服务',
-            'The server is too old. Update and restart Token Tracker.',
-          ),
-        );
-      }
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      const saved = (await response.json()) as ModelPriceRow;
-      // Refresh only this model: reloading the whole list would drop the
-      // unsaved edits still held for the other rows.
-      setRows((current) =>
-        current.map((item) => (item.model === saved.model ? saved : item)),
+    return {
+      peakAware: draft.peakAware,
+      cachedInput: draft.cachedInput,
+      uncachedInput: draft.uncachedInput,
+      output: draft.output,
+      peakCachedInput: draft.peakAware
+        ? (draft.peakCachedInput ?? draft.cachedInput)
+        : null,
+      peakUncachedInput: draft.peakAware
+        ? (draft.peakUncachedInput ?? draft.uncachedInput)
+        : null,
+      peakOutput: draft.peakAware ? (draft.peakOutput ?? draft.output) : null,
+      longContextThreshold: longEnabled
+        ? Math.round(draft.longContextThreshold as number)
+        : null,
+      longCachedInput: longEnabled
+        ? (draft.longCachedInput ?? draft.cachedInput)
+        : null,
+      longUncachedInput: longEnabled
+        ? (draft.longUncachedInput ?? draft.uncachedInput)
+        : null,
+      longOutput: longEnabled ? (draft.longOutput ?? draft.output) : null,
+      longPeakCachedInput:
+        longEnabled && draft.peakAware
+          ? (draft.longPeakCachedInput ??
+            draft.longCachedInput ??
+            draft.peakCachedInput ??
+            draft.cachedInput)
+          : null,
+      longPeakUncachedInput:
+        longEnabled && draft.peakAware
+          ? (draft.longPeakUncachedInput ??
+            draft.longUncachedInput ??
+            draft.peakUncachedInput ??
+            draft.uncachedInput)
+          : null,
+      longPeakOutput:
+        longEnabled && draft.peakAware
+          ? (draft.longPeakOutput ??
+            draft.longOutput ??
+            draft.peakOutput ??
+            draft.output)
+          : null,
+      cacheWrite: draft.cacheWrite ?? draft.uncachedInput,
+      peakCacheWrite: draft.peakAware
+        ? (draft.peakCacheWrite ??
+          draft.cacheWrite ??
+          draft.peakUncachedInput ??
+          draft.uncachedInput)
+        : null,
+      longCacheWrite: longEnabled
+        ? (draft.longCacheWrite ?? draft.longUncachedInput ?? draft.uncachedInput)
+        : null,
+      longPeakCacheWrite:
+        longEnabled && draft.peakAware
+          ? (draft.longPeakCacheWrite ??
+            draft.longCacheWrite ??
+            draft.longUncachedInput ??
+            draft.peakUncachedInput ??
+            draft.uncachedInput)
+          : null,
+    };
+  };
+
+  const profileFields = (
+    row: ModelSettingsRow,
+    patch: Partial<ModelSettingsRow> = {},
+  ) => {
+    const merged = { ...row, ...patch };
+    return {
+      provider: merged.provider,
+      iconKind: merged.iconKind,
+      iconLetter: merged.iconLetter,
+      iconColor: merged.iconColor,
+      iconImage: merged.iconImage,
+    };
+  };
+
+  const persist = async (
+    payload: Record<string, unknown>,
+    successText: string,
+  ) => {
+    const response = await fetch('/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 404) {
+      throw new Error(
+        t('the.server.is.too.old.update.and.restart.token.tracker'),
       );
-      setDrafts((current) => {
-        const next = { ...current };
-        delete next[saved.model];
-        return next;
-      });
-      message.success(
-        tr(
-          `已保存 ${row.model}，历史费用已重算`,
-          `Saved ${row.model}; historical costs recalculated`,
-        ),
+    }
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const saved = (await response.json()) as ModelSettingsRow;
+    // Refresh only this model: reloading the whole list would drop the
+    // unsaved edits still held for the other rows.
+    setRows((current) => {
+      const exists = current.some(
+        (item) => item.model.toLowerCase() === saved.model.toLowerCase(),
+      );
+      return exists
+        ? current.map((item) =>
+            item.model.toLowerCase() === saved.model.toLowerCase()
+              ? saved
+              : item,
+          )
+        : [saved, ...current];
+    });
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[saved.model];
+      return next;
+    });
+    await refreshProfiles();
+    message.success(successText);
+    return saved;
+  };
+
+  const save = async (row: ModelSettingsRow) => {
+    const draft = draftOf(row);
+    try {
+      await persist(
+        {
+          model: draft.model,
+          priced: true,
+          ...profileFields(draft),
+          ...priceFields(draft),
+        },
+        t('saved.model.recalculated', { model: row.model }),
       );
     } catch (error) {
       message.error(
-        tr(
-          `保存失败: ${(error as Error).message}`,
-          `Save failed: ${(error as Error).message}`,
-        ),
+        t('save.failed', { error: (error as Error).message }),
       );
     }
   };
 
-  const remove = async (row: ModelPriceRow) => {
+  const remove = async (row: ModelSettingsRow) => {
     try {
       const response = await fetch(
-        `/api/prices?model=${encodeURIComponent(row.model)}`,
+        `/api/models?model=${encodeURIComponent(row.model)}`,
         { method: 'DELETE' },
       );
       if (response.status === 404) {
         throw new Error(
-          tr(
-            '服务端版本过旧，请更新并重启 Token Tracker 服务',
-            'The server is too old. Update and restart Token Tracker.',
-          ),
+          t('the.server.is.too.old.update.and.restart.token.tracker'),
         );
       }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
       message.success(
-        tr(
-          `已删除 ${row.model} 的自定义价格`,
-          `Deleted custom pricing for ${row.model}`,
-        ),
+        t('deleted.model.settings', { model: row.model }),
+      );
+      setEditor((current) =>
+        current?.model.toLowerCase() === row.model.toLowerCase()
+          ? null
+          : current,
       );
       await load(true);
+      await refreshProfiles();
     } catch (error) {
       message.error(
-        tr(
-          `操作失败: ${(error as Error).message}`,
-          `Operation failed: ${(error as Error).message}`,
-        ),
+        t('operation.failed', { error: (error as Error).message }),
       );
     }
   };
@@ -304,11 +361,8 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     if (existing) {
       message.info(
         existing.calls > 0
-          ? tr(
-              `该模型已有 ${existing.calls} 次调用记录，可直接在列表中设置价格`,
-              `This model already has ${existing.calls} recorded calls; set its price in the list.`,
-            )
-          : tr('该模型已在列表中', 'Model is already in the list'),
+          ? t('model.has.calls', { count: existing.calls })
+          : t('model.is.already.in.the.list'),
       );
       return;
     }
@@ -316,8 +370,14 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     setRows((current) => [
       {
         model,
-        customized: false,
+        priced: false,
+        hasProfile: false,
         calls: 0,
+        provider: null,
+        iconKind: null,
+        iconLetter: null,
+        iconColor: null,
+        iconImage: null,
         peakAware: false,
         cachedInput: 0,
         uncachedInput: 0,
@@ -340,6 +400,100 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       ...current,
     ]);
     setNewModel('');
+  };
+
+  const openEditor = (row: ModelSettingsRow) => {
+    setEditor(row);
+    setEditorProvider(row.provider ?? '');
+    setEditorKind(
+      row.iconKind === 'image' && row.iconImage
+        ? 'image'
+        : row.iconKind === 'letter' || row.iconLetter
+          ? 'letter'
+          : 'auto',
+    );
+    setEditorLetter(row.iconLetter ?? '');
+    setEditorColor(row.iconColor ?? MODEL_ICON_COLORS[0]);
+    setEditorImage(row.iconImage ?? null);
+  };
+
+  const editedProfile = (): Partial<ModelSettingsRow> => ({
+    provider: editorProvider.trim() || null,
+    iconKind: editorKind === 'auto' ? null : editorKind,
+    iconLetter:
+      editorKind === 'letter' ? editorLetter.trim().slice(0, 2) || null : null,
+    iconColor: editorKind === 'letter' ? editorColor : null,
+    iconImage: editorKind === 'image' ? editorImage : null,
+  });
+
+  const saveEditor = async () => {
+    if (!editor) {
+      return;
+    }
+
+    if (editorKind === 'letter' && !editorLetter.trim()) {
+      message.warning(t('enter.one.character'));
+      return;
+    }
+    if (editorKind === 'image' && !editorImage) {
+      message.warning(t('upload.an.icon.image'));
+      return;
+    }
+
+    const draft = draftOf(editor);
+    setEditorSaving(true);
+    try {
+      await persist(
+        {
+          model: draft.model,
+          priced: draft.priced,
+          ...profileFields(draft, editedProfile()),
+          ...priceFields(draft),
+        },
+        t('model.info.saved'),
+      );
+      setEditor(null);
+    } catch (error) {
+      message.error(
+        t('save.failed', { error: (error as Error).message }),
+      );
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  // Uploaded icons are rasterised to a fixed square so the database never holds
+  // a multi-megabyte image and every view gets a crisp 64px source.
+  const readIconFile = async (file: File): Promise<string> => {
+    if (file.size > 4 * 1024 * 1024) {
+      throw new Error(t('image.must.be.under.4.mb'));
+    }
+
+    const bitmap = await createImageBitmap(file);
+    try {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        throw new Error(t('cannot.process.the.image'));
+      }
+
+      const scale = Math.min(size / bitmap.width, size / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      context.drawImage(
+        bitmap,
+        (size - width) / 2,
+        (size - height) / 2,
+        width,
+        height,
+      );
+      return canvas.toDataURL('image/png');
+    } finally {
+      bitmap.close();
+    }
   };
 
   const rowByModel = new Map(rows.map((row) => [row.model, row]));
@@ -373,7 +527,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     segment: PriceSegment,
     field: PriceField,
     peak: boolean,
-  ): keyof ModelPriceRow => {
+  ): keyof ModelSettingsRow => {
     if (segment === 'long') {
       if (field === 'cachedInput') {
         return peak ? 'longPeakCachedInput' : 'longCachedInput';
@@ -399,7 +553,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     return peak ? 'peakOutput' : 'output';
   };
 
-  const toggleLongContext = (row: ModelPriceRow, enabled: boolean) => {
+  const toggleLongContext = (row: ModelSettingsRow, enabled: boolean) => {
     const draft = draftOf(row);
     if (!enabled) {
       update(row, { longContextThreshold: null });
@@ -423,7 +577,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
   };
 
   const numberInput = (
-    row: ModelPriceRow,
+    row: ModelSettingsRow,
     kind: PeriodKind,
     field: PriceField,
     segment: PriceSegment,
@@ -466,34 +620,28 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           update(row, {
             [kind === 'peak' ? peakField : baseField]:
               money.fromPriceInput(typeof next === 'number' ? next : 0),
-          } as Partial<ModelPriceRow>)
+          } as Partial<ModelSettingsRow>)
         }
         style={{ width: '100%' }}
       />
     );
   };
 
-  const actionCell = (row: ModelPriceRow) => (
+  const actionCell = (row: ModelSettingsRow) => (
     <Space size={0}>
       <Button size="small" type="link" onClick={() => void save(row)}>
-        {tr('保存', 'Save')}
+        {t('save')}
       </Button>
-      {row.customized && (
+      {row.priced && (
         <Popconfirm
-          title={tr(
-            '删除该模型的自定义价格？',
-            'Delete this custom price?',
-          )}
-          description={tr(
-            '删除后该模型将无法估算费用。',
-            'This model will no longer have estimated costs.',
-          )}
-          okText={tr('删除', 'Delete')}
-          cancelText={tr('取消', 'Cancel')}
+          title={t('delete.this.custom.price')}
+          description={t('this.model.will.no.longer.have.estimated.costs')}
+          okText={t('delete')}
+          cancelText={t('cancel')}
           onConfirm={() => remove(row)}
         >
           <Button size="small" type="link" danger>
-            {tr('删除', 'Delete')}
+            {t('delete')}
           </Button>
         </Popconfirm>
       )}
@@ -502,7 +650,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
 
   const columns: ColumnsType<PriceDisplayRow> = [
     {
-      title: tr('模型', 'Model'),
+      title: t('model'),
       key: 'model',
       width: 190,
       fixed: 'left',
@@ -513,10 +661,10 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
           return null;
         }
 
-        const statusTag = row.customized ? (
-          <Tag color="blue">{tr('自定义', 'Custom')}</Tag>
+        const statusTag = row.priced ? (
+          <Tag color="blue">{t('custom')}</Tag>
         ) : (
-          <Tag>{tr('未定价', 'Unpriced')}</Tag>
+          <Tag>{t('unpriced')}</Tag>
         );
         return (
           <Space size={6} wrap={false} style={{ maxWidth: '100%' }}>
@@ -533,7 +681,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('区分峰谷', 'Peak aware'),
+      title: t('peak.aware'),
       key: 'peakAware',
       width: 78,
       align: 'center',
@@ -554,7 +702,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('分档计费', 'Tiered'),
+      title: t('tiered'),
       key: 'longContext',
       width: 78,
       align: 'center',
@@ -576,7 +724,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('输入阈值（tokens）', 'Threshold (tokens)'),
+      title: t('threshold.tokens'),
       key: 'longContextThreshold',
       width: 128,
       align: 'right',
@@ -613,35 +761,35 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('档位', 'Tier'),
+      title: t('tier'),
       key: 'segment',
       width: 78,
       align: 'center',
       onCell: (record) => ({ rowSpan: record.segmentRowSpan }),
       render: (_, record) =>
         record.segment === 'long' ? (
-          <Tag color="purple">{tr('长上下文', 'Long context')}</Tag>
+          <Tag color="purple">{t('long.context')}</Tag>
         ) : (
-          <Tag>{tr('默认', 'Default')}</Tag>
+          <Tag>{t('default')}</Tag>
         ),
     },
     {
-      title: tr('时段', 'Period'),
+      title: t('period'),
       key: 'period',
       width: 76,
       align: 'center',
       render: (_, record) => {
         if (record.period === 'idle') {
-          return <Tag color="green">{tr('空闲', 'Idle')}</Tag>;
+          return <Tag color="green">{t('idle')}</Tag>;
         }
         if (record.period === 'peak') {
-          return <Tag color="orange">{tr('高峰', 'Peak')}</Tag>;
+          return <Tag color="orange">{t('peak')}</Tag>;
         }
-        return <Tag>{tr('固定', 'Flat')}</Tag>;
+        return <Tag>{t('flat')}</Tag>;
       },
     },
     {
-      title: tr('缓存命中', 'Cached input'),
+      title: t('cached.input'),
       key: 'cachedInput',
       width: 104,
       align: 'right',
@@ -653,7 +801,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('缓存写入', 'Cache write'),
+      title: t('cache.write'),
       key: 'cacheWrite',
       width: 108,
       align: 'right',
@@ -665,7 +813,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('输入（未命中）', 'Uncached input'),
+      title: t('uncached.input'),
       key: 'uncachedInput',
       width: 112,
       align: 'right',
@@ -677,7 +825,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('输出', 'Output'),
+      title: t('output'),
       key: 'output',
       width: 104,
       align: 'right',
@@ -689,7 +837,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
       },
     },
     {
-      title: tr('操作', 'Actions'),
+      title: t('actions'),
       key: 'actions',
       width: 166,
       onCell: (record) => ({ rowSpan: record.rowSpan }),
@@ -700,26 +848,161 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
     },
   ];
 
+  const modelColumns: ColumnsType<ModelSettingsRow> = [
+    {
+      title: t('icon'),
+      key: 'icon',
+      width: 64,
+      align: 'center',
+      render: (_, row) => <ModelIcon model={row.model} size={24} />,
+    },
+    {
+      title: t('model.id'),
+      key: 'model',
+      width: 300,
+      render: (_, row) => (
+        <Space size={6} wrap={false} style={{ maxWidth: '100%' }}>
+          <Typography.Text
+            strong
+            ellipsis={{ tooltip: row.model }}
+            style={{ maxWidth: 200 }}
+          >
+            {row.model}
+          </Typography.Text>
+          {row.priced ? (
+            <Tag color="blue">{t('priced')}</Tag>
+          ) : (
+            <Tag>{t('unpriced')}</Tag>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: t('provider'),
+      key: 'provider',
+      width: 200,
+      render: (_, row) => (
+        <Space size={6}>
+          <span>{providerOf(row.model, row.provider)}</span>
+          {row.provider && <Tag>{t('custom')}</Tag>}
+        </Space>
+      ),
+    },
+    {
+      title: t('calls'),
+      key: 'calls',
+      width: 90,
+      align: 'right',
+      render: (_, row) => Math.round(row.calls).toLocaleString(),
+    },
+    {
+      title: `${t('input')} / ${t('output')}`,
+      key: 'price',
+      width: 190,
+      align: 'right',
+      render: (_, row) =>
+        row.priced
+          ? `${money.toPriceInput(row.cachedInput).toFixed(money.pricePrecision)} / ${money
+              .toPriceInput(row.output)
+              .toFixed(money.pricePrecision)}`
+          : '-',
+    },
+    {
+      title: t('actions'),
+      key: 'actions',
+      width: 150,
+      render: (_, row) => (
+        <Space size={0}>
+          <Button size="small" type="link" onClick={() => openEditor(row)}>
+            {t('edit')}
+          </Button>
+          {row.hasProfile || row.priced ? (
+            <Popconfirm
+              title={t('delete.this.model.settings.and.pricing')}
+              description={t('the.model.becomes.unpriced.and.historical.costs.can.no')}
+              okText={t('delete')}
+              cancelText={t('cancel')}
+              onConfirm={() => void remove(row)}
+            >
+              <Button size="small" type="link" danger>
+                {t('delete')}
+              </Button>
+            </Popconfirm>
+          ) : null}
+        </Space>
+      ),
+    },
+  ];
+
   return (
     <Drawer
-      title={tr('设置', 'Settings')}
+      title={t('model.settings')}
       width="min(1400px, 96vw)"
       open={open}
       onClose={onClose}
       styles={{ body: { padding: 16 } }}
       extra={
         <Button onClick={() => void load(true)} loading={loading}>
-          {tr('刷新', 'Refresh')}
+          {t('refresh')}
         </Button>
       }
     >
       <Tabs
         activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as 'prices' | 'data')}
+        onChange={(key) =>
+          setActiveTab(key as 'models' | 'prices' | 'data')
+        }
         items={[
           {
+            key: 'models',
+            label: t('models'),
+            children: (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 12,
+                }}
+              >
+                <Space wrap size="middle">
+                  <Space.Compact style={{ width: 380 }}>
+                    <Input
+                      placeholder={t('model.id.e.g.kimi.k3.1.pro')}
+                      value={newModel}
+                      onChange={(event) => setNewModel(event.target.value)}
+                      onPressEnter={addModel}
+                    />
+                    <Button type="primary" onClick={addModel}>
+                      {t('add.model')}
+                    </Button>
+                  </Space.Compact>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('the.model.id.is.unique.provider.and.icon.only.affect')}
+                  </Typography.Text>
+                </Space>
+                <Card
+                  size="small"
+                  title={`${t('models')}(${rows.length})`}
+                  styles={{ body: { padding: 0 } }}
+                >
+                  <Table
+                    size="small"
+                    rowKey="model"
+                    columns={modelColumns}
+                    dataSource={[...rows].sort((a, b) =>
+                      a.model.localeCompare(b.model),
+                    )}
+                    loading={loading}
+                    pagination={false}
+                    scroll={{ x: 990, y: tableHeight(400) }}
+                  />
+                </Card>
+              </div>
+            ),
+          },
+          {
             key: 'prices',
-            label: tr('价格', 'Pricing'),
+            label: t('pricing'),
             children: (
               <div
                 style={{
@@ -730,15 +1013,15 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
               >
                 <Space wrap size="middle">
                   <Space size={6}>
-                    <Typography.Text>{tr('费用单位', 'Cost unit')}</Typography.Text>
+                    <Typography.Text>{t('cost.unit')}</Typography.Text>
                     <Select
                       value={money.settings.unit}
                       onChange={(unit) => money.setSettings({ unit })}
                       style={{ width: 150 }}
                       options={[
-                        { value: 'cny', label: tr('人民币（CNY）', 'CNY') },
-                        { value: 'usd', label: tr('美元（USD）', 'USD') },
-                        { value: 'credit', label: tr('积分', 'Credits') },
+                        { value: 'cny', label: t('cny') },
+                        { value: 'usd', label: t('usd') },
+                        { value: 'credit', label: t('credits') },
                       ]}
                     />
                   </Space>
@@ -764,7 +1047,7 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                       min={0.0001}
                       step={0.001}
                       precision={4}
-                      addonBefore={tr('1 积分 =', '1 credit =')}
+                      addonBefore={t('1.credit')}
                       addonAfter="CNY"
                       value={money.settings.creditRate}
                       onChange={(value) =>
@@ -774,38 +1057,18 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                       }
                     />
                   )}
-                  <Space.Compact style={{ width: 380 }}>
-                    <Input
-                      placeholder={tr(
-                        '新增模型 ID，例如 kimi-k3.1-pro',
-                        'Model ID, e.g. kimi-k3.1-pro',
-                      )}
-                      value={newModel}
-                      onChange={(event) => setNewModel(event.target.value)}
-                      onPressEnter={addModel}
-                    />
-                    <Button type="primary" onClick={addModel}>
-                      {tr('新增', 'Add')}
-                    </Button>
-                  </Space.Compact>
                 </Space>
 
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {tr(
-                    '费用单位作用于看板显示与价格输入；价格保存时换算为 CNY 存入数据库。',
-                    'The unit applies to dashboard values and price inputs; prices are stored in CNY.',
-                  )}
+                  {t('the.unit.applies.to.dashboard.values.and.price.inputs')}
                 </Typography.Text>
 
                 <Card
                   size="small"
-                  title={`${tr('模型价格', 'Model prices')}(${rows.length})`}
+                  title={`${t('model.prices')}(${rows.length})`}
                   extra={
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {tr(
-                        '未定价模型填写价格后保存，即可重算该模型的历史费用',
-                        'Set a price for an unpriced model and save to recalculate its history',
-                      )}
+                      {t('set.a.price.for.an.unpriced.model.and.save.to')}
                     </Typography.Text>
                   }
                   styles={{ body: { padding: 0 } }}
@@ -825,18 +1088,15 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
         <Alert
           type="info"
           showIcon
-          message={tr('峰谷与节假日规则', 'Peak and holiday rules')}
-          description={tr(
-            '开启「区分峰谷」后，该模型显示空闲/高峰两行价格；未开启时只有一行固定价格。开启「分档计费」后，按单次调用的输入 token 总数（含缓存命中）判断：不超过阈值使用「默认」档，超过阈值整次调用按「长上下文」档计价（两档价格可分别设置）。缓存写入价留空时按未命中输入价计算。峰谷按北京时间、以调用结束时间判定（缺失时回退开始时间），跨入高峰段的调用按高峰计费：工作日 9:00–12:00、14:00–18:00 为高峰，其余时间为空闲；周末与中国法定节假日全天按空闲（调休上班的周末仍按周末处理）。节假日数据优先读取本地数据库，缺失时自动从 apisbo.com 获取并缓存（内置 2025–2026 年数据兜底）。',
-            'When peak-aware is enabled, two rows are shown (idle/peak); otherwise one flat price is used. Tiered pricing compares the total input tokens of each call (including cache reads) with the threshold: calls at or below it use Default rates, while the entire call is priced with Long context rates when it exceeds the threshold. Cache write falls back to the uncached input rate when left empty. Peak hours follow Beijing time and are decided by the call end time (start time is used when the end is missing), so a call crossing into a peak window bills as peak: weekdays 9:00–12:00 and 14:00–18:00; all other times, weekends and Chinese public holidays are idle. Holiday data is read from the local database first, then fetched from apisbo.com and cached.',
-          )}
+          message={t('peak.and.holiday.rules')}
+          description={t('when.peak.aware.is.enabled.two.rows.are.shown.idle.peak')}
         />
               </div>
             ),
           },
           {
             key: 'data',
-            label: tr('数据', 'Data'),
+            label: t('data'),
             children: (
               <Space
                 direction="vertical"
@@ -844,12 +1104,12 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                 style={{ width: '100%' }}
               >
                 <Space wrap size="middle">
-                  <Typography.Text>{tr('数据保留', 'Data retention')}</Typography.Text>
+                  <Typography.Text>{t('data.retention')}</Typography.Text>
                   <InputNumber
                     min={0}
                     max={36500}
                     precision={0}
-                    addonAfter={tr('天', 'days')}
+                    addonAfter={t('days')}
                     value={retentionDays}
                     onChange={(value) =>
                       setRetentionDays(
@@ -859,40 +1119,221 @@ export function PriceSettingsDrawer({ open, onClose }: PriceSettingsDrawerProps)
                     style={{ width: 160 }}
                   />
                   <Popconfirm
-                    title={tr(
-                      '保存数据保留设置？',
-                      'Save retention setting?',
-                    )}
-                    description={tr(
-                      '保存后会立即删除超过保留期的数据，此操作不可撤销。0 表示永久保留。',
-                      'Saving immediately deletes data older than the retention window. This cannot be undone. 0 keeps data forever.',
-                    )}
-                    okText={tr('保存', 'Save')}
-                    cancelText={tr('取消', 'Cancel')}
+                    title={t('save.retention.setting')}
+                    description={t('saving.immediately.deletes.data.older.than.the')}
+                    okText={t('save')}
+                    cancelText={t('cancel')}
                     onConfirm={() => void saveRetention()}
                   >
                     <Button disabled={retentionDays === null}>
-                      {tr('保存保留设置', 'Save retention')}
+                      {t('save.retention')}
                     </Button>
                   </Popconfirm>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {tr('0 = 永久保留', '0 = keep forever')}
+                    {t('0.keep.forever')}
                   </Typography.Text>
                 </Space>
                 <Alert
                   type="info"
                   showIcon
-                  message={tr('数据保留', 'Data retention')}
-                  description={tr(
-                    '保留天数保存在本地 SQLite 数据库；保存后立即清理超期 span，之后每 6 小时自动执行。删除操作不可撤销。',
-                    'The retention window is stored in the local SQLite database. Expired spans are deleted immediately on save and every six hours afterwards. Deletion cannot be undone.',
-                  )}
+                  message={t('data.retention')}
+                  description={t('the.retention.window.is.stored.in.the.local.sqlite')}
                 />
               </Space>
             ),
           },
         ]}
       />
+
+      <Modal
+        title={editor ? t('model.settings.model', { model: editor.model }) : ''}
+        open={editor !== null}
+        onCancel={() => setEditor(null)}
+        onOk={() => void saveEditor()}
+        okText={t('save')}
+        cancelText={t('cancel')}
+        confirmLoading={editorSaving}
+        width={640}
+        destroyOnClose
+      >
+        {editor && (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Typography.Text type="secondary">
+                {t('model.id.unique')}
+              </Typography.Text>
+              <Typography.Text code copyable>
+                {editor.model}
+              </Typography.Text>
+            </Space>
+
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Typography.Text type="secondary">
+                {t('provider')}
+              </Typography.Text>
+              <AutoComplete
+                value={editorProvider}
+                onChange={setEditorProvider}
+                options={PROVIDER_SUGGESTIONS.map((value) => ({ value }))}
+                placeholder={t('leave.empty.to.infer.from.the.model.name')}
+                style={{ width: '100%' }}
+                allowClear
+              />
+            </Space>
+
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Typography.Text type="secondary">
+                {t('icon')}
+              </Typography.Text>
+              <Space size="middle" align="start">
+                <div style={{ paddingTop: 2 }}>
+                  <ModelIcon
+                    model={editor.model}
+                    profile={{
+                      model: editor.model,
+                      ...editedProfile(),
+                      provider: editedProfile().provider ?? null,
+                      iconKind: editedProfile().iconKind ?? null,
+                      iconLetter: editedProfile().iconLetter ?? null,
+                      iconColor: editedProfile().iconColor ?? null,
+                      iconImage: editedProfile().iconImage ?? null,
+                    }}
+                    size={40}
+                    tooltip={false}
+                  />
+                </div>
+                <Space direction="vertical" size={8} style={{ flex: 1 }}>
+                  <Segmented
+                    value={editorKind}
+                    onChange={(value) =>
+                      setEditorKind(value as 'auto' | 'letter' | 'image')
+                    }
+                    options={[
+                      { value: 'auto', label: t('default') },
+                      { value: 'letter', label: t('character') },
+                      { value: 'image', label: t('image') },
+                    ]}
+                  />
+                  {editorKind === 'auto' && (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('color.and.initial.letter.are.derived.from.the.provider')}
+                    </Typography.Text>
+                  )}
+                  {editorKind === 'letter' && (
+                    <Space direction="vertical" size={6}>
+                      <Space size="middle" wrap>
+                        <Input
+                          value={editorLetter}
+                          onChange={(event) =>
+                            setEditorLetter(event.target.value.slice(0, 2))
+                          }
+                          maxLength={2}
+                          placeholder={t('a')}
+                          style={{ width: 90 }}
+                        />
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {t('1.2.characters')}
+                        </Typography.Text>
+                      </Space>
+                      <Space size={6} wrap>
+                        {MODEL_ICON_COLORS.map((color) => (
+                          <button
+                            key={color}
+                            type="button"
+                            aria-label={color}
+                            title={color}
+                            onClick={() => setEditorColor(color)}
+                            style={{
+                              width: 24,
+                              height: 24,
+                              padding: 0,
+                              cursor: 'pointer',
+                              borderRadius: 6,
+                              background: color,
+                              border:
+                                color.toLowerCase() === editorColor.toLowerCase()
+                                  ? '2px solid var(--ant-color-text)'
+                                  : '1px solid var(--ant-color-border)',
+                            }}
+                          />
+                        ))}
+                        <Tooltip title={t('custom.color')}>
+                          <input
+                            type="color"
+                            aria-label={t('custom.color')}
+                            value={editorColor}
+                            onChange={(event) =>
+                              setEditorColor(event.target.value)
+                            }
+                            style={{
+                              width: 32,
+                              height: 24,
+                              padding: 0,
+                              border: '1px solid var(--ant-color-border)',
+                              borderRadius: 6,
+                              background: 'transparent',
+                              cursor: 'pointer',
+                            }}
+                          />
+                        </Tooltip>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          {t('custom')}
+                        </Typography.Text>
+                      </Space>
+                    </Space>
+                  )}
+                  {editorKind === 'image' && (
+                    <Space size="middle" align="center" wrap>
+                      <Upload
+                        accept="image/png,image/jpeg,image/webp"
+                        showUploadList={false}
+                        beforeUpload={(file) => {
+                          void (async () => {
+                            try {
+                              setEditorImage(await readIconFile(file));
+                            } catch (error) {
+                              message.error((error as Error).message);
+                            }
+                          })();
+                          return false;
+                        }}
+                      >
+                        <Button>{t('choose.image')}</Button>
+                      </Upload>
+                      {editorImage && (
+                        <Button
+                          type="link"
+                          danger
+                          onClick={() => setEditorImage(null)}
+                        >
+                          {t('remove')}
+                        </Button>
+                      )}
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {t('automatically.cropped.to.a.64.64.png')}
+                      </Typography.Text>
+                    </Space>
+                  )}
+                </Space>
+              </Space>
+            </Space>
+
+            <Alert
+              type="info"
+              showIcon
+              message={t('pricing')}
+              description={
+                editor.priced
+                  ? t('this.model.is.priced.adjust.prices.and.peak.tier.rules')
+                  : t('this.model.is.not.priced.yet.set.prices.on.the.pricing')
+              }
+            />
+          </Space>
+        )}
+      </Modal>
     </Drawer>
   );
 }

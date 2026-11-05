@@ -170,6 +170,7 @@
     "pretest": "npm run compile",
     "test": "node --test",
     "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies",
+    "smoke": "node scripts/smoke-server.mjs",
     "sync-server": "node scripts/sync-server.mjs"
   },
   "version": "0.1.8"

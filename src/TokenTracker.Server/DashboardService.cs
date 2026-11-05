@@ -1,4 +1,4 @@
-using TokenTracker.Core;
+﻿using TokenTracker.Core;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Pricing;
 using TokenTracker.Core.Session;
@@ -59,6 +59,7 @@ public sealed class DashboardService
     private readonly Dictionary<string, (DateTimeOffset At, OutcomeSummary Value)>
         _outcomeCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan OutcomeCacheTtl = TimeSpan.FromMinutes(2);
+    private const int MaxOutcomeCacheEntries = 32;
     private long _outcomeVersion;
     private readonly SessionWorkspaceCache _workspaces;
 
@@ -152,7 +153,9 @@ public sealed class DashboardService
             _settings.RetentionDays,
             _store.GetSignalHealth(
                 null,
-                source == "combined" ? null : source),
+                source == "combined" ? null : source,
+                fromMs,
+                toMs),
             GetOutcomes(
                 fromMs,
                 toMs,
@@ -375,17 +378,27 @@ public sealed class DashboardService
         EnsureCombined(source);
         var detailSource = source == "combined" ? null : source;
         // The session page must honour the selected range like the dashboard
-        // does; without the filter it always reported all-time totals.
+        // does; filtering inside SQL keeps out-of-range rows from being loaded.
         var calls = _store
-            .GetCallsForSession(sessionId, source: source)
-            .Where(call => call.StartTimeMs >= fromMs && call.StartTimeMs < toMs)
-            .ToList();
-        var summary = BuildSummary(calls);
-        var modelSummaries = calls
-            .GroupBy(call => call.Model, StringComparer.Ordinal)
-            .Select(group => new SessionModelPayload(
-                group.Key,
-                BuildSummary(group.ToList())))
+            .GetCallsForSession(sessionId, fromMs, toMs, source: source);
+        var totals = new SummaryAccumulator();
+        var byModel = new Dictionary<string, SummaryAccumulator>(
+            StringComparer.Ordinal);
+        foreach (var call in calls)
+        {
+            totals.Add(call);
+            if (!byModel.TryGetValue(call.Model, out var accumulator))
+            {
+                accumulator = new SummaryAccumulator();
+                byModel[call.Model] = accumulator;
+            }
+
+            accumulator.Add(call);
+        }
+
+        var summary = totals.Build();
+        var modelSummaries = byModel
+            .Select(entry => new SessionModelPayload(entry.Key, entry.Value.Build()))
             .OrderByDescending(row => row.Summary.CostCny)
             .ThenByDescending(row => row.Summary.InputTokens)
             .ThenBy(row => row.Model, StringComparer.Ordinal)
@@ -413,7 +426,7 @@ public sealed class DashboardService
                     AvgDurationMs = durations.Count > 0
                         ? durations.Average()
                         : null,
-                    ErrorCount = 0,
+                    ErrorCount = group.Count(call => call.ErrorType is not null),
                     LastSeenMs = group.Max(call => call.StartTimeMs),
                 };
             })
@@ -433,7 +446,7 @@ public sealed class DashboardService
             modelSummaries,
             // The call list dominates the payload (hundreds of KB); only the
             // client that aggregates per-model details asks for it.
-            includeCalls ? calls : new List<CallRow>(),
+            includeCalls ? calls.ToList() : new List<CallRow>(),
             events,
             tools,
             _store
@@ -444,7 +457,7 @@ public sealed class DashboardService
                 .GetHookSummaries(sessionId, detailSource)
                 .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
                 .ToList(),
-            _store.GetSignalHealth(sessionId, detailSource),
+            _store.GetSignalHealth(sessionId, detailSource, fromMs, toMs),
             _store.GetOutcomeSummary(
                 fromMs,
                 toMs,
@@ -457,52 +470,128 @@ public sealed class DashboardService
 
     private static SummaryDto BuildSummary(IReadOnlyCollection<CallRow> calls)
     {
-        var ttftCalls = calls.Where(call => call.TtftMs is > 0).ToList();
-        var generationCalls = calls
-            .Where(call => call.DurationMs is > 0 &&
-                           call.OutputTokens >= 5 &&
-                           call.TtftMs is long ttft &&
-                           call.DurationMs - ttft >= 50)
-            .ToList();
-        var generationMs = generationCalls.Sum(
-            call => call.DurationMs!.Value - call.TtftMs!.Value);
-        var okTtft = ttftCalls.Where(call => call.ErrorType is null).ToList();
-        var okSpeeds = generationCalls
-            .Where(call => call.ErrorType is null)
-            .Select(call => call.TokensPerSecond)
-            .Where(value => value is > 0)
-            .Select(value => value!.Value)
-            .ToList();
-        return new SummaryDto
+        var accumulator = new SummaryAccumulator();
+        foreach (var call in calls)
         {
-            Calls = calls.Count,
-            InputTokens = calls.Sum(call => call.InputTokens),
-            CacheReadTokens = calls.Sum(call => call.CacheReadTokens),
-            OutputTokens = calls.Sum(call => call.OutputTokens),
-            ReasoningTokens = calls.Sum(call => call.ReasoningTokens),
-            Sessions = calls.Count > 0 ? 1 : 0,
-            CostCny = calls.Sum(call => call.CostCny ?? 0),
-            CacheCostCny = calls.Sum(call => call.CacheCostCny),
-            UncachedCostCny = calls.Sum(call => call.UncachedCostCny),
-            OutputCostCny = calls.Sum(call => call.OutputCostCny),
-            ReasoningCostCny = calls.Sum(call => call.ReasoningCostCny),
-            UnpricedCalls = calls.Count(call => call.CostCny is null),
-            AvgTtftMs = ttftCalls.Count > 0
-                ? ttftCalls.Average(call => call.TtftMs!.Value)
+            accumulator.Add(call);
+        }
+
+        return accumulator.Build();
+    }
+
+    // One pass replaces the previous mix of LINQ sums and four intermediate
+    // ToList() calls; the dashboard rebuilds these for every model on every
+    // snapshot, so the allocations add up.
+    private sealed class SummaryAccumulator
+    {
+        private long _calls;
+        private long _inputTokens;
+        private long _cacheReadTokens;
+        private long _outputTokens;
+        private long _reasoningTokens;
+        private long _unpricedCalls;
+        private double _costCny;
+        private double _cacheCostCny;
+        private double _uncachedCostCny;
+        private double _outputCostCny;
+        private double _reasoningCostCny;
+        private long _ttftSamples;
+        private double _ttftSum;
+        private long _minTtftMs = long.MaxValue;
+        private long _maxTtftMs = long.MinValue;
+        private double _minTokensPerSecond = double.MaxValue;
+        private double _maxTokensPerSecond = double.MinValue;
+        private long _generationOutputTokens;
+        private double _generationMs;
+
+        public void Add(CallRow call)
+        {
+            _calls++;
+            _inputTokens += call.InputTokens;
+            _cacheReadTokens += call.CacheReadTokens;
+            _outputTokens += call.OutputTokens;
+            _reasoningTokens += call.ReasoningTokens;
+            _costCny += call.CostCny ?? 0;
+            _cacheCostCny += call.CacheCostCny;
+            _uncachedCostCny += call.UncachedCostCny;
+            _outputCostCny += call.OutputCostCny;
+            _reasoningCostCny += call.ReasoningCostCny;
+            if (call.CostCny is null)
+            {
+                _unpricedCalls++;
+            }
+
+            var ttft = call.TtftMs is > 0 ? call.TtftMs!.Value : (long?)null;
+            if (ttft is long ttftMs)
+            {
+                _ttftSamples++;
+                _ttftSum += ttftMs;
+                var ok = call.ErrorType is null;
+                if (ok && ttftMs < _minTtftMs)
+                {
+                    _minTtftMs = ttftMs;
+                }
+
+                if (ok && ttftMs > _maxTtftMs)
+                {
+                    _maxTtftMs = ttftMs;
+                }
+            }
+
+            if (call.DurationMs is > 0 &&
+                call.OutputTokens >= 5 &&
+                ttft is long generationTtft)
+            {
+                var generationMs = call.DurationMs.Value - generationTtft;
+                if (generationMs >= 50)
+                {
+                    _generationOutputTokens += call.OutputTokens;
+                    _generationMs += generationMs;
+                    if (call.ErrorType is null &&
+                        call.TokensPerSecond is double speed &&
+                        speed > 0)
+                    {
+                        if (speed < _minTokensPerSecond)
+                        {
+                            _minTokensPerSecond = speed;
+                        }
+
+                        if (speed > _maxTokensPerSecond)
+                        {
+                            _maxTokensPerSecond = speed;
+                        }
+                    }
+                }
+            }
+        }
+
+        public SummaryDto Build() => new()
+        {
+            Calls = _calls,
+            InputTokens = _inputTokens,
+            CacheReadTokens = _cacheReadTokens,
+            OutputTokens = _outputTokens,
+            ReasoningTokens = _reasoningTokens,
+            Sessions = _calls > 0 ? 1 : 0,
+            CostCny = _costCny,
+            CacheCostCny = _cacheCostCny,
+            UncachedCostCny = _uncachedCostCny,
+            OutputCostCny = _outputCostCny,
+            ReasoningCostCny = _reasoningCostCny,
+            UnpricedCalls = _unpricedCalls,
+            AvgTtftMs = _ttftSamples > 0 ? _ttftSum / _ttftSamples : null,
+            TtftSamples = _ttftSamples,
+            TokensPerSecond = _generationMs > 0
+                ? _generationOutputTokens * 1_000d / _generationMs
                 : null,
-            TtftSamples = ttftCalls.Count,
-            TokensPerSecond = generationMs > 0
-                ? generationCalls.Sum(call => call.OutputTokens) * 1_000d /
-                  generationMs
-                : null,
-            MinTtftMs = okTtft.Count > 0
-                ? okTtft.Min(call => call.TtftMs!.Value)
-                : null,
-            MaxTtftMs = okTtft.Count > 0
-                ? okTtft.Max(call => call.TtftMs!.Value)
-                : null,
-            MinTokensPerSecond = okSpeeds.Count > 0 ? okSpeeds.Min() : null,
-            MaxTokensPerSecond = okSpeeds.Count > 0 ? okSpeeds.Max() : null,
+            MinTtftMs = _minTtftMs == long.MaxValue ? null : _minTtftMs,
+            MaxTtftMs = _maxTtftMs == long.MinValue ? null : _maxTtftMs,
+            MinTokensPerSecond = _minTokensPerSecond == double.MaxValue
+                ? null
+                : _minTokensPerSecond,
+            MaxTokensPerSecond = _maxTokensPerSecond == double.MinValue
+                ? null
+                : _maxTokensPerSecond,
         };
     }
 
@@ -520,12 +609,13 @@ public sealed class DashboardService
             _store.GetModelPriceOverrides().Select(entry =>
                 new KeyValuePair<string, ModelPrice>(entry.Model, entry.Price)));
 
-    public List<ModelPriceRowPayload> GetPrices()
+    public List<ModelSettingsRowPayload> GetModels()
     {
-        var overrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in _store.GetModelPriceOverrides())
+        var profiles = new Dictionary<string, StoredModelProfile>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in _store.GetModelProfiles())
         {
-            overrides[entry.Model] = entry.Model;
+            profiles[profile.Model] = profile;
         }
 
         var spanModels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -536,22 +626,54 @@ public sealed class DashboardService
 
         var callCounts = _store.GetModelCallCounts();
 
+        // Prices are keyed by the normalized model id while profiles use the exact
+        // id, so the merged list collapses both onto one row per display model.
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        keys.UnionWith(overrides.Keys);
         keys.UnionWith(spanModels.Keys);
+        keys.UnionWith(profiles.Keys);
+        foreach (var price in _store.GetModelPriceOverrides())
+        {
+            keys.Add(price.Model);
+        }
 
-        var rows = new List<ModelPriceRowPayload>();
+        // A model id may appear as `provider/model` in profiles and as the parser
+        // normalized leaf in spans; both project onto one row per normalized id.
+        var displayByNormalized = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var model in spanModels.Keys)
+        {
+            displayByNormalized.TryAdd(ModelPricing.NormalizeModel(model), model);
+        }
+
+        var profileByNormalized = new Dictionary<string, StoredModelProfile>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles.Values)
+        {
+            profileByNormalized.TryAdd(
+                ModelPricing.NormalizeModel(profile.Model),
+                profile);
+        }
+
+        var rows = new List<ModelSettingsRowPayload>(keys.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in keys)
         {
-            var display = spanModels.TryGetValue(key, out var canonical)
+            var normalized = ModelPricing.NormalizeModel(key);
+            if (string.IsNullOrEmpty(normalized) || !seen.Add(normalized))
+            {
+                continue;
+            }
+
+            var display = displayByNormalized.TryGetValue(normalized, out var canonical)
                 ? canonical
-                : overrides.TryGetValue(key, out var original)
-                    ? original
-                    : key;
+                : key;
+            var profile = profiles.GetValueOrDefault(display) ??
+                profileByNormalized.GetValueOrDefault(normalized);
             var calls = callCounts.TryGetValue(display, out var count) ? count : 0;
-            rows.Add(ToPriceRow(
+            rows.Add(ToSettingsRow(
                 display,
-                customized: overrides.ContainsKey(key),
+                priced: ModelPricing.GetPrice(display) is not null,
+                profile,
                 calls));
         }
 
@@ -560,14 +682,131 @@ public sealed class DashboardService
             .ToList();
     }
 
-    public ModelPriceRowPayload? SavePrice(PriceUpdateRequest request)
+    public ModelSettingsRowPayload? SaveModel(ModelSettingsUpdateRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.Model) ||
-            !IsValidPrice(request.CachedInput) ||
+        if (string.IsNullOrWhiteSpace(request.Model))
+        {
+            return null;
+        }
+
+        var model = request.Model.Trim();
+        if (model.Length > 200)
+        {
+            return null;
+        }
+
+        var provider = NormalizeOptional(request.Provider, 64);
+        if (!TryNormalizeIconKind(request.IconKind, out var iconKind))
+        {
+            return null;
+        }
+
+        var iconLetter = NormalizeOptional(request.IconLetter, 8);
+        var iconColor = NormalizeOptional(request.IconColor, 9);
+        if (iconColor is not null && !IsHexColor(iconColor))
+        {
+            return null;
+        }
+
+        var iconImage = NormalizeOptional(request.IconImage, MaxIconImageChars);
+        if (iconImage is not null && !IsSupportedIcon(iconImage))
+        {
+            return null;
+        }
+
+        // An uploaded image without data (or a letter without a character) would
+        // render as an empty badge, so reject the combination instead of saving it.
+        if (iconKind == "image" && iconImage is null)
+        {
+            return null;
+        }
+
+        if (iconKind == "letter" && iconLetter is null)
+        {
+            return null;
+        }
+
+        var priceModel = ModelPricing.NormalizeModel(model);
+        if (string.IsNullOrWhiteSpace(priceModel))
+        {
+            return null;
+        }
+
+        var hasProfile = provider is not null ||
+            iconKind is not null ||
+            iconLetter is not null ||
+            iconColor is not null ||
+            iconImage is not null;
+
+        if (request.Priced)
+        {
+            if (!TryBuildPrice(request, out var price) || price is null)
+            {
+                return null;
+            }
+
+            _store.UpsertModelPrice(
+                priceModel,
+                price.Value,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            ApplyOverrides();
+            RecomputeCostsForModel(priceModel);
+        }
+        else
+        {
+            // Turning pricing off keeps the identity but drops the override.
+            _store.DeleteModelPrice(priceModel);
+            ApplyOverrides();
+            RecomputeCostsForModel(priceModel);
+        }
+
+        // Replace a stale profile whose id differs only by case or provider
+        // prefix, so the unique model id never shows up twice in the list.
+        foreach (var existing in _store.GetModelProfiles())
+        {
+            if (!string.Equals(existing.Model, model, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    ModelPricing.NormalizeModel(existing.Model),
+                    priceModel,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _store.DeleteModelProfile(existing.Model);
+            }
+        }
+
+        if (hasProfile)
+        {
+            _store.UpsertModelProfile(new StoredModelProfile(
+                model,
+                provider,
+                iconKind,
+                iconLetter,
+                iconColor,
+                iconImage,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        }
+        else
+        {
+            _store.DeleteModelProfile(model);
+        }
+
+        // Reuse the list projection so the response always matches a reload.
+        return GetModels().FirstOrDefault(row => string.Equals(
+            ModelPricing.NormalizeModel(row.Model),
+            priceModel,
+            StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryBuildPrice(
+        ModelSettingsUpdateRequest request,
+        out ModelPrice? price)
+    {
+        price = null;
+        if (!IsValidPrice(request.CachedInput) ||
             !IsValidPrice(request.UncachedInput) ||
             !IsValidPrice(request.Output))
         {
-            return null;
+            return false;
         }
 
         if (request.PeakAware &&
@@ -575,14 +814,9 @@ public sealed class DashboardService
              !IsValidPrice(request.PeakUncachedInput ?? 0) ||
              !IsValidPrice(request.PeakOutput ?? 0)))
         {
-            return null;
+            return false;
         }
 
-        var model = ModelPricing.NormalizeModel(request.Model);
-        if (string.IsNullOrWhiteSpace(model))
-        {
-            return null;
-        }
         var cacheWrite = request.CacheWrite ?? request.UncachedInput;
         var peakCacheWrite = request.PeakCacheWrite ??
             request.CacheWrite ??
@@ -591,7 +825,7 @@ public sealed class DashboardService
         if (!IsValidPrice(cacheWrite) ||
             (request.PeakAware && !IsValidPrice(peakCacheWrite)))
         {
-            return null;
+            return false;
         }
 
         var idle = new PriceTier(
@@ -620,7 +854,7 @@ public sealed class DashboardService
                 !IsValidPrice(longOutput) ||
                 !IsValidPrice(longCacheWrite))
             {
-                return null;
+                return false;
             }
 
             if (request.PeakAware &&
@@ -629,7 +863,7 @@ public sealed class DashboardService
                  (request.LongPeakOutput is { } peakOutput && !IsValidPrice(peakOutput)) ||
                  (request.LongPeakCacheWrite is { } peakWrite && !IsValidPrice(peakWrite))))
             {
-                return null;
+                return false;
             }
 
             var longIdle = new PriceTier(
@@ -648,24 +882,24 @@ public sealed class DashboardService
             longContext = new LongContextPrice(threshold, longIdle, longPeak);
         }
 
-        _store.UpsertModelPrice(
-            model,
-            new ModelPrice(idle, peak, request.PeakAware, longContext),
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        ApplyOverrides();
-        RecomputeCostsForModel(model);
-
-        var calls = _store.GetModelCallCounts()
-            .TryGetValue(model, out var count) ? count : 0;
-        return ToPriceRow(model, customized: true, calls);
+        price = new ModelPrice(idle, peak, request.PeakAware, longContext);
+        return true;
     }
 
-    public bool DeletePrice(string model)
+    public bool DeleteModel(string model)
     {
-        var removed = _store.DeleteModelPrice(model);
-        ApplyOverrides();
-        RecomputeCostsForModel(model);
-        return removed;
+        // Prices are stored under the normalized id, profiles under the exact id.
+        var normalized = ModelPricing.NormalizeModel(model);
+        var removedPrice = _store.DeleteModelPrice(model) |
+            _store.DeleteModelPrice(normalized);
+        var removedProfile = _store.DeleteModelProfile(model);
+        if (removedPrice)
+        {
+            ApplyOverrides();
+            RecomputeCostsForModel(model);
+        }
+
+        return removedPrice || removedProfile;
     }
 
     private void RecomputeCostsForModel(string model)
@@ -683,9 +917,52 @@ public sealed class DashboardService
         }
     }
 
-    private static ModelPriceRowPayload ToPriceRow(
+    private const int MaxIconImageChars = 300_000;
+
+    private static string? NormalizeOptional(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length > maxLength ? null : trimmed;
+    }
+
+    private static bool TryNormalizeIconKind(string? value, out string? kind)
+    {
+        switch (value?.Trim().ToLowerInvariant())
+        {
+            case null or "":
+                kind = null;
+                return true;
+            case "letter":
+                kind = "letter";
+                return true;
+            case "image":
+                kind = "image";
+                return true;
+            default:
+                kind = null;
+                return false;
+        }
+    }
+
+    private static bool IsHexColor(string value) =>
+        value.Length is 4 or 7 or 9 &&
+        value[0] == '#' &&
+        value.Skip(1).All(Uri.IsHexDigit);
+
+    private static bool IsSupportedIcon(string value) =>
+        value.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("data:image/jpeg;base64,", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("data:image/webp;base64,", StringComparison.OrdinalIgnoreCase);
+
+    private static ModelSettingsRowPayload ToSettingsRow(
         string model,
-        bool customized,
+        bool priced,
+        StoredModelProfile? profile,
         long calls)
     {
         var price = ModelPricing.GetPrice(model);
@@ -694,10 +971,16 @@ public sealed class DashboardService
         var peakAware = price?.PeakAware ?? false;
         var longContext = price?.LongContext;
 
-        return new ModelPriceRowPayload(
+        return new ModelSettingsRowPayload(
             model,
-            customized,
+            priced,
+            profile is not null,
             calls,
+            profile?.Provider,
+            profile?.IconKind,
+            profile?.IconLetter,
+            profile?.IconColor,
+            profile?.IconImage,
             peakAware,
             (double)idle.CachedInput,
             (double)idle.UncachedInput,
@@ -747,9 +1030,25 @@ public sealed class DashboardService
         var value = _store.GetOutcomeSummary(fromMs, toMs, source);
         lock (_outcomeCacheLock)
         {
-            if (_outcomeCache.Count > 32)
+            if (_outcomeCache.Count >= MaxOutcomeCacheEntries)
             {
-                _outcomeCache.Clear();
+                // Dropping the oldest entry keeps the other ranges warm; clearing
+                // the whole dictionary made every open page recompute at once.
+                var oldestKey = (string?)null;
+                var oldestAt = DateTimeOffset.MaxValue;
+                foreach (var entry in _outcomeCache)
+                {
+                    if (entry.Value.At < oldestAt)
+                    {
+                        oldestAt = entry.Value.At;
+                        oldestKey = entry.Key;
+                    }
+                }
+
+                if (oldestKey is not null)
+                {
+                    _outcomeCache.Remove(oldestKey);
+                }
             }
 
             _outcomeCache[key] = (DateTimeOffset.UtcNow, value);

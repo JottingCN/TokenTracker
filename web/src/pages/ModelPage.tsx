@@ -13,6 +13,10 @@ import { sessionColumns } from '../components/columns';
 import { useRealtime } from '../useRealtime';
 import { useUi } from '../ui';
 import { useMoney } from '../utils/money';
+import {
+  TABLE_ROW_DOUBLE_PX,
+  clampTableHeight,
+} from '../utils/tableMetrics';
 import { useAutoTableHeight } from '../utils/useAutoTableHeight';
 import type { ModelPayload } from '../types';
 
@@ -32,7 +36,7 @@ export function ModelPage({
   onOpenSession,
 }: ModelPageProps) {
   useMoney();
-  const { tr } = useUi();
+  const { t } = useUi();
   const { data } = useRealtime<ModelPayload>({
     view: 'model',
     id: modelId,
@@ -43,10 +47,17 @@ export function ModelPage({
   });
   const summary = data?.summary;
   const sessions = data?.sessions ?? [];
-  const [sessionTableRef, sessionTableHeight] = useAutoTableHeight(60);
+  const [sessionTableRef, sessionTableAvailable] = useAutoTableHeight(60);
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
+  const pageRows = sessions.slice((page - 1) * pageSize, page * pageSize);
+  // A short list must not stretch to the viewport: the body is sized to the rows.
+  const sessionTableHeight = clampTableHeight(
+    sessionTableAvailable,
+    pageRows.length,
+    TABLE_ROW_DOUBLE_PX,
+  );
 
   useEffect(() => {
     if (page > pageCount) {
@@ -62,10 +73,7 @@ export function ModelPage({
 
       <Card
         size="small"
-        title={`${tr(
-          '会话（使用该模型，主调用）',
-          'Sessions using this model (main calls)',
-        )}(${sessions.length})`}
+        title={`${t('sessions.using.this.model.main.calls')}(${sessions.length})`}
         extra={
           <CardPagination
             current={page}
@@ -78,7 +86,7 @@ export function ModelPage({
         {data && sessions.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={tr('暂无数据', 'No data')}
+            description={t('no.data')}
           />
         ) : (
           <div
@@ -94,10 +102,7 @@ export function ModelPage({
               size="small"
               rowKey="sessionId"
               columns={sessionColumns(false, onOpenSession, true)}
-              dataSource={sessions.slice(
-                (page - 1) * pageSize,
-                page * pageSize,
-              )}
+              dataSource={pageRows}
               loading={!data}
               pagination={false}
               scroll={{ x: 1340, y: sessionTableHeight }}

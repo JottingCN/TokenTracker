@@ -2,7 +2,7 @@ import { Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { CallRow, ModelRow, SessionRow } from '../types';
 import { ModelIcon } from './ModelIcon';
-import { translate } from '../ui';
+import { t } from '../i18n';
 import {
   formatLatency,
   formatSpeed,
@@ -46,12 +46,12 @@ function ModelCell({ model }: { model: string }) {
 }
 
 function sessionName(title: string | null | undefined, short: string): string {
-  return title?.trim() || `${translate('未命名', 'Unnamed')} · ${short}`;
+  return title?.trim() || `${t('unnamed')} · ${short}`;
 }
 
 function callSessionName(row: CallRow): string {
   if (!row.sessionId) {
-    return translate('辅助调用', 'Utility call');
+    return t('utility.call');
   }
   return sessionName(row.title, row.sessionShort);
 }
@@ -62,11 +62,11 @@ function periodLabel(row: CallRow): string {
   }
   switch (row.pricingPeriod) {
     case 'peak':
-      return translate('高峰', 'Peak');
+      return t('peak');
     case 'idle':
-      return translate('空闲', 'Idle');
+      return t('idle');
     case 'flat':
-      return translate('固定', 'Flat');
+      return t('flat');
     default:
       return '-';
   }
@@ -77,7 +77,7 @@ export function modelColumns(
 ): ColumnsType<ModelRow> {
   return [
     {
-      title: translate('模型', 'Model'),
+      title: t('model'),
       key: 'model',
       width: 200,
       ellipsis: true,
@@ -91,21 +91,21 @@ export function modelColumns(
         ),
     },
     {
-      title: translate('调用', 'Calls'),
+      title: t('calls'),
       dataIndex: 'callsText',
       key: 'calls',
       width: 70,
       align: 'right',
     },
     {
-      title: translate('输入 / 缓存', 'Input / Cached'),
+      title: t('input.cached'),
       dataIndex: 'tokensText',
       key: 'tokens',
       width: 180,
       align: 'right',
     },
     {
-      title: translate('命中率', 'Hit rate'),
+      title: t('hit.rate'),
       dataIndex: 'hitRateText',
       key: 'hitRate',
       width: 90,
@@ -114,12 +114,9 @@ export function modelColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '首次响应时间（TTFT）：请求发出到收到首个输出 token',
-            'Time to first token (TTFT): from request to the first output token.',
-          )}
+          title={t('time.to.first.token.ttft.from.request.to.the.first')}
         >
-          {translate('首次响应', 'TTFT')}
+          {t('ttft')}
         </Tooltip>
       ),
       key: 'ttft',
@@ -130,12 +127,9 @@ export function modelColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '生成速度 = 输出 token / (调用总耗时 - 首 token 等待)',
-            'Generation speed = output tokens / (total duration - TTFT).',
-          )}
+          title={t('generation.speed.output.tokens.total.duration.ttft')}
         >
-          {translate('生成速度', 'Gen speed')}
+          {t('gen.speed')}
         </Tooltip>
       ),
       key: 'speed',
@@ -144,7 +138,7 @@ export function modelColumns(
       render: (_, row) => formatSpeed(row.tokensPerSecond),
     },
     {
-      title: translate('估算费用', 'Estimated cost'),
+      title: t('estimated.cost'),
       key: 'cost',
       width: 120,
       align: 'right',
@@ -160,7 +154,7 @@ export function sessionColumns(
 ): ColumnsType<SessionRow> {
   const columns: ColumnsType<SessionRow> = [
     {
-      title: translate('标题', 'Title'),
+      title: t('title'),
       key: 'title',
       width: 220,
       ellipsis: true,
@@ -174,7 +168,7 @@ export function sessionColumns(
 
   if (showModel) {
     columns.push({
-      title: translate('模型', 'Model'),
+      title: t('model'),
       key: 'model',
       width: 160,
       ellipsis: true,
@@ -185,20 +179,17 @@ export function sessionColumns(
 
   columns.push(
     {
-      title: translate('调用', 'Calls'),
+      title: t('calls'),
       key: 'calls',
       width: 76,
       align: 'right',
       render: (_, row) =>
         row.calls === 0 && row.events > 0 ? (
           <Tooltip
-            title={translate(
-              '仅有事件，没有模型调用',
-              'Events only; no model calls',
-            )}
+            title={t('events.only.no.model.calls')}
           >
             <span>
-              {`0 (${row.events} ${translate('事件', 'events')})`}
+              {`0 (${row.events} ${t('events.2')})`}
             </span>
           </Tooltip>
         ) : (
@@ -206,7 +197,7 @@ export function sessionColumns(
         ),
     },
     {
-      title: translate('输入', 'Input'),
+      title: t('input'),
       key: 'input',
       width: 100,
       align: 'right',
@@ -217,7 +208,7 @@ export function sessionColumns(
         ),
     },
     {
-      title: translate('缓存', 'Cached'),
+      title: t('cached'),
       key: 'cache',
       width: 100,
       align: 'right',
@@ -225,7 +216,7 @@ export function sessionColumns(
         tokenWithCost(row.cacheText, formatMoney(row.cacheCostCny)),
     },
     {
-      title: translate('命中', 'Hit'),
+      title: t('hit'),
       dataIndex: 'hitRateText',
       key: 'hitRate',
       width: 70,
@@ -234,12 +225,9 @@ export function sessionColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '输出 token 包含思考 token，费用按输出单价计算',
-            'Output tokens include reasoning tokens and are priced at the output rate.',
-          )}
+          title={t('output.tokens.include.reasoning.tokens.and.are.priced')}
         >
-          {translate('输出', 'Output')}
+          {t('output')}
         </Tooltip>
       ),
       key: 'output',
@@ -251,12 +239,9 @@ export function sessionColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '思考 token 是输出 token 的一部分，对应费用已计入输出费用，不重复累加',
-            'Reasoning tokens are part of output; their cost is already included.',
-          )}
+          title={t('reasoning.tokens.are.part.of.output.their.cost.is.2')}
         >
-          {translate('思考', 'Reasoning')}
+          {t('reasoning')}
         </Tooltip>
       ),
       key: 'reasoning',
@@ -271,7 +256,7 @@ export function sessionColumns(
         ),
     },
     {
-      title: translate('估算费用', 'Estimated cost'),
+      title: t('estimated.cost'),
       key: 'cost',
       width: 100,
       align: 'right',
@@ -282,7 +267,7 @@ export function sessionColumns(
   if (showPerformance) {
     columns.push(
       {
-        title: translate('平均耗时', 'Avg duration'),
+        title: t('avg.duration'),
         dataIndex: 'avgDurationText',
         key: 'avgDuration',
         width: 100,
@@ -291,12 +276,9 @@ export function sessionColumns(
       {
         title: (
           <Tooltip
-            title={translate(
-              '首次响应时间（TTFT）：请求发出到收到首个输出 token',
-              'Time to first token (TTFT): from request to the first output token.',
-            )}
+            title={t('time.to.first.token.ttft.from.request.to.the.first')}
           >
-            {translate('首次响应', 'TTFT')}
+            {t('ttft')}
           </Tooltip>
         ),
         dataIndex: 'avgTtftText',
@@ -307,12 +289,9 @@ export function sessionColumns(
       {
         title: (
           <Tooltip
-            title={translate(
-              '生成速度 = 输出 token /（调用耗时 − TTFT）',
-              'Generation speed = output tokens / (call duration - TTFT).',
-            )}
+            title={t('generation.speed.output.tokens.call.duration.ttft')}
           >
-            {translate('生成速度', 'Gen speed')}
+            {t('gen.speed')}
           </Tooltip>
         ),
         dataIndex: 'tokensPerSecondText',
@@ -321,7 +300,7 @@ export function sessionColumns(
         align: 'right',
       },
       {
-        title: translate('时间', 'Time'),
+        title: t('time'),
         dataIndex: 'timeRangeText',
         key: 'timeRange',
         width: 190,
@@ -330,7 +309,7 @@ export function sessionColumns(
     );
   } else {
     columns.push({
-      title: translate('最近', 'Last seen'),
+      title: t('last.seen'),
       dataIndex: 'lastSeenText',
       key: 'lastSeen',
       width: 100,
@@ -346,13 +325,13 @@ export function callColumns(
 ): ColumnsType<CallRow> {
   const columns: ColumnsType<CallRow> = [
     {
-      title: translate('时间', 'Time'),
+      title: t('time'),
       dataIndex: 'timeText',
       key: 'time',
       width: 120,
     },
     {
-      title: translate('标题', 'Title'),
+      title: t('title'),
       key: 'title',
       width: 200,
       ellipsis: true,
@@ -366,14 +345,14 @@ export function callColumns(
       },
     },
     {
-      title: translate('Agent', 'Agent'),
+      title: t('agent'),
       key: 'agent',
       width: 150,
       ellipsis: true,
       render: (_, row) => row.agentText,
     },
     {
-      title: translate('子代理', 'Subagent'),
+      title: t('subagent'),
       key: 'subagent',
       width: 130,
       ellipsis: true,
@@ -385,7 +364,7 @@ export function callColumns(
         ),
     },
     {
-      title: translate('错误', 'Error'),
+      title: t('error'),
       key: 'error',
       width: 120,
       ellipsis: true,
@@ -402,14 +381,14 @@ export function callColumns(
 
   columns.push(
     {
-      title: translate('模型', 'Model'),
+      title: t('model'),
       key: 'model',
       width: 180,
       ellipsis: true,
       render: (_, row) => <ModelCell model={row.model} />,
     },
     {
-      title: translate('输入', 'Input'),
+      title: t('input'),
       key: 'input',
       width: 110,
       align: 'right',
@@ -420,7 +399,7 @@ export function callColumns(
         ),
     },
     {
-      title: translate('缓存', 'Cached'),
+      title: t('cached'),
       key: 'cache',
       width: 110,
       align: 'right',
@@ -428,7 +407,7 @@ export function callColumns(
         tokenWithCost(row.cacheText, formatMoney(row.cacheCostCny)),
     },
     {
-      title: translate('输出', 'Output'),
+      title: t('output'),
       key: 'output',
       width: 100,
       align: 'right',
@@ -436,7 +415,7 @@ export function callColumns(
         tokenWithCost(row.outputText, formatMoney(row.outputCostCny)),
     },
     {
-      title: translate('命中', 'Hit'),
+      title: t('hit'),
       dataIndex: 'hitRateText',
       key: 'hitRate',
       width: 80,
@@ -445,12 +424,9 @@ export function callColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '本次调用总耗时（请求发出到响应结束）',
-            'Total duration of this call (request to response completion).',
-          )}
+          title={t('total.duration.of.this.call.request.to.response')}
         >
-          {translate('耗时', 'Duration')}
+          {t('duration')}
         </Tooltip>
       ),
       key: 'duration',
@@ -461,12 +437,9 @@ export function callColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '首次响应时间（TTFT）：请求发出到收到首个输出 token',
-            'Time to first token (TTFT): from request to the first output token.',
-          )}
+          title={t('time.to.first.token.ttft.from.request.to.the.first')}
         >
-          {translate('首次响应', 'TTFT')}
+          {t('ttft')}
         </Tooltip>
       ),
       key: 'ttft',
@@ -477,12 +450,9 @@ export function callColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '生成速度 = 输出 token / (本次调用耗时 - 首 token 等待)',
-            'Generation speed = output tokens / (call duration - TTFT).',
-          )}
+          title={t('generation.speed.output.tokens.call.duration.ttft')}
         >
-          {translate('生成速度', 'Gen speed')}
+          {t('gen.speed')}
         </Tooltip>
       ),
       key: 'speed',
@@ -493,12 +463,9 @@ export function callColumns(
     {
       title: (
         <Tooltip
-          title={translate(
-            '上方为按价格表估算的费用；下方为 Copilot 返回的实际 AIC（仅扩展管线提供）',
-            'Top is the estimated cost from the price table; bottom is the actual AIC reported by Copilot (extension pipeline only).',
-          )}
+          title={t('top.is.the.estimated.cost.from.the.price.table.bottom')}
         >
-          {translate('估算费用', 'Estimated cost')}
+          {t('estimated.cost')}
         </Tooltip>
       ),
       key: 'cost',
@@ -516,7 +483,7 @@ export function callColumns(
       ),
     },
     {
-      title: translate('时段', 'Period'),
+      title: t('period'),
       key: 'period',
       width: 90,
       align: 'right',

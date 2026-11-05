@@ -32,7 +32,7 @@ interface SystemInfoDrawerProps {
 }
 
 export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
-  const { tr } = useUi();
+  const { t } = useUi();
   const [data, setData] = useState<SystemInfo | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -68,12 +68,12 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
 
   const columns: ColumnsType<StorageTableInfo> = [
     {
-      title: tr('表', 'Table'),
+      title: t('table'),
       dataIndex: 'name',
       key: 'name',
     },
     {
-      title: tr('行数', 'Rows'),
+      title: t('rows'),
       dataIndex: 'rows',
       key: 'rows',
       align: 'right',
@@ -83,7 +83,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
 
   return (
     <Drawer
-      title={tr('系统信息', 'System info')}
+      title={t('system.info')}
       open={open}
       onClose={onClose}
       width="min(820px, 92vw)"
@@ -93,7 +93,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
           <Spin />
         </div>
       ) : !data ? (
-        <Empty description={tr('无法读取系统信息', 'Unable to read system info')} />
+        <Empty description={t('unable.to.read.system.info')} />
       ) : (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Descriptions
@@ -101,21 +101,21 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             column={1}
             bordered
             styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
-            title={tr('服务', 'Server')}
+            title={t('server')}
             items={[
               {
                 key: 'version',
-                label: tr('版本', 'Version'),
+                label: t('version'),
                 children: `${data.server.name} ${data.server.version}`,
               },
               {
                 key: 'port',
-                label: tr('端口', 'Port'),
+                label: t('port'),
                 children: `${data.server.port}`,
               },
               {
                 key: 'started',
-                label: tr('启动时间', 'Started'),
+                label: t('started'),
                 children: data.server.startedAt,
               },
               {
@@ -125,7 +125,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               },
               {
                 key: 'features',
-                label: tr('功能', 'Features'),
+                label: t('features'),
                 children: (
                   <Space wrap size={4}>
                     {data.server.features.map((feature) => (
@@ -139,7 +139,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 label: 'AHP',
                 children: `${ahpStateLabel(data.ahp.state)} · ${
                   data.ahp.sessions
-                } ${tr('会话', 'sessions')}`,
+                } ${t('sessions.2')}`,
               },
             ]}
           />
@@ -149,16 +149,16 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             column={1}
             bordered
             styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
-            title={tr('数据存储', 'Storage')}
+            title={t('storage')}
             items={[
               {
                 key: 'dataDir',
-                label: tr('数据目录', 'Data directory'),
+                label: t('data.directory'),
                 children: <Typography.Text copyable>{data.dataDirectory}</Typography.Text>,
               },
               {
                 key: 'database',
-                label: tr('数据库', 'Database'),
+                label: t('database'),
                 children: (
                   <Typography.Text copyable>
                     {data.storage.databasePath}
@@ -167,7 +167,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               },
               {
                 key: 'size',
-                label: tr('总大小', 'Total size'),
+                label: t('total.size'),
                 children: formatBytes(
                   data.storage.sizeBytes +
                     data.storage.walBytes +
@@ -176,43 +176,43 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               },
               {
                 key: 'files',
-                label: tr('DB / WAL / SHM', 'DB / WAL / SHM'),
+                label: t('db.wal.shm'),
                 children: `${formatBytes(data.storage.sizeBytes)} / ${formatBytes(
                   data.storage.walBytes,
                 )} / ${formatBytes(data.storage.shmBytes)}`,
               },
               {
                 key: 'pages',
-                label: tr('页大小 / 页数', 'Page size / count'),
+                label: t('page.size.count'),
                 children: `${formatBytes(data.storage.pageSize)} / ${formatNumber(
                   data.storage.pageCount,
                 )} · ${data.storage.journalMode}`,
               },
               {
                 key: 'spans',
-                label: tr('Span', 'Spans'),
-                children: `${tr('原始', 'raw')} ${formatNumber(
+                label: t('spans'),
+                children: `${t('raw')} ${formatNumber(
                   data.storage.rawSpans,
-                )} · ${tr('综合', 'combined')} ${formatNumber(
+                )} · ${t('combined')} ${formatNumber(
                   data.storage.combinedSpans,
                 )}`,
               },
               {
                 key: 'outcomes',
-                label: tr('结果指标点', 'Outcome metric points'),
+                label: t('outcome.metric.points'),
                 children: formatNumber(data.storage.outcomeMetricPoints),
               },
               {
                 key: 'retention',
-                label: tr('保留天数', 'Retention'),
+                label: t('retention'),
                 children:
                   data.retentionDays === 0
-                    ? tr('永久', 'Forever')
-                    : `${data.retentionDays} ${tr('天', 'days')}`,
+                    ? t('forever')
+                    : `${data.retentionDays} ${t('days')}`,
               },
               {
                 key: 'last',
-                label: tr('最近接收', 'Last received'),
+                label: t('last.received'),
                 children: data.lastReceivedText,
               },
             ]}
@@ -222,20 +222,18 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             <Alert
               type="info"
               showIcon
-              message={tr(
-                '尚未收到结果类指标',
-                'No outcome metrics received yet',
-              )}
-              description={tr(
-                `编辑接受率、代码行数、反馈、PR 等来自 OTel metrics。当前 metric_points 中没有结果类指标，因此 Dashboard 的“编辑与结果指标”卡片不会显示；这不是统计错误。本次运行已收到 ${data.receiver.metricBatches} 批 metrics（${data.receiver.metricPoints} 个结果点，${data.receiver.metricRejectedBatches} 批全部被过滤）；若为 0，说明 Copilot/Agent Host 根本没有导出 metrics，请确认 OTel 启用命令已执行并重载窗口。`,
-                `Edit acceptance, LOC, feedback and PR metrics come from OTel metrics. metric_points currently has no outcome metrics, so the dashboard outcomes card is hidden. This run received ${data.receiver.metricBatches} metric batches (${data.receiver.metricPoints} outcome points, ${data.receiver.metricRejectedBatches} fully filtered); at 0, Copilot/Agent Host never exported metrics, so re-run the OTel enable command and reload the window.`,
-              )}
+              message={t('no.outcome.metrics.received.yet')}
+              description={t('outcome.metrics.explanation', {
+                batches: data.receiver.metricBatches,
+                points: data.receiver.metricPoints,
+                rejected: data.receiver.metricRejectedBatches,
+              })}
             />
           )}
 
           <div>
             <Typography.Title level={5} style={{ marginTop: 0 }}>
-              {tr('读取与访问路径（只读）', 'Read and access paths (read-only)')}
+              {t('read.and.access.paths.read.only')}
             </Typography.Title>
             <Table<SystemPathInfo>
               size="small"
@@ -244,7 +242,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               pagination={false}
               columns={[
                 {
-                  title: tr('名称', 'Name'),
+                  title: t('name'),
                   key: 'name',
                   width: 220,
                   render: (_, row) => (
@@ -262,7 +260,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                   ),
                 },
                 {
-                  title: tr('路径', 'Path'),
+                  title: t('path'),
                   dataIndex: 'path',
                   key: 'path',
                   render: (value: string) => (
@@ -275,7 +273,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                   ),
                 },
                 {
-                  title: tr('状态', 'Status'),
+                  title: t('status'),
                   key: 'status',
                   width: 160,
                   render: (_, row) => (
@@ -285,8 +283,8 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                         style={{ marginInlineEnd: 0 }}
                       >
                         {row.exists
-                          ? tr('存在', 'Exists')
-                          : tr('缺失', 'Missing')}
+                          ? t('exists')
+                          : t('missing')}
                       </Tag>
                       <Typography.Text
                         type="secondary"
@@ -316,7 +314,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               pagination={false}
               columns={[
                 {
-                  title: tr('访问', 'Access'),
+                  title: t('access'),
                   key: 'name',
                   width: 220,
                   render: (_, row) => (
@@ -332,7 +330,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                   ),
                 },
                 {
-                  title: tr('目标', 'Target'),
+                  title: t('target'),
                   dataIndex: 'target',
                   key: 'target',
                   render: (value: string) => (
@@ -354,23 +352,23 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
             column={1}
             bordered
             styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
-            title={tr('监听', 'Receiver')}
+            title={t('receiver')}
             items={[
               {
                 key: 'endpoint',
-                label: tr('端点', 'Endpoint'),
+                label: t('endpoint'),
                 children: <Typography.Text copyable>{data.receiver.endpoint}</Typography.Text>,
               },
               {
                 key: 'batches',
-                label: tr('批次 / Span', 'Batches / spans'),
+                label: t('batches.spans'),
                 children: `${formatNumber(data.receiver.batches)} / ${formatNumber(
                   data.receiver.spans,
                 )}`,
               },
               {
                 key: 'error',
-                label: tr('最近错误', 'Last error'),
+                label: t('last.error'),
                 children: data.receiver.lastError ? (
                   <Typography.Text type="danger">
                     {data.receiver.lastError}
@@ -384,7 +382,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
 
           <div>
             <Typography.Title level={5} style={{ marginTop: 0 }}>
-              {tr('数据表', 'Tables')}
+              {t('tables')}
             </Typography.Title>
             <Table<StorageTableInfo>
               size="small"

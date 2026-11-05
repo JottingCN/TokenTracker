@@ -1,4 +1,4 @@
-import { translate } from '../ui';
+import { t } from '../i18n';
 
 const PROVIDERS: Array<[RegExp, string]> = [
   [/^deepseek/i, 'DeepSeek'],
@@ -17,25 +17,47 @@ function leafOf(model: string): string {
   return slash >= 0 ? model.slice(slash + 1) : model;
 }
 
-export function providerOf(model: string): string {
+export function providerOf(model: string, override?: string | null): string {
+  if (override?.trim()) {
+    return localizeProvider(override.trim());
+  }
+
   const leaf = leafOf(model);
   const provider =
     PROVIDERS.find(([pattern]) => pattern.test(leaf))?.[1] ?? '其他';
+  return localizeProvider(provider);
+}
+
+function localizeProvider(provider: string): string {
   if (provider === '小米 MiMo') {
-    return translate('小米 MiMo', 'Xiaomi MiMo');
+    return t('xiaomi.mimo');
   }
   if (provider === '智谱 GLM') {
-    return translate('智谱 GLM', 'Zhipu GLM');
+    return t('zhipu.glm');
   }
   if (provider === '其他') {
-    return translate('其他', 'Other');
+    return t('other');
   }
   return provider;
 }
 
+export function leafModelName(model: string): string {
+  return leafOf(model);
+}
+
+// The provider prefix is dropped only when a usable name remains: "deepseek-flash"
+// becomes "Flash", but "glm-5" would collapse to "5" and is kept as-is.
 export function shortModelName(model: string): string {
-  return leafOf(model)
-    .replace(/^(deepseek|openai|anthropic|google|meta|kimi|mimo|minimax|glm)[-/:]/i, '')
+  const leaf = leafOf(model);
+  const stripped = leaf.replace(
+    /^(deepseek|openai|anthropic|google|meta|kimi|mimo|minimax|glm)[-/:]/i,
+    '',
+  );
+  if (!stripped || /^\d/.test(stripped)) {
+    return leaf;
+  }
+
+  return stripped
     .split(/[-_]/)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))

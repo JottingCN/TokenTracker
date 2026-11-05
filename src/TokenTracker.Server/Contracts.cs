@@ -133,10 +133,16 @@ public sealed record SubscribeMessage(
     int? Limit,
     bool? IncludeCalls);
 
-public sealed record ModelPriceRowPayload(
+public sealed record ModelSettingsRowPayload(
     string Model,
-    bool Customized,
+    bool Priced,
+    bool HasProfile,
     long Calls,
+    string? Provider,
+    string? IconKind,
+    string? IconLetter,
+    string? IconColor,
+    string? IconImage,
     bool PeakAware,
     double CachedInput,
     double UncachedInput,
@@ -156,8 +162,16 @@ public sealed record ModelPriceRowPayload(
     double? LongCacheWrite,
     double? LongPeakCacheWrite);
 
-public sealed record PriceUpdateRequest(
+// Prices are optional here: a model can be added just to name it and pick an
+// icon, and pricing can follow later from the same drawer.
+public sealed record ModelSettingsUpdateRequest(
     string? Model,
+    string? Provider,
+    string? IconKind,
+    string? IconLetter,
+    string? IconColor,
+    string? IconImage,
+    bool Priced,
     bool PeakAware,
     double CachedInput,
     double UncachedInput,
@@ -196,7 +210,12 @@ public sealed record SessionMessage(string Type, SessionPayload Data);
 
 public sealed record CallsMessage(string Type, CallsPayload Data);
 
+// Results.Problem cannot be used under AOT: ProblemDetails is an MVC type and is
+// not part of the source-generated context, so serializing it throws.
+public sealed record ErrorPayload(string Error);
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(ErrorPayload))]
 [JsonSerializable(typeof(DashboardMessage))]
 [JsonSerializable(typeof(ModelMessage))]
 [JsonSerializable(typeof(SessionMessage))]
@@ -205,9 +224,9 @@ public sealed record CallsMessage(string Type, CallsPayload Data);
 [JsonSerializable(typeof(TracePayload))]
 [JsonSerializable(typeof(SystemInfoPayload))]
 [JsonSerializable(typeof(SubscribeMessage))]
-[JsonSerializable(typeof(List<ModelPriceRowPayload>))]
-[JsonSerializable(typeof(ModelPriceRowPayload))]
-[JsonSerializable(typeof(PriceUpdateRequest))]
+[JsonSerializable(typeof(List<ModelSettingsRowPayload>))]
+[JsonSerializable(typeof(ModelSettingsRowPayload))]
+[JsonSerializable(typeof(ModelSettingsUpdateRequest))]
 [JsonSerializable(typeof(LocalImportRequest))]
 [JsonSerializable(typeof(LocalImportPayload))]
 [JsonSerializable(typeof(AhpStatusPayload))]

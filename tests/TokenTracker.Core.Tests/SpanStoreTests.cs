@@ -1137,6 +1137,168 @@ public sealed class SpanStoreTests
         }
     }
 
+    [Fact]
+    public void CountsMetricDeltasAcrossWindowBoundary()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 10, 0, 0),
+                MetricPoint("accepted", 14, 60_000, 0),
+                MetricPoint("accepted", 20, 120_000, 0),
+            });
+
+            // The window is aggregated on its own, so the sample just before the
+            // window still has to be joined back for counters.
+            Assert.Equal(
+                20,
+                store.GetOutcomeSummary(0, long.MaxValue).EditAccepted);
+            Assert.Equal(
+                10,
+                store.GetOutcomeSummary(60_000, long.MaxValue).EditAccepted);
+            Assert.Equal(
+                6,
+                store.GetOutcomeSummary(60_001, long.MaxValue).EditAccepted);
+
+            // A counter reset (different start time) restarts from its value.
+            store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 3, 180_000, 180_000),
+            });
+            Assert.Equal(
+                23,
+                store.GetOutcomeSummary(0, long.MaxValue).EditAccepted);
+            Assert.Equal(
+                3,
+                store.GetOutcomeSummary(120_001, long.MaxValue).EditAccepted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void UpsertsAndDeletesModelProfiles()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.UpsertModelProfile(new StoredModelProfile(
+                "DeepSeek/deepseek-flash",
+                "DeepSeek",
+                "letter",
+                "D",
+                "#4D6BFE",
+                null,
+                1_000));
+
+            var stored = Assert.Single(store.GetModelProfiles());
+            Assert.Equal("DeepSeek/deepseek-flash", stored.Model);
+            Assert.Equal("DeepSeek", stored.Provider);
+            Assert.Equal("D", stored.IconLetter);
+
+            // The model id is the unique key and is matched case-insensitively,
+            // so re-saving with different casing must update instead of insert.
+            store.UpsertModelProfile(new StoredModelProfile(
+                "deepseek/DeepSeek-Flash",
+                "DeepSeek",
+                "image",
+                null,
+                null,
+                "data:image/png;base64,AAAA",
+                2_000));
+            stored = Assert.Single(store.GetModelProfiles());
+            Assert.Equal("image", stored.IconKind);
+            Assert.Equal(2_000, stored.UpdatedAtMs);
+
+            // Clearing the provider keeps the row but drops the value.
+            store.UpsertModelProfile(new StoredModelProfile(
+                "deepseek/deepseek-flash",
+                null,
+                null,
+                null,
+                null,
+                null,
+                3_000));
+            stored = Assert.Single(store.GetModelProfiles());
+            Assert.Null(stored.Provider);
+            Assert.Null(stored.IconImage);
+
+            Assert.True(store.DeleteModelProfile("DeepSeek/DeepSeek-Flash"));
+            Assert.Empty(store.GetModelProfiles());
+            Assert.False(store.DeleteModelProfile("deepseek/deepseek-flash"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void SignalHealthHonoursTimeRange()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 1, 1_000, 0),
+                MetricPoint("accepted", 2, 200_000, 0),
+            });
+
+            var all = store.GetSignalHealth();
+            Assert.Equal(2, all.MetricPoints);
+            Assert.Equal(200_000, all.LastSignalMs);
+
+            var early = store.GetSignalHealth(fromMs: 0, toMs: 100_000);
+            Assert.Equal(1, early.MetricPoints);
+            Assert.Equal(1_000, early.LastSignalMs);
+
+            var late = store.GetSignalHealth(
+                fromMs: 100_000,
+                toMs: long.MaxValue);
+            Assert.Equal(1, late.MetricPoints);
+            Assert.Equal(200_000, late.LastSignalMs);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
     private static OtlpMetricPointRecord MetricPoint(
         string outcome,
         double value,

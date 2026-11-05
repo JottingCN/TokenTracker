@@ -50,12 +50,15 @@ cd vscode-extension && npm install
 npm run compile        # tsc → out/（不提交）
 npm test               # node --test：状态栏工作区选择与 Tip 渲染（先 pretest 编译）
 npm run sync-server    # AOT 发布服务端到 server/（需 vcvarsall.bat x64）
+npm run smoke          # 对 server/ 的 AOT 产物跑 HTTP 冒烟（临时端口 + 临时库）
 npm run build          # compile + sync-server（本地离线开发用）
 npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 ```
 
 `npm run sync-server` 调用 `scripts/sync-server.mjs`，Windows 上需要 MSVC 环境；跨平台构建用
 `TOKENTRACKER_TARGET_RID=<rid> node vscode-extension/scripts/sync-server.mjs`，必须在对应平台执行 AOT 发布。
+`npm run smoke` 调用 `scripts/smoke-server.mjs`，用随机端口与 `os.tmpdir()` 下的临时库拉起已发布的服务端，
+断言 OTLP 入口的错误码、`/api` 与 `/otlp` 的 404、`from`/`to` 半参数被拒，以及 metric 入库后结果指标立即可见。
 
 ## 接口
 
@@ -71,13 +74,15 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 | GET | `/api/session/{sessionId}` | 会话汇总、调用、事件统计、Agent 运行、Hook、工具统计、outcome 指标；`range` 或 `from`/`to`、`source`、`includeCalls`（默认 true，Web 会话页传 false 以免每次快照传输数百 KB 调用明细），`models` 为按模型拆分的同口径汇总 |
 | GET | `/api/session/{sessionId}/trace` | Trace 拓扑节点（时间升序，最多 5000，超限保留最新） |
 | GET | `/api/calls` | 服务端分页明细：`range/source/model/query/kind/priced/period/offset/limit` |
-| GET/POST/DELETE | `/api/prices` | 价格列表、新增或更新（保存后重算历史）、按 model 删除 |
+| GET/POST/DELETE | `/api/models` | 模型设置：列表（供应商/图标/价格）、新增或更新（保存后重算历史）、按 model 删除 |
 | GET/POST | `/api/settings` | 数据保留天数（`0` = 永久） |
 | POST | `/api/metadata-changed` | 扩展写入元数据后请求广播新快照 |
 | POST | `/api/import-local` | 从本地 span 库只读导入，body `{ paths }` |
 | GET | `/ws` | WebSocket：`subscribe` 后接收变更驱动快照 |
 
 `source=combined`（旧 `all` 为别名）是默认值；不带 `source` 即综合视图。
+`range=0..4` 与 `from`/`to` 二选一：`from`/`to` 必须同时提供且 `to > from`，只给一个返回 400（此前会被静默忽略）。
+`/api/*` 与 `/otlp/*` 下未命中的路径返回 404，不再回落到 SPA 的 `index.html`。
 
 ## 环境变量（服务端）
 
@@ -176,6 +181,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 ### 费用与定价
 
 - 不内置任何模型价格；价格必须按模型配置。未配置价格的模型显示“未定价”；保存后必须重算历史 span。
+- 模型设置（`/api/models` + `model_profiles` 表）保存供应商、图标与价格。**模型 ID 是唯一键（`COLLATE NOCASE`）**，同时是价格归一化键的来源；供应商与图标只影响展示，价格存于 `model_prices`，两者按“模型列表合并、价格精确匹配优先”投影到同一行，不要为图标另建一套模型名称。
+- 图标默认按供应商推导（内置颜色 + 首字母）；自定义时为单字符 + 颜色，或上传图片（前端 canvas 裁剪为 64×64 PNG 后以 data URL 存库，服务端只接受 png/jpeg/webp 且限制长度），MCP/未知模型不受影响。
 - 支持按单次调用输入 token 阈值（含缓存命中）设置长上下文第二档价格：超过阈值整次调用按长上下文档计价；峰谷与分档可同时启用。
 - DeepSeek 区分高峰 / 空闲价；节假日优先读 SQLite，缺失时按年拉取并缓存。
 - 峰谷按调用**结束时间**判定（无结束时间时回退开始时间）：跨入峰段的调用整体按峰价计费，与官方按请求完成时间计费对齐（北京工作日 9:00–12:00、14:00–18:00 为峰段）。
@@ -198,6 +205,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出（扩展默认 5 秒，`0` = 不退出）。空闲判定同时看 WebSocket 连接和近期的 HTTP API 活动（窗口 `max(20s, 2×idleExitSeconds)`，`/healthz` 不计），避免纯轮询客户端被误判为空闲。
 - 状态栏 WS 连续失败 3 次后触发一次服务端自愈（`recoverServer`，先探测再 `ensureServer`），60 秒冷却、每次激活最多 5 次；WS 连上即清零。用户手动 `停止服务` 时状态栏已 dispose，不会触发自愈。
 - 数据保留默认 90 天（`TOKENTRACKER_RETENTION_DAYS` 或 `POST /api/settings`，`0` = 永久），修改后立即清理，后台每 6 小时再执行。
+- 启动顺序：schema 迁移与一次性回填同步执行，**节假日拉取（最长 8 秒）与 `BackfillCostBreakdown` 在端口就绪后后台执行**——扩展只等 `/healthz` 25 秒，阻塞会把冷启动拖成启动超时。节假日数据到达后 `HolidayService` 自行重算该年费用，不需要额外补偿。
+- `RealtimeHub.NotifyChanged` 有 500 ms 合并窗口：一批 OTLP/metrics 入库只触发一次快照重算，避免每条批次都让所有页面全量重建。
 
 ## 发布
 
@@ -220,13 +229,23 @@ git tag server-v1.0.0 && git push origin server-v1.0.0 # 服务端
 - 不添加 Webview；看板在浏览器打开。
 - 不新增依赖或抽象，除非任务确实需要。
 - 代码注释只写非显而易见的“为什么”，不写“做了什么”。
-- 界面文案保持中文；费用、时间格式与现有实现一致。列表分页放在卡片标题栏右侧，条数写在标题后 `标题(N)`，单页时隐藏分页。
+- 界面文案不写死中文或英文，全部走 i18n（见下节）；费用、时间格式与现有实现一致。列表分页放在卡片标题栏右侧，条数写在标题后 `标题(N)`，单页时隐藏分页。
+- 表格高度统一走 `utils/tableMetrics.ts` 的 `clampTableHeight`：可用高度来自 `useAutoTableHeight`，再按行数（单行 41px / 双行 48px）收敛，并把同一个值同时给 `scroll.y` 与 `--tt-table-body-height`。否则 `.tt-fill-table` 的 `min-height` 会让一两行数据也撑满整个视口。
+- 卡片标题必须放在 `Card.title`、右侧操作放 `Card.extra`（折叠开关、全页查看等），不要塞进标题文本里，否则不同卡片的标题起始位置不一致。会话页的折叠区块收起时要把 body 一起隐藏（`collapsedBodyStyle`），否则会留下空白内边距。
+
+## 多语言（i18n）
+
+- 支持三种界面语言：`en`、`zh-CN`、`zh-TW`，语言标识与 VS Code `env.language` 一致。默认 `auto`：看板按 `navigator.language` 解析，扩展按 `vscode.env.language` 解析；无法识别的语言回退到 `en`。
+- 看板：`web/src/i18n/en.ts` 是唯一真源（`as const` 导出 `MessageKey`），`zh-CN.ts`、`zh-TW.ts` 用 `Record<MessageKey, string>` 保证键完整，缺键即 tsc 报错。新增文案要同时补三个文件。
+- 组件内用 `const { t } = useUi()`；列定义、label 表等模块级代码用 `web/src/i18n` 导出的 `t()`（依赖 provider 每次渲染写入的 `setActiveLocale`）。插值写成 `{name}` 并由 `t('key', { name })` 传入，不要再用模板字符串拼中文/英文。
+- `utils/money.tsx`、`utils/model.ts`、`utils/labels.ts` 走同一套 `t()`；`Intl` 格式化用 `intlLocale(locale)`，不要写死 `zh-CN`/`en-US`。
+- 扩展：运行期文案用 `src/i18n.ts` 的 `tr(zh, en, zhTW?)`——`zh-TW` 缺省时由 `src/zhConvert.ts` 从简体转换（术语表在文件顶部的 `TERMS`）。`package.json` 的菜单/配置文案用 `package.nls.json`（英文）、`package.nls.zh-cn.json`、`package.nls.zh-tw.json`，新增 `%key%` 时三个文件都要有。
 
 ## 验证要求
 
 1. 修改核心逻辑：运行全部单元测试。工作区缓存的回写/回退/批量阈值由 `SessionWorkspaceCacheTests` 覆盖，`session_workspaces` 与 span 一起清理由 `SpanStoreTests.SessionWorkspaceCacheSurvivesAndIsPrunedWithSpans` 覆盖。
-2. 修改扩展 TypeScript：`npm run compile`（`out/` 不提交）；状态栏的工作区选择与 Tip 标注由 `vscode-extension/test/statusBar.test.js`（`npm test`，Node 内置 runner + `vscode` 桩模块，不引入测试依赖）覆盖；验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
-3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功。
+2. 修改扩展 TypeScript：`npm run compile`（`out/` 不提交）；状态栏的工作区选择与 Tip 标注由 `vscode-extension/test/statusBar.test.js`（`npm test`，Node 内置 runner + `vscode` 桩模块，不引入测试依赖）覆盖，多语言解析与 `tr()` 的三语言输出由 `test/i18n.test.js` 覆盖；验证下载链路时可用隔离 profile，并将 `tokentracker.serverDownloadBaseUrl` 指向本地静态目录。
+3. 修改服务端：至少 `npm run sync-server` 生成新构建；确认 AOT publish 成功，然后跑 `npm run smoke`。路由/序列化层（OTLP 入口的返回码、`/api` 404、`from`/`to` 校验）只能由该冒烟覆盖：只带 `HttpContext` 的 `MapPost` lambda 会绑定到 `RequestDelegate` 重载并丢弃返回的 `IResult`，而 `Results.Problem` 在 AOT 下因缺少 `ProblemDetails` 元数据会抛 `NotSupportedException`。
 4. 涉及扩展行为时，用**隔离** VS Code 实例验证：
 
 ```bash
@@ -241,6 +260,7 @@ Code.exe --new-window \
 - 可用临时端口（如 4330+）与临时数据库副本，避免影响正在使用的 4318 服务。
 - 需要检查状态栏文本或 Tip 结构时，可用桩 `vscode` 模块（`MarkdownString` / `createStatusBarItem` / `getConfiguration`）配合 `NODE_PATH` 直接加载 `out/statusBar.js` 驱动真实 `StatusBarController`，打印 `item.tooltip.value` 即可断言渲染结果，不必启动 GUI 窗口。
 - 需要对比服务端负载时，先向临时库灌入合成 span，再按“辅助调用批次 → 综合读取”的顺序计时；换 `TOKENTRACKER_PORT` 与 `TOKENTRACKER_DATA_DIR` 起独立实例，验证完只清理自己启动的进程。
+- 改看板文案后，用临时实例切 `en` / `zh-CN` / `zh-TW` 各走一遍主页、模型页、会话页、调用明细与两个抽屉，确认没有回退到原始 key（页面上不应出现 `a.b.c` 形式的文本）。`navigator.language` 可用浏览器 locale 覆盖，也可直接改 `localStorage['tokentracker.language']` 后刷新。
 - 验证“健康实例不被重启 / 后台更新检查失败不影响使用”时，先用临时数据目录手动起一个 `TOKENTRACKER_BUILD_ID=legacy-build-1` 的服务再激活扩展，确认 `server ready startedHere=false` 早于 `update check:` 日志且进程未变。
 
 ## 禁止事项

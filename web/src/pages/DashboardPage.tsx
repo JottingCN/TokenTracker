@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Card, Empty, Space, Table, Typography } from 'antd';
+import { Card, Empty, Space, Table } from 'antd';
 import { CardPagination } from '../components/CardPagination';
 import { OutcomeCard } from '../components/OutcomeCard';
+import { SignalCard } from '../components/SignalCard';
 import { SummaryCards } from '../components/SummaryCards';
 import { modelColumns, sessionColumns } from '../components/columns';
 import type { DashboardPayload } from '../types';
 import { useUi } from '../ui';
+import {
+  TABLE_ROW_DOUBLE_PX,
+  TABLE_ROW_SINGLE_PX,
+  clampTableHeight,
+} from '../utils/tableMetrics';
 import { useViewportHeight } from '../utils/useViewportHeight';
 
 interface DashboardPageProps {
@@ -19,7 +25,7 @@ export function DashboardPage({
   onOpenSession,
   onOpenModel,
 }: DashboardPageProps) {
-  const { tr } = useUi();
+  const { t } = useUi();
   const models = data?.models ?? [];
   const sessions = data?.sessions ?? [];
   const [page, setPage] = useState(1);
@@ -27,17 +33,19 @@ export function DashboardPage({
   const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
   const modelViewportHeight = useViewportHeight(0.3, 160, 340);
   const sessionViewportHeight = useViewportHeight(0.42, 260, 520);
-  const modelHeight = Math.min(
+  const modelHeight = clampTableHeight(
     modelViewportHeight,
-    Math.max(120, models.length * 45 + 40),
+    models.length,
+    TABLE_ROW_SINGLE_PX,
   );
   const pageRowCount = Math.min(
     pageSize,
     Math.max(0, sessions.length - (page - 1) * pageSize),
   );
-  const sessionHeight = Math.min(
+  const sessionHeight = clampTableHeight(
     sessionViewportHeight,
-    Math.max(180, pageRowCount * 41 + 40),
+    pageRowCount,
+    TABLE_ROW_DOUBLE_PX,
   );
 
   useEffect(() => {
@@ -50,38 +58,17 @@ export function DashboardPage({
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <SummaryCards summary={data?.summary ?? null} />
 
-      {data?.signalHealth &&
-        data.signalHealth.agentRuns +
-          data.signalHealth.hookEvents +
-          data.signalHealth.metricPoints >
-          0 && (
-          <Card size="small" title={tr('信号与 Agent', 'Signals & agents')}>
-            <Space wrap size="large">
-              <Typography.Text>
-                {tr('Agent 运行', 'Agent runs')}：{data.signalHealth.agentRuns}
-              </Typography.Text>
-              <Typography.Text>
-                {tr('Hook 事件', 'Hook events')}：{data.signalHealth.hookEvents}
-              </Typography.Text>
-              <Typography.Text>
-                {tr('指标点', 'Metric points')}：{data.signalHealth.metricPoints}
-              </Typography.Text>
-              <Typography.Text type="secondary">
-                {tr('最近信号', 'Last signal')}：{data.signalHealth.lastSignalText}
-              </Typography.Text>
-            </Space>
-          </Card>
-        )}
+      <SignalCard signalHealth={data?.signalHealth} />
 
       <OutcomeCard outcomes={data?.outcomes} />
 
       <Card
         size="small"
-        title={`${tr('按模型', 'By model')}(${models.length})`}
+        title={`${t('by.model')}(${models.length})`}
       >        {data && models.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={tr('暂无数据', 'No data')}
+            description={t('no.data')}
           />
         ) : (
           <Table
@@ -98,7 +85,7 @@ export function DashboardPage({
 
       <Card
         size="small"
-        title={`${tr('会话', 'Sessions')}(${sessions.length})`}
+        title={`${t('sessions')}(${sessions.length})`}
         extra={
           <CardPagination
             current={page}
@@ -111,7 +98,7 @@ export function DashboardPage({
         {data && sessions.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={tr('暂无数据', 'No data')}
+            description={t('no.data')}
           />
         ) : (
           <Table

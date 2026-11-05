@@ -1,22 +1,31 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import zhCN from 'antd/locale/zh_CN';
+import zhTW from 'antd/locale/zh_TW';
 import enUS from 'antd/locale/en_US';
-import { setMoneyLanguage } from './utils/money';
+import {
+  DEFAULT_LOCALE,
+  LOCALES,
+  type Locale,
+  type MessageKey,
+  type MessageParams,
+  resolveLocale,
+  setActiveLocale,
+  translate,
+} from './i18n';
 
-export type Language = 'zh' | 'en';
-export type LanguageMode = 'auto' | Language;
+export type LanguageMode = 'auto' | Locale;
 export type ThemeMode = 'auto' | 'light' | 'dark';
 
 interface UiContextValue {
-  lang: Language;
+  locale: Locale;
   languageMode: LanguageMode;
   setLanguageMode: (mode: LanguageMode) => void;
   themeMode: ThemeMode;
   setThemeMode: (mode: ThemeMode) => void;
   isDark: boolean;
   antdLocale: typeof zhCN;
-  tr: (zh: string, en: string) => string;
+  t: (key: MessageKey, params?: MessageParams) => string;
 }
 
 const LANGUAGE_KEY = 'tokentracker.language';
@@ -24,22 +33,25 @@ const THEME_KEY = 'tokentracker.theme';
 
 const UiContext = createContext<UiContextValue | null>(null);
 
-let currentUiLanguage: Language = 'zh';
+const ANTD_LOCALES = {
+  en: enUS,
+  'zh-CN': zhCN,
+  'zh-TW': zhTW,
+} as const;
 
-export function translate(zh: string, en: string): string {
-  return currentUiLanguage === 'zh' ? zh : en;
-}
-
-function detectLanguage(): Language {
+function detectLocale(): Locale {
   const preferred = navigator.language || navigator.languages?.[0] || 'en';
-  return preferred.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  return resolveLocale(preferred);
 }
 
 function loadLanguageMode(): LanguageMode {
   try {
     const value = localStorage.getItem(LANGUAGE_KEY);
-    if (value === 'zh' || value === 'en' || value === 'auto') {
-      return value;
+    if (value === 'auto') {
+      return 'auto';
+    }
+    if (value && LOCALES.some((locale) => locale.id === value)) {
+      return value as Locale;
     }
   } catch {
     // Storage is best-effort.
@@ -66,11 +78,9 @@ export function UiProvider({ children }: { children: ReactNode }) {
     () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false,
   );
 
-  const lang: Language =
-    languageMode === 'auto' ? detectLanguage() : languageMode;
-  const isDark =
-    themeMode === 'dark' ||
-    (themeMode === 'auto' && systemDark);
+  const locale: Locale =
+    languageMode === 'auto' ? detectLocale() : languageMode;
+  const isDark = themeMode === 'dark' || (themeMode === 'auto' && systemDark);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -89,26 +99,26 @@ export function UiProvider({ children }: { children: ReactNode }) {
   }, [languageMode, themeMode]);
 
   useEffect(() => {
-    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+    document.documentElement.lang = locale;
     document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
     document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
-  }, [lang, isDark]);
+  }, [locale, isDark]);
 
-  currentUiLanguage = lang;
-  setMoneyLanguage(lang);
+  // Module-level helpers (column factories, label tables) read the locale here.
+  setActiveLocale(locale);
 
   const value = useMemo<UiContextValue>(
     () => ({
-      lang,
+      locale,
       languageMode,
       setLanguageMode,
       themeMode,
       setThemeMode,
       isDark,
-      antdLocale: lang === 'zh' ? zhCN : enUS,
-      tr: (zh, en) => (lang === 'zh' ? zh : en),
+      antdLocale: ANTD_LOCALES[locale] ?? ANTD_LOCALES[DEFAULT_LOCALE],
+      t: (key, params) => translate(locale, key, params),
     }),
-    [lang, languageMode, themeMode, isDark],
+    [locale, languageMode, themeMode, isDark],
   );
 
   return <UiContext.Provider value={value}>{children}</UiContext.Provider>;
