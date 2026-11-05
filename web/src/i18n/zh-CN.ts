@@ -149,6 +149,7 @@ export const zhCN: Record<MessageKey, string> = {
   'light': '浅色',
   'lines': '代码行数',
   'live': '实时连接',
+  'loading.older.nodes': '正在加载更早的节点…',
   'local.named.pipe.unix.socket.tcp': '本地命名管道 / Unix Socket / TCP',
   'long.context': '长上下文',
   'main.calls': '主调用',

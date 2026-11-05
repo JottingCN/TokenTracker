@@ -150,6 +150,7 @@ export const zhTW: Record<MessageKey, string> = {
   'light': '淺色',
   'lines': '程式碼行數',
   'live': '即時連線',
+  'loading.older.nodes': '正在載入更早的節點…',
   'local.named.pipe.unix.socket.tcp': '本地命名管道 / Unix Socket / TCP',
   'long.context': '長上下文',
   'main.calls': '主呼叫',

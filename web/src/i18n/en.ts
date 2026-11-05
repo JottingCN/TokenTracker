@@ -147,6 +147,7 @@ export const en = {
   'light': 'Light',
   'lines': 'Lines',
   'live': 'Live',
+  'loading.older.nodes': 'Loading earlier nodes…',
   'local.named.pipe.unix.socket.tcp': 'Local named pipe / Unix socket / TCP',
   'long.context': 'Long context',
   'main.calls': 'Main calls',

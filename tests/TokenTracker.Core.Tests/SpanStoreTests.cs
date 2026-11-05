@@ -188,7 +188,7 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void TracePagesByWholeTracesAndMergesAcrossPageBoundaries()
+    public void TraceTopologyMergesCrossSourceDuplicatesAndCapsNewestNodes()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -204,7 +204,7 @@ public sealed class SpanStoreTests
                 connection.Open();
                 using var command = connection.CreateCommand();
                 // trace-old (copilot-chat) and trace-dup (agent-host) are the same
-                // call reported twice; trace-new is newer and must come first.
+                // call reported twice; only one chat node may survive.
                 command.CommandText = """
                     INSERT INTO spans (
                         trace_id, span_id, parent_span_id, name, start_time_ms,
@@ -230,31 +230,22 @@ public sealed class SpanStoreTests
                 command.ExecuteNonQuery();
             }
 
-            var first = store.GetTracePage("session-1", traceLimit: 1);
-            Assert.Equal(2, first.Total);
-            Assert.Equal(0, first.Offset);
-            var newest = Assert.Single(first.Nodes);
-            Assert.Equal("trace-new:span-new", newest.Id);
-
-            // The duplicate's trace sorts into the last page, but the merge still
-            // has to drop it: paging must never leak cross-source duplicates.
-            var second = store.GetTracePage("session-1", offset: 1, traceLimit: 1);
-            Assert.Equal(2, second.Total);
-            Assert.Equal(new[] { "trace-old:span-old", "trace-old:span-tool" },
-                second.Nodes.Select(node => node.Id).ToArray());
+            var nodes = store.GetTraceNodes("session-1");
             Assert.Equal(
-                "trace-old:span-old",
-                second.Nodes.Single(node => node.Kind == "event").ParentId);
+                new[] { "trace-old:span-old", "trace-old:span-tool", "trace-new:span-new" },
+                nodes.Select(node => node.Id).ToArray());
+            var tool = nodes.Single(node => node.Kind == "event");
+            Assert.Equal("trace-old:span-old", tool.ParentId);
+            Assert.Equal(1, tool.Depth);
             Assert.Equal(
                 0,
-                second.Nodes.Single(node => node.Kind == "chat").Depth);
-            Assert.Equal(
-                1,
-                second.Nodes.Single(node => node.Kind == "event").Depth);
+                nodes.Single(node => node.Id == "trace-old:span-old").Depth);
 
-            var empty = store.GetTracePage("session-1", offset: 9, traceLimit: 1);
-            Assert.Empty(empty.Nodes);
-            Assert.Equal(2, empty.Total);
+            // The node cap keeps the newest window instead of dropping the tail.
+            var capped = store.GetTraceNodes("session-1", limit: 2);
+            Assert.Equal(
+                new[] { "trace-old:span-tool", "trace-new:span-new" },
+                capped.Select(node => node.Id).ToArray());
         }
         finally
         {
@@ -267,7 +258,7 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void CombinedRebuildOnlyTouchesTheDirtyWindowOfASession()
+    public void TraceBlocksWalkOlderTracesWithACursor()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -278,42 +269,51 @@ public sealed class SpanStoreTests
         try
         {
             var store = new SpanStore(databasePath);
-            store.InsertMany(new[]
+            var spans = new List<OtlpSpanRecord>();
+            for (var index = 0; index < 12; index++)
             {
-                Span("t1", "s1", "session-1", "m", 1_000, 100, 0, 10, null),
-                Span("t2", "s2", "session-1", "m", 100_000, 100, 0, 10, null),
-                Span("t3", "s3", "session-1", "m", 200_000, 100, 0, 10, null),
-            });
-            store.EnsureCombinedSpans();
-            var before = CombinedRowIds(databasePath);
-            Assert.Equal(3, before.Count);
+                // Three nodes per trace so a small budget cannot fit two traces.
+                for (var node = 0; node < 3; node++)
+                {
+                    spans.Add(Span(
+                        $"trace-{index:00}",
+                        $"span-{index:00}-{node}",
+                        "session-1",
+                        "m",
+                        1_000 + index * 1_000 + node,
+                        100,
+                        0,
+                        10,
+                        null));
+                }
+            }
 
-            // The duplicate lands in the first window only; the two later derived
-            // rows must survive untouched instead of being rebuilt with the session.
-            store.InsertMany(new[]
+            store.InsertMany(spans);
+
+            var first = store.GetTracePage("session-1", budget: 4);
+            Assert.True(first.HasMore);
+            Assert.Equal(12, first.TraceCount);
+            Assert.Equal(3, first.Nodes.Count);
+            Assert.All(
+                first.Nodes,
+                node => Assert.StartsWith("trace-11:", node.Id));
+
+            var seen = new List<string>();
+            string? cursor = first.NextCursor;
+            var blocks = 1;
+            while (cursor is not null)
             {
-                Span(
-                    "t1",
-                    "s1b",
-                    "session-1",
-                    "m",
-                    1_000,
-                    100,
-                    0,
-                    10,
-                    null,
-                    serviceName: "github-copilot",
-                    source: "agent-host"),
-            });
-            store.EnsureCombinedSpans();
-            var after = CombinedRowIds(databasePath);
+                var next = store.GetTracePage("session-1", cursor: cursor, budget: 4);
+                seen.AddRange(next.Nodes.Select(node => node.Id));
+                blocks++;
+                cursor = next.HasMore ? next.NextCursor : null;
+            }
 
-            Assert.Equal(3, after.Count);
-            // Only the first window is rebuilt, so the two later derived rows must
-            // keep their rowids while the merged pair gets a fresh one.
-            Assert.Equal(before[1], after[1]);
-            Assert.Equal(before[2], after[2]);
-            Assert.NotEqual(before[0], after[0]);
+            // No row is repeated and every older trace is reachable.
+            Assert.Equal(seen.Count, seen.Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal(11 * 3, seen.Count);
+            Assert.Equal(12, blocks);
+            Assert.Contains("trace-00:span-00-0", seen);
         }
         finally
         {
@@ -325,24 +325,65 @@ public sealed class SpanStoreTests
         }
     }
 
-    private static List<long> CombinedRowIds(string databasePath)
+    [Fact]
+    public void TraceBlockCollapsesCrossSourceDuplicatesAtTheBoundary()
     {
-        using var connection = new SqliteConnection($"Data Source={databasePath}");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT rowid FROM spans
-            WHERE otel_source = 'combined'
-            ORDER BY start_time_ms;
-            """;
-        var rows = new List<long>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            rows.Add(reader.GetInt64(0));
-        }
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
 
-        return rows;
+        try
+        {
+            var store = new SpanStore(databasePath);
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                // The same call reported by both pipelines sits exactly on a block
+                // boundary: the second block owns it, so it must appear once and
+                // never leak the agent-host copy.
+                command.CommandText = """
+                    INSERT INTO spans (
+                        trace_id, span_id, parent_span_id, name, start_time_ms,
+                        end_time_ms, service_name, otel_source, model, session_id,
+                        is_main, input_tokens, output_tokens, received_at_ms
+                    ) VALUES
+                        ('trace-a', 'span-a', NULL, 'chat', 9000, 9100,
+                         'copilot-chat', 'copilot-chat', 'm', 'session-1', 1, 100, 10, 9000),
+                        ('trace-b', 'span-b', NULL, 'chat', 5000, 5100,
+                         'copilot-chat', 'copilot-chat', 'm', 'session-1', 1, 100, 10, 5000),
+                        ('trace-c', 'span-c', NULL, 'chat', 5000, 5100,
+                         'github-copilot', 'agent-host', 'm', 'session-1', 1, 100, 10, 5000);
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            var blockIds = new List<string>();
+            string? cursor = null;
+            var more = true;
+            while (more)
+            {
+                var page = store.GetTracePage("session-1", cursor: cursor, budget: 1);
+                blockIds.AddRange(page.Nodes.Select(node => node.Id));
+                cursor = page.NextCursor;
+                more = page.HasMore;
+            }
+
+            Assert.Equal(
+                new[] { "trace-a:span-a", "trace-b:span-b" },
+                blockIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
+            Assert.DoesNotContain("trace-c:span-c", blockIds);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     [Fact]

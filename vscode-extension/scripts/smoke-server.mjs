@@ -64,6 +64,45 @@ async function waitForHealth(base, timeoutMs) {
   return false;
 }
 
+function spanPayload(sessionId, count) {
+  const now = Date.now();
+  const spans = [];
+  for (let index = 0; index < count; index += 1) {
+    spans.push({
+      traceId: String(index).padStart(32, '0'),
+      spanId: String(index).padStart(16, '0'),
+      name: 'chat smoke',
+      kind: 1,
+      startTimeUnixNano: `${now + index}000000`,
+      endTimeUnixNano: `${now + index + 1}000000`,
+      attributes: [
+        { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+        { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+        // A chat span without token counts is dropped by the parser.
+        { key: 'gen_ai.usage.input_tokens', value: { stringValue: '100' } },
+        { key: 'gen_ai.usage.output_tokens', value: { stringValue: '10' } },
+        {
+          key: 'copilot_chat.session_id',
+          value: { stringValue: sessionId },
+        },
+      ],
+    });
+  }
+
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'copilot-chat' } },
+          ],
+        },
+        scopeSpans: [{ spans }],
+      },
+    ],
+  });
+}
+
 function metricsPayload(count) {
   const now = `${Date.now()}000000`;
   return JSON.stringify({
@@ -311,6 +350,38 @@ try {
     'DELETE /api/models removes settings',
     afterDelete.some((row) => row.model === 'test-model'),
     false,
+  );
+
+  // Trace blocks are cursor-paged by whole traces; the payload must expose the
+  // cursor contract so the panel can walk older blocks without re-reading all.
+  const sessionId = 'smoke-session';
+  await request(`${base}/otlp/copilot-chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: spanPayload(sessionId, 6),
+  });
+  const traceBlock = await request(
+    `${base}/api/session/${sessionId}/trace?budget=1`,
+  );
+  check('GET /api/session/{id}/trace', traceBlock.status, 200);
+  const block = JSON.parse(traceBlock.body);
+  check('trace block returns nodes', Array.isArray(block.nodes), true);
+  check('trace block is bounded by budget', block.nodes.length, 1);
+  check('trace block reports hasMore', block.hasMore, true);
+  check('trace block exposes a cursor', typeof block.nextCursor, 'string');
+
+  const older = JSON.parse(
+    (
+      await request(
+        `${base}/api/session/${sessionId}/trace?budget=1&cursor=${encodeURIComponent(block.nextCursor)}`,
+      )
+    ).body,
+  );
+  check('trace cursor advances', older.nodes[0]?.id === block.nodes[0]?.id, false);
+  check(
+    'trace cursor keeps the remaining traces',
+    older.hasMore,
+    true,
   );
 
   const spa = await request(`${base}/`);

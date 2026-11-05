@@ -675,21 +675,25 @@ public sealed class DashboardService
     public TracePayload GetTrace(
         string sessionId,
         string? source = null,
-        int offset = 0,
-        int limit = 20)
+        string? cursor = null,
+        int budget = TraceBudget)
     {
         var normalized = NormalizeSource(source);
         var page = _store.GetTracePage(
             sessionId,
             normalized == "combined" ? null : normalized,
-            offset,
-            Math.Clamp(limit, 1, 200));
+            cursor,
+            budget);
         return new TracePayload(
             page.Nodes.ToList(),
-            page.Total,
-            page.Offset,
-            page.Limit);
+            page.HasMore,
+            page.NextCursor,
+            page.TraceCount);
     }
+
+    // Keeps a block around 400 rows: enough to fill the panel without the LOH
+    // churn of a multi-megabyte response.
+    public const int TraceBudget = 400;
 
     public void ApplyOverrides() =>
         ModelPricing.SetOverrides(

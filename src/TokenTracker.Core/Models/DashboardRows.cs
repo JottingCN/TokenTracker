@@ -389,6 +389,16 @@ public sealed class HookSummaryRow
     public string LastSeenText => DisplayFormat.LocalTime(LastSeenMs);
 }
 
+/// <summary>
+/// One block of the session topology. Blocks are anchored on whole traces so
+/// parent links stay intact; <see cref="NextCursor"/> walks towards older blocks.
+/// </summary>
+public sealed record TracePage(
+    IReadOnlyList<TraceNodeRow> Nodes,
+    bool HasMore,
+    string? NextCursor,
+    int TraceCount);
+
 public sealed record TraceNodeRow
 {
     public required string Id { get; init; }
@@ -413,16 +423,6 @@ public sealed record TraceNodeRow
     public string SourceText => DisplayFormat.Source(Source);
     public string DurationText => DisplayFormat.Duration(DurationMs);
 }
-
-/// <summary>
-/// One page of trace nodes plus the total number of traces in the session. The
-/// page unit is a whole trace tree so pagination never splits parent/child links.
-/// </summary>
-public sealed record TracePage(
-    IReadOnlyList<TraceNodeRow> Nodes,
-    int Total,
-    int Offset,
-    int Limit);
 
 public sealed class SignalHealthRow
 {

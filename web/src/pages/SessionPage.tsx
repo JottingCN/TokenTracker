@@ -20,7 +20,6 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { OutcomeCard } from '../components/OutcomeCard';
-import { CardPagination } from '../components/CardPagination';
 import { SignalCard } from '../components/SignalCard';
 import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
@@ -63,9 +62,6 @@ export function SessionPage({
     sessionId.length > 20 ? `${sessionId.slice(0, 8)}…` : sessionId;
   const listHeight = useViewportHeight(0.3, 240, 420);
   const [traceExpanded, setTraceExpanded] = useState(false);
-  const [tracePage, setTracePage] = useState(1);
-  const [traceTotal, setTraceTotal] = useState(0);
-  const tracePageSize = 20;
   const [activeScope, setActiveScope] = useState('all');
   const [openPanels, setOpenPanels] = useState<string[]>([]);
   const { data, refresh } = useRealtime<SessionPayload>({
@@ -77,10 +73,6 @@ export function SessionPage({
     // per snapshot, so it is requested by the VS Code tip instead.
     includeCalls: false,
   });
-  useEffect(() => {
-    setTracePage(1);
-    setTraceTotal(0);
-  }, [sessionId]);
   const eventTotal =
     data?.events.reduce((total, row) => total + row.count, 0) ?? 0;
   const toolTotal =
@@ -653,15 +645,9 @@ export function SessionPage({
       <Card
         size="small"
         styles={collapsedBodyStyle(openPanels.includes('trace'))}
-        title={`${t('trace.topology')}${traceTotal > 0 ? `(${traceTotal})` : ''}`}
+        title={t('trace.topology')}
         extra={
           <Space size={8}>
-            <CardPagination
-              current={tracePage}
-              pageSize={tracePageSize}
-              total={traceTotal}
-              onChange={(nextPage) => setTracePage(nextPage)}
-            />
             <Tooltip title={t('open.full.page')}>
               <Button
                 size="small"
@@ -679,13 +665,7 @@ export function SessionPage({
         }
       >
         {openPanels.includes('trace') && (
-          <TraceTree
-            sessionId={sessionId}
-            version={traceVersion}
-            page={tracePage}
-            pageSize={tracePageSize}
-            onTotalChange={setTraceTotal}
-          />
+          <TraceTree sessionId={sessionId} version={traceVersion} />
         )}
       </Card>
 
@@ -698,14 +678,7 @@ export function SessionPage({
         style={{ top: 0, maxWidth: '100vw', padding: 0 }}
         styles={{ body: { height: 'calc(100vh - 55px)', padding: 20 } }}
       >
-        <TraceTree
-          sessionId={sessionId}
-          version={traceVersion}
-          page={tracePage}
-          pageSize={tracePageSize}
-          onTotalChange={setTraceTotal}
-          expanded
-        />
+        <TraceTree sessionId={sessionId} version={traceVersion} expanded />
       </Modal>
 
       <Card

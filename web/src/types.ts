@@ -320,9 +320,9 @@ export interface TraceNode {
 
 export interface TracePayload {
   nodes: TraceNode[];
-  total: number;
-  offset: number;
-  limit: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  traceCount: number;
 }
 
 export interface ReceiverInfo {

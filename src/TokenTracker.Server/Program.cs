@@ -366,13 +366,19 @@ app.MapGet("/api/session/{sessionId}", (
         AppJsonContext.Default.SessionPayload);
 });
 
+// Cursor-paged so the panel never rebuilds a whole session: `cursor` is opaque
+// to clients, `budget` caps the rows per block.
 app.MapGet("/api/session/{sessionId}/trace", (
     string sessionId,
     string? source,
-    int? offset,
-    int? limit) =>
+    string? cursor,
+    int? budget) =>
     Results.Json(
-        service.GetTrace(sessionId, source, offset ?? 0, limit ?? 20),
+        service.GetTrace(
+            sessionId,
+            source,
+            cursor,
+            budget ?? DashboardService.TraceBudget),
         AppJsonContext.Default.TracePayload));
 
 app.MapGet("/api/calls", (

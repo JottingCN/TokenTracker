@@ -603,19 +603,19 @@ public sealed partial class SpanStore
     }
 
     /// <summary>
-    /// Returns one page of trace nodes. Traces are the paging unit: a whole trace
-    /// tree keeps parent links intact, and a busy session can hold thousands of
-    /// nodes (about 1.5 MB of JSON) that used to be rebuilt and serialized on
-    /// every dashboard snapshot.
+    /// Returns one block of the session topology, newest traces first. A block is
+    /// anchored on whole traces so parent links stay intact; callers keep scrolling
+    /// towards older blocks with the returned cursor.
     /// </summary>
     public TracePage GetTracePage(
         string sessionId,
         string? source = null,
-        int offset = 0,
-        int traceLimit = 20)
+        string? cursor = null,
+        int budget = 400)
     {
-        var pageOffset = Math.Max(0, offset);
-        var pageSize = traceLimit <= 0 ? 20 : traceLimit;
+        // A block always holds at least one whole trace, so a tiny budget only
+        // means "one trace per block".
+        var maxNodes = Math.Clamp(budget, 1, 2_000);
         // Combined view merges both pipelines; a single source skips the merge.
         var mergeAcrossSources = string.IsNullOrWhiteSpace(source);
         var sourceFilter = mergeAcrossSources
@@ -623,88 +623,72 @@ public sealed partial class SpanStore
             : $" AND {SourceSql} = @source";
 
         using var connection = OpenConnection();
-        var spans = ReadTraceSpans(connection, sessionId, source, sourceFilter);
+        var traces = ReadTraceAnchors(connection, sessionId, source, sourceFilter);
 
-        // Merge bookkeeping covers the whole session because a duplicate pair can
-        // straddle a page boundary. It only touches ids, never node objects.
+        var startIndex = 0;
+        if (TryParseCursor(cursor, out var cursorAnchor, out var cursorTrace))
+        {
+            while (startIndex < traces.Count &&
+                   !IsOlderThanCursor(
+                       traces[startIndex],
+                       cursorAnchor,
+                       cursorTrace))
+            {
+                startIndex++;
+            }
+        }
+
+        var selected = new List<TraceAnchor>();
+        var selectedIds = new HashSet<string>(StringComparer.Ordinal);
+        var nodeCount = 0;
+        var next = startIndex;
+        while (next < traces.Count &&
+               (selected.Count == 0 || nodeCount + traces[next].NodeCount <= maxNodes))
+        {
+            selected.Add(traces[next]);
+            selectedIds.Add(traces[next].TraceId);
+            nodeCount += traces[next].NodeCount;
+            next++;
+        }
+
+        var hasMore = next < traces.Count;
+        var nextCursor = hasMore && selected.Count > 0
+            ? FormatCursor(selected[^1])
+            : null;
+        if (selected.Count == 0)
+        {
+            return new TracePage(
+                Array.Empty<TraceNodeRow>(),
+                false,
+                null,
+                traces.Count);
+        }
+
+        // One extra trace participates in the merge so a cross-source duplicate
+        // pair straddling the block boundary still collapses to a single node; the
+        // survivor is then rendered by whichever block owns it.
+        var windowIds = new List<string>(selected.Count + 1);
+        windowIds.AddRange(selectedIds);
+        if (hasMore)
+        {
+            windowIds.Add(traces[next].TraceId);
+        }
+
+        var spans = ReadTraceSpans(connection, sessionId, source, sourceFilter, windowIds);
+        var events = ReadTraceEvents(connection, sessionId, source, sourceFilter, windowIds);
+
         var dropped = new HashSet<SpanKey>();
         var remap = new Dictionary<SpanKey, SpanKey>();
-        if (mergeAcrossSources && spans.Count > 1)
+        if (mergeAcrossSources && (spans.Count > 1 || events.Count > 0))
         {
             ComputeTraceMerge(spans, dropped, remap);
         }
 
-        var statistics = new Dictionary<string, TraceStatistic>(
-            StringComparer.Ordinal);
-        var droppedPerTrace = new Dictionary<string, int>(StringComparer.Ordinal);
+        var nodes = new List<TraceNodeRow>(nodeCount);
         foreach (var span in spans)
         {
-            var statistic = statistics.TryGetValue(span.TraceId, out var known)
-                ? known
-                : default;
-            statistics[span.TraceId] = statistic with
-            {
-                SpanCount = statistic.SpanCount + 1,
-                LastMs = Math.Max(statistic.LastMs, span.EndTimeMs ?? span.StartTimeMs),
-            };
-            if (dropped.Count > 0 &&
+            if (!selectedIds.Contains(span.TraceId) ||
                 dropped.Contains(new SpanKey(span.TraceId, span.SpanId)))
-            {
-                droppedPerTrace[span.TraceId] =
-                    droppedPerTrace.GetValueOrDefault(span.TraceId) + 1;
-            }
-        }
-
-        foreach (var (traceId, lastMs, count) in ReadTraceEventStatistics(
-                     connection,
-                     sessionId,
-                     source,
-                     sourceFilter))
-        {
-            var statistic = statistics.TryGetValue(traceId, out var known)
-                ? known
-                : default;
-            statistics[traceId] = statistic with
-            {
-                EventCount = statistic.EventCount + count,
-                LastMs = Math.Max(statistic.LastMs, lastMs),
-            };
-        }
-
-        var visible = statistics
-            .Where(entry =>
-                entry.Value.SpanCount - droppedPerTrace.GetValueOrDefault(
-                    entry.Key) > 0 ||
-                entry.Value.EventCount > 0)
-            .OrderByDescending(entry => entry.Value.LastMs)
-            .ThenByDescending(entry => entry.Key, StringComparer.Ordinal)
-            .Select(entry => entry.Key)
-            .ToList();
-
-        var page = visible
-            .Skip(pageOffset)
-            .Take(pageSize)
-            .ToArray();
-        if (page.Length == 0)
-        {
-            return new TracePage(
-                Array.Empty<TraceNodeRow>(),
-                visible.Count,
-                pageOffset,
-                pageSize);
-        }
-
-        var pageIds = new HashSet<string>(page, StringComparer.Ordinal);
-        var nodes = new List<TraceNodeRow>();
-        foreach (var span in spans)
-        {
-            if (!pageIds.Contains(span.TraceId))
-            {
-                continue;
-            }
-
-            var key = new SpanKey(span.TraceId, span.SpanId);
-            if (dropped.Contains(key))
             {
                 continue;
             }
@@ -712,13 +696,10 @@ public sealed partial class SpanStore
             nodes.Add(new TraceNodeRow
             {
                 Id = SpanId(span.TraceId, span.SpanId),
-                ParentId = span.ParentSpanId is null
-                    ? null
-                    : remap.TryGetValue(
-                        new SpanKey(span.TraceId, span.ParentSpanId),
-                        out var mappedSpan)
-                        ? SpanId(mappedSpan.TraceId, mappedSpan.SpanId)
-                        : SpanId(span.TraceId, span.ParentSpanId),
+                ParentId = ResolveParentId(
+                    span.TraceId,
+                    span.ParentSpanId,
+                    remap),
                 Kind = "chat",
                 Operation = "chat",
                 Name = span.Name,
@@ -735,23 +716,21 @@ public sealed partial class SpanStore
             });
         }
 
-        foreach (var item in ReadTraceEvents(
-                     connection,
-                     sessionId,
-                     source,
-                     sourceFilter,
-                     page))
+        foreach (var item in events)
         {
+            if (!selectedIds.Contains(item.TraceId) ||
+                dropped.Contains(new SpanKey(item.TraceId, item.SpanId)))
+            {
+                continue;
+            }
+
             nodes.Add(new TraceNodeRow
             {
                 Id = SpanId(item.TraceId, item.SpanId),
-                ParentId = item.ParentSpanId is null
-                    ? null
-                    : remap.TryGetValue(
-                        new SpanKey(item.TraceId, item.ParentSpanId),
-                        out var mappedEvent)
-                        ? SpanId(mappedEvent.TraceId, mappedEvent.SpanId)
-                        : SpanId(item.TraceId, item.ParentSpanId),
+                ParentId = ResolveParentId(
+                    item.TraceId,
+                    item.ParentSpanId,
+                    remap),
                 Kind = "event",
                 Operation = item.Operation,
                 Name = item.Name,
@@ -764,9 +743,59 @@ public sealed partial class SpanStore
             });
         }
 
+        ApplyDepths(nodes);
+        return new TracePage(nodes, hasMore, nextCursor, traces.Count);
+    }
+
+    /// <summary>
+    /// Whole-session topology, capped at the newest nodes. Kept for tests and
+    /// exports; the API always walks <see cref="GetTracePage"/> blocks.
+    /// </summary>
+    public IReadOnlyList<TraceNodeRow> GetTraceNodes(
+        string sessionId,
+        string? source = null,
+        int limit = 5_000)
+    {
+        var maxNodes = Math.Clamp(limit, 1, 5_000);
+        var nodes = new List<TraceNodeRow>();
+        string? cursor = null;
+        do
+        {
+            var page = GetTracePage(sessionId, source, cursor, budget: 2_000);
+            nodes.AddRange(page.Nodes);
+            cursor = page.NextCursor;
+            if (!page.HasMore)
+            {
+                break;
+            }
+        }
+        while (cursor is not null && nodes.Count < maxNodes);
+
+        nodes.Sort(CompareNodes);
+        if (nodes.Count > maxNodes)
+        {
+            nodes.RemoveRange(0, nodes.Count - maxNodes);
+        }
+
+        // Depth was resolved per block; a capped/shifted window can drop a parent,
+        // so recompute once over the final node set.
+        ApplyDepths(nodes);
+        return nodes;
+    }
+
+    private static int CompareNodes(TraceNodeRow left, TraceNodeRow right)
+    {
+        var byTime = left.StartTimeMs.CompareTo(right.StartTimeMs);
+        return byTime != 0
+            ? byTime
+            : string.CompareOrdinal(left.Id, right.Id);
+    }
+
+    private static void ApplyDepths(List<TraceNodeRow> nodes)
+    {
         if (nodes.Count == 0)
         {
-            return new TracePage(nodes, visible.Count, pageOffset, pageSize);
+            return;
         }
 
         var byId = new Dictionary<string, TraceNodeRow>(
@@ -778,27 +807,161 @@ public sealed partial class SpanStore
         }
 
         var depths = new Dictionary<string, int>(nodes.Count, StringComparer.Ordinal);
-        nodes = nodes
-            .Select(node => node with
+        for (var index = 0; index < nodes.Count; index++)
+        {
+            nodes[index] = nodes[index] with
             {
-                Depth = ResolveDepth(node.Id, byId, depths, 0),
-            })
-            .OrderBy(node => node.StartTimeMs)
-            .ThenBy(node => node.Id, StringComparer.Ordinal)
-            .ToList();
-
-        return new TracePage(nodes, visible.Count, pageOffset, pageSize);
+                Depth = ResolveDepth(nodes[index].Id, byId, depths, 0),
+            };
+        }
     }
 
-    // Unpaged accessor kept for tests and exports; the API always pages by trace.
-    public IReadOnlyList<TraceNodeRow> GetTraceNodes(
+    private readonly record struct TraceAnchor(
+        string TraceId,
+        long AnchorMs,
+        int NodeCount);
+
+    // Traces are ordered newest first; the cursor names the last trace of the
+    // previous block, so the next request continues strictly after it.
+    private static bool IsOlderThanCursor(
+        TraceAnchor anchor,
+        long cursorAnchorMs,
+        string cursorTraceId) =>
+        anchor.AnchorMs < cursorAnchorMs ||
+        (anchor.AnchorMs == cursorAnchorMs &&
+         string.CompareOrdinal(anchor.TraceId, cursorTraceId) < 0);
+
+    private static string FormatCursor(TraceAnchor anchor) =>
+        $"{anchor.AnchorMs}:{anchor.TraceId}";
+
+    private static bool TryParseCursor(
+        string? cursor,
+        out long anchorMs,
+        out string traceId)
+    {
+        anchorMs = 0;
+        traceId = string.Empty;
+        if (string.IsNullOrWhiteSpace(cursor))
+        {
+            return false;
+        }
+
+        var separator = cursor.IndexOf(':');
+        if (separator <= 0 ||
+            !long.TryParse(
+                cursor.AsSpan(0, separator),
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out anchorMs))
+        {
+            return false;
+        }
+
+        traceId = cursor[(separator + 1)..];
+        return traceId.Length > 0;
+    }
+
+    private static List<TraceAnchor> ReadTraceAnchors(
+        SqliteConnection connection,
         string sessionId,
-        string? source = null,
-        int limit = 5_000) =>
-        GetTracePage(sessionId, source, 0, int.MaxValue)
-            .Nodes
-            .Take(Math.Clamp(limit, 1, 5_000))
-            .ToList();
+        string? source,
+        string sourceFilter)
+    {
+        var anchors = new Dictionary<string, (long Anchor, int Count)>(
+            StringComparer.Ordinal);
+        AccumulateTraceAnchors(
+            connection,
+            """
+            SELECT trace_id, MIN(start_time_ms), COUNT(*)
+            FROM spans
+            WHERE session_id = @session_id
+              AND COALESCE(otel_source, '') <> 'combined'{sessionFilter}
+            GROUP BY trace_id;
+            """,
+            sessionId,
+            source,
+            sourceFilter,
+            anchors);
+        AccumulateTraceAnchors(
+            connection,
+            """
+            SELECT trace_id, MIN(start_time_ms), COUNT(*)
+            FROM session_events
+            WHERE session_id = @session_id{sessionFilter}
+            GROUP BY trace_id;
+            """,
+            sessionId,
+            source,
+            sourceFilter,
+            anchors);
+
+        var rows = new List<TraceAnchor>(anchors.Count);
+        foreach (var (traceId, value) in anchors)
+        {
+            rows.Add(new TraceAnchor(traceId, value.Anchor, value.Count));
+        }
+
+        rows.Sort((left, right) =>
+        {
+            var byAnchor = right.AnchorMs.CompareTo(left.AnchorMs);
+            return byAnchor != 0
+                ? byAnchor
+                : string.CompareOrdinal(right.TraceId, left.TraceId);
+        });
+        return rows;
+    }
+
+    private static void AccumulateTraceAnchors(
+        SqliteConnection connection,
+        string sql,
+        string sessionId,
+        string? source,
+        string sourceFilter,
+        Dictionary<string, (long Anchor, int Count)> anchors)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql.Replace("{sessionFilter}", sourceFilter);
+        command.Parameters.AddWithValue("@session_id", sessionId);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var traceId = reader.GetString(0);
+            var anchor = reader.GetInt64(1);
+            var count = reader.GetInt32(2);
+            if (anchors.TryGetValue(traceId, out var known))
+            {
+                anchors[traceId] = (
+                    Math.Min(known.Anchor, anchor),
+                    known.Count + count);
+            }
+            else
+            {
+                anchors[traceId] = (anchor, count);
+            }
+        }
+    }
+
+    private static string? ResolveParentId(
+        string traceId,
+        string? parentSpanId,
+        IReadOnlyDictionary<SpanKey, SpanKey> remap)
+    {
+        if (parentSpanId is null)
+        {
+            return null;
+        }
+
+        return remap.TryGetValue(
+            new SpanKey(traceId, parentSpanId),
+            out var mapped)
+            ? SpanId(mapped.TraceId, mapped.SpanId)
+            : SpanId(traceId, parentSpanId);
+    }
 
     private static string SpanId(string traceId, string spanId) =>
         string.Concat(traceId, ":", spanId);
@@ -857,25 +1020,30 @@ public sealed partial class SpanStore
         string? ErrorType,
         bool IsError);
 
-    private readonly record struct TraceStatistic(
-        long LastMs,
-        int SpanCount,
-        int EventCount);
-
     private static List<TraceSpan> ReadTraceSpans(
         SqliteConnection connection,
         string sessionId,
         string? source,
-        string sourceFilter)
+        string sourceFilter,
+        IReadOnlyList<string> traceIds)
     {
         using var command = connection.CreateCommand();
+        var placeholders = new string[traceIds.Count];
+        for (var index = 0; index < traceIds.Count; index++)
+        {
+            var parameter = $"@trace{index}";
+            placeholders[index] = parameter;
+            command.Parameters.AddWithValue(parameter, traceIds[index]);
+        }
+
         command.CommandText = $"""
             SELECT trace_id, span_id, parent_span_id, {SourceSql} AS source,
                    name, model, error_type, input_tokens, output_tokens,
                    cache_read_tokens, start_time_ms, end_time_ms, is_main
             FROM spans
             WHERE session_id = @session_id
-              AND COALESCE(otel_source, '') <> 'combined'{sourceFilter};
+              AND COALESCE(otel_source, '') <> 'combined'{sourceFilter}
+              AND trace_id IN ({string.Join(", ", placeholders)});
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
         if (!string.IsNullOrWhiteSpace(source))
@@ -905,36 +1073,6 @@ public sealed partial class SpanStore
         }
 
         return spans;
-    }
-
-    private static List<(string TraceId, long LastMs, int Count)>
-        ReadTraceEventStatistics(
-            SqliteConnection connection,
-            string sessionId,
-            string? source,
-            string sourceFilter)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"""
-            SELECT trace_id, MAX(start_time_ms), COUNT(*)
-            FROM session_events
-            WHERE session_id = @session_id{sourceFilter}
-            GROUP BY trace_id;
-            """;
-        command.Parameters.AddWithValue("@session_id", sessionId);
-        if (!string.IsNullOrWhiteSpace(source))
-        {
-            command.Parameters.AddWithValue("@source", source);
-        }
-
-        var rows = new List<(string, long, int)>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            rows.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt32(2)));
-        }
-
-        return rows;
     }
 
     private static List<TraceEvent> ReadTraceEvents(
