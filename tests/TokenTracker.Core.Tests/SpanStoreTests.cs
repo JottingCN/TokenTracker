@@ -107,6 +107,326 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void ModelRowsCarryReasoningTokensAndCostBreakdown()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+        var model = "breakdown-model";
+
+        // Per 1M tokens: 1 cached input, 2 uncached input, 4 output.
+        ModelPricing.SetOverrides(new[]
+        {
+            new KeyValuePair<string, ModelPrice>(
+                model,
+                new ModelPrice(
+                    new PriceTier(1m, 2m, 4m),
+                    new PriceTier(1m, 2m, 4m),
+                    PeakAware: false)),
+        });
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1",
+                    "s1",
+                    "session-1",
+                    model,
+                    1_000,
+                    1_000,
+                    400,
+                    500,
+                    cost: null,
+                    reasoningTokens: 120),
+                Span(
+                    "t2",
+                    "s2",
+                    "session-1",
+                    model,
+                    2_000,
+                    2_000,
+                    0,
+                    300,
+                    cost: null,
+                    reasoningTokens: 80),
+            });
+            Assert.Equal(2, store.RecomputeCosts(model));
+
+            var row = Assert.Single(store.GetModels(0));
+            Assert.Equal(2, row.Calls);
+            Assert.Equal(3_000, row.InputTokens);
+            Assert.Equal(400, row.CacheReadTokens);
+            Assert.Equal(800, row.OutputTokens);
+            Assert.Equal(200, row.ReasoningTokens);
+            Assert.Equal("200", row.ReasoningText);
+
+            // The dashboard shows these buckets next to the token counts, so the
+            // aggregate must be split exactly like the session rows.
+            Assert.Equal(400d * 1 / 1_000_000, row.CacheCostCny, 10);
+            Assert.Equal(2_600d * 2 / 1_000_000, row.UncachedCostCny, 10);
+            Assert.Equal(800d * 4 / 1_000_000, row.OutputCostCny, 10);
+            Assert.Equal(
+                row.CacheCostCny + row.UncachedCostCny + row.OutputCostCny,
+                row.CostCny,
+                10);
+        }
+        finally
+        {
+            ModelPricing.SetOverrides(
+                Array.Empty<KeyValuePair<string, ModelPrice>>());
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TracePagesByWholeTracesAndMergesAcrossPageBoundaries()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                // trace-old (copilot-chat) and trace-dup (agent-host) are the same
+                // call reported twice; trace-new is newer and must come first.
+                command.CommandText = """
+                    INSERT INTO spans (
+                        trace_id, span_id, parent_span_id, name, start_time_ms,
+                        end_time_ms, service_name, otel_source, model, session_id,
+                        is_main, input_tokens, output_tokens, received_at_ms
+                    ) VALUES
+                        ('trace-old', 'span-old', NULL, 'chat', 2000, 4000,
+                         'copilot-chat', 'copilot-chat', 'deepseek-flash',
+                         'session-1', 1, 100, 10, 2000),
+                        ('trace-dup', 'span-dup', NULL, 'chat', 2000, 4000,
+                         'github-copilot', 'agent-host', 'deepseek-flash',
+                         'session-1', 1, 100, 10, 2000),
+                        ('trace-new', 'span-new', NULL, 'chat', 5000, 6000,
+                         'copilot-chat', 'copilot-chat', 'deepseek-flash',
+                         'session-1', 1, 100, 10, 5000);
+                    INSERT INTO session_events (
+                        trace_id, span_id, parent_span_id, operation, session_id,
+                        service_name, otel_source, start_time_ms, received_at_ms
+                    ) VALUES
+                        ('trace-old', 'span-tool', 'span-old', 'execute_tool',
+                         'session-1', 'copilot-chat', 'copilot-chat', 3000, 3000);
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            var first = store.GetTracePage("session-1", traceLimit: 1);
+            Assert.Equal(2, first.Total);
+            Assert.Equal(0, first.Offset);
+            var newest = Assert.Single(first.Nodes);
+            Assert.Equal("trace-new:span-new", newest.Id);
+
+            // The duplicate's trace sorts into the last page, but the merge still
+            // has to drop it: paging must never leak cross-source duplicates.
+            var second = store.GetTracePage("session-1", offset: 1, traceLimit: 1);
+            Assert.Equal(2, second.Total);
+            Assert.Equal(new[] { "trace-old:span-old", "trace-old:span-tool" },
+                second.Nodes.Select(node => node.Id).ToArray());
+            Assert.Equal(
+                "trace-old:span-old",
+                second.Nodes.Single(node => node.Kind == "event").ParentId);
+            Assert.Equal(
+                0,
+                second.Nodes.Single(node => node.Kind == "chat").Depth);
+            Assert.Equal(
+                1,
+                second.Nodes.Single(node => node.Kind == "event").Depth);
+
+            var empty = store.GetTracePage("session-1", offset: 9, traceLimit: 1);
+            Assert.Empty(empty.Nodes);
+            Assert.Equal(2, empty.Total);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CombinedRebuildOnlyTouchesTheDirtyWindowOfASession()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span("t1", "s1", "session-1", "m", 1_000, 100, 0, 10, null),
+                Span("t2", "s2", "session-1", "m", 100_000, 100, 0, 10, null),
+                Span("t3", "s3", "session-1", "m", 200_000, 100, 0, 10, null),
+            });
+            store.EnsureCombinedSpans();
+            var before = CombinedRowIds(databasePath);
+            Assert.Equal(3, before.Count);
+
+            // The duplicate lands in the first window only; the two later derived
+            // rows must survive untouched instead of being rebuilt with the session.
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1",
+                    "s1b",
+                    "session-1",
+                    "m",
+                    1_000,
+                    100,
+                    0,
+                    10,
+                    null,
+                    serviceName: "github-copilot",
+                    source: "agent-host"),
+            });
+            store.EnsureCombinedSpans();
+            var after = CombinedRowIds(databasePath);
+
+            Assert.Equal(3, after.Count);
+            // Only the first window is rebuilt, so the two later derived rows must
+            // keep their rowids while the merged pair gets a fresh one.
+            Assert.Equal(before[1], after[1]);
+            Assert.Equal(before[2], after[2]);
+            Assert.NotEqual(before[0], after[0]);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static List<long> CombinedRowIds(string databasePath)
+    {
+        using var connection = new SqliteConnection($"Data Source={databasePath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT rowid FROM spans
+            WHERE otel_source = 'combined'
+            ORDER BY start_time_ms;
+            """;
+        var rows = new List<long>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(reader.GetInt64(0));
+        }
+
+        return rows;
+    }
+
+    [Fact]
+    public void CallSamplesMatchTheFullCallProjection()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span("t1", "s1", "session-1", "m", 1_000, 100, 20, 30, 0.5,
+                    ttftMs: 200, durationMs: 1_200),
+                Span("t2", "s2", "session-1", "m", 2_000, 50, 0, 10, null,
+                    ttftMs: 100, durationMs: 900),
+                Span("t3", "s3", "session-1", "m", 3_000, 80, 10, 5, 0.25,
+                    ttftMs: null, durationMs: 400),
+                Span("t4", "s4", "session-2", "m", 4_000, 999, 0, 999, 9,
+                    ttftMs: 50, durationMs: 500),
+            });
+
+            var calls = store.GetCallsForSession(
+                "session-1",
+                source: "copilot-chat");
+            var samples = store.GetSessionCallSamples(
+                "session-1",
+                0,
+                long.MaxValue,
+                "copilot-chat");
+
+            Assert.Equal(calls.Count, samples.Count);
+            Assert.Equal(calls.Sum(call => call.InputTokens),
+                samples.Sum(sample => sample.InputTokens));
+            Assert.Equal(calls.Sum(call => call.CacheReadTokens),
+                samples.Sum(sample => sample.CacheReadTokens));
+            Assert.Equal(calls.Sum(call => call.OutputTokens),
+                samples.Sum(sample => sample.OutputTokens));
+            Assert.Equal(calls.Sum(call => call.CostCny ?? 0),
+                samples.Sum(sample => sample.CostCny ?? 0), 10);
+            Assert.Equal(calls.Count(call => call.CostCny is null),
+                samples.Count(sample => sample.CostCny is null));
+            Assert.Equal(
+                calls.Where(call => call.TtftMs is > 0)
+                    .Select(call => call.TtftMs)
+                    .OrderBy(value => value)
+                    .ToList(),
+                samples.Where(sample => sample.TtftMs is > 0)
+                    .Select(sample => sample.TtftMs)
+                    .OrderBy(value => value)
+                    .ToList());
+            Assert.Equal(
+                calls.Select(call => call.DurationMs).OrderBy(value => value)
+                    .ToList(),
+                samples.Select(sample => sample.DurationMs).OrderBy(value => value)
+                    .ToList());
+            Assert.Equal(
+                calls.Select(call => call.TokensPerSecond).OrderBy(value => value)
+                    .ToList(),
+                samples.Select(sample => sample.OutputTokens >= 5 &&
+                        sample.DurationMs is > 0 &&
+                        sample.TtftMs is > 0 &&
+                        sample.DurationMs.Value - sample.TtftMs.Value >= 50
+                    ? sample.OutputTokens * 1_000d /
+                        (sample.DurationMs.Value - sample.TtftMs!.Value)
+                    : (double?)null)
+                    .OrderBy(value => value)
+                    .ToList());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void KeepsCrossSourceSpansSeparate()
     {
         var directory = Path.Combine(

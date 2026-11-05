@@ -11,6 +11,7 @@ interface SignalCardProps {
 // hidden while every counter is zero instead of showing an empty shell.
 export function SignalCard({ signalHealth }: SignalCardProps) {
   const { t } = useUi();
+  const sep = t('label.separator');
   const total =
     (signalHealth?.agentRuns ?? 0) +
     (signalHealth?.hookEvents ?? 0) +
@@ -23,16 +24,24 @@ export function SignalCard({ signalHealth }: SignalCardProps) {
     <Card size="small" title={t('signals.agents')}>
       <Space wrap size="large">
         <Typography.Text>
-          {t('agent.runs')}：{signalHealth.agentRuns}
+          {t('agent.runs')}
+          {sep}
+          {signalHealth.agentRuns}
         </Typography.Text>
         <Typography.Text>
-          {t('hook.events')}：{signalHealth.hookEvents}
+          {t('hook.events')}
+          {sep}
+          {signalHealth.hookEvents}
         </Typography.Text>
         <Typography.Text>
-          {t('metric.points')}：{signalHealth.metricPoints}
+          {t('metric.points')}
+          {sep}
+          {signalHealth.metricPoints}
         </Typography.Text>
         <Typography.Text type="secondary">
-          {t('last.signal')}：{signalHealth.lastSignalText}
+          {t('last.signal')}
+          {sep}
+          {signalHealth.lastSignalText}
         </Typography.Text>
       </Space>
     </Card>

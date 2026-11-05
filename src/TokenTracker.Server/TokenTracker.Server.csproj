@@ -10,7 +10,18 @@
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <!-- A local single-user dashboard is memory-bound, not CPU-bound. ASP.NET Core
+         defaults to Server GC, which reserves a heap plus a dedicated GC thread for
+         every logical CPU and does not hand memory back on an idle machine. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compact the LOH when it fragments (large JSON responses) and lower the
+         physical-memory threshold at which GC starts returning memory. -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+    <RuntimeHostConfigurationOption Include="System.GC.HighMemoryPercent" Value="60" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TokenTracker.Core\TokenTracker.Core.csproj" />

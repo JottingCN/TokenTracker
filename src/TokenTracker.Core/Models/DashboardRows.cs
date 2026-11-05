@@ -91,6 +91,28 @@ public sealed partial record SessionRow
     public string TokensPerSecondText => DisplayFormat.Speed(TokensPerSecond);
 }
 
+/// <summary>
+/// Minimal projection of one call, used when only aggregates are needed: the
+/// session page must not materialize thousands of <see cref="CallRow"/> objects
+/// just to sum them, but the arithmetic still lives in one place.
+/// </summary>
+public readonly record struct CallSample(
+    string Model,
+    string? Source,
+    long InputTokens,
+    long CacheReadTokens,
+    long OutputTokens,
+    long ReasoningTokens,
+    double? CostCny,
+    double CacheCostCny,
+    double UncachedCostCny,
+    double OutputCostCny,
+    double ReasoningCostCny,
+    long? TtftMs,
+    long? DurationMs,
+    string? ErrorType,
+    long StartTimeMs);
+
 public sealed partial record CallRow
 {
     public long StartTimeMs { get; init; }
@@ -180,8 +202,13 @@ public sealed partial class ModelRow
     public long InputTokens { get; init; }
     public long CacheReadTokens { get; init; }
     public long OutputTokens { get; init; }
+    public long ReasoningTokens { get; init; }
     public double? HitRate { get; init; }
     public double CostCny { get; init; }
+    public double CacheCostCny { get; init; }
+    public double UncachedCostCny { get; init; }
+    public double OutputCostCny { get; init; }
+    public double ReasoningCostCny { get; init; }
     public long UnpricedCalls { get; init; }
     public double? AvgTtftMs { get; init; }
     public long TtftSamples { get; init; }
@@ -190,8 +217,16 @@ public sealed partial class ModelRow
     public string CallsText => DisplayFormat.Number(Calls);
     public string TokensText =>
         $"{DisplayFormat.Number(InputTokens)} / {DisplayFormat.Number(CacheReadTokens)}";
+    public string InputText => DisplayFormat.Number(InputTokens);
+    public string CacheText => DisplayFormat.Number(CacheReadTokens);
+    public string OutputText => DisplayFormat.Number(OutputTokens);
+    public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
     public string HitRateText => DisplayFormat.Rate(HitRate);
     public string CostText => DisplayFormat.Cost(CostCny, UnpricedCalls);
+    public string CacheCostText => DisplayFormat.Price(CacheCostCny);
+    public string UncachedCostText => DisplayFormat.Price(UncachedCostCny);
+    public string OutputCostText => DisplayFormat.Price(OutputCostCny);
+    public string ReasoningCostText => DisplayFormat.Price(ReasoningCostCny);
     public double HitRatePercent => (HitRate ?? 0) * 100;
     public string AvgTtftText => DisplayFormat.Duration(AvgTtftMs);
     public string TokensPerSecondText => DisplayFormat.Speed(TokensPerSecond);
@@ -379,6 +414,16 @@ public sealed record TraceNodeRow
     public string DurationText => DisplayFormat.Duration(DurationMs);
 }
 
+/// <summary>
+/// One page of trace nodes plus the total number of traces in the session. The
+/// page unit is a whole trace tree so pagination never splits parent/child links.
+/// </summary>
+public sealed record TracePage(
+    IReadOnlyList<TraceNodeRow> Nodes,
+    int Total,
+    int Offset,
+    int Limit);
+
 public sealed class SignalHealthRow
 {
     public long AgentRuns { get; init; }
@@ -414,7 +459,6 @@ public sealed class OutcomeSummary
     public long SummarizationFailed { get; init; }
     public long PullRequests { get; init; }
     public long CloudSessions { get; init; }
-    public long CloudPrReady { get; init; }
     // Cloud agent operations (recordCloudOperation / incrementCloudError).
     public long CloudOperations { get; init; }
     public long CloudErrors { get; init; }
@@ -436,7 +480,7 @@ public sealed class OutcomeSummary
         ChatEditSaved + LinesAdded + LinesRemoved + UserCopy + UserInsert +
         UserApply + UserFollowup + FeedbackPositive + FeedbackNegative +
         AgentEditSuccess + AgentEditError + SummarizationApplied +
-        SummarizationFailed + PullRequests + CloudSessions + CloudPrReady +
+        SummarizationFailed + PullRequests + CloudSessions +
         CloudOperations + CloudErrors +
         ToolMetricCalls > 0 ||
         SurvivalFourGram is not null ||

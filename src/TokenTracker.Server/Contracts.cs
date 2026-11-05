@@ -66,7 +66,11 @@ public sealed record SessionPayload(
     string? Title,
     string? WorkspacePath);
 
-public sealed record TracePayload(List<TraceNodeRow> Nodes);
+public sealed record TracePayload(
+    List<TraceNodeRow> Nodes,
+    int Total,
+    int Offset,
+    int Limit);
 
 public sealed record CallsPayload(
     List<CallRow> Calls,

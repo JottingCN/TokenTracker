@@ -237,12 +237,36 @@ invoke_agent copilot                           [~15s]
 | `copilot_chat.agent.summarization.count` | Counter | 上下文摘要结果（applied/failed） |
 | `copilot_chat.pull_request.count` | Counter | 通过 Copilot agent 创建的 PR |
 | `copilot_chat.cloud.session.count` | Counter | 云/远程代理会话，按 partner agent |
-| `copilot_chat.cloud.pr_ready.count` | Counter | 远程 agent job PR-ready 通知 |
 | `copilot_chat.cloud.operation.count` | Counter | 云操作次数（远端 agent 侧工具/任务调用） |
 | `copilot_chat.cloud.operation.duration` | Histogram | 云操作耗时 |
 | `copilot_chat.cloud.error.count` | Counter | 云操作失败次数 |
 
 指标包含筛选属性，例如 `gen_ai.request.model`、`gen_ai.provider.name`、`gen_ai.tool.name`、`copilot_chat.edit.source`、`error.type`。
+
+#### 记录位置与触发条件（实测核对 `extensions/copilot`）
+
+所有结果指标都由 `extensions/copilot/src/platform/otel/common/genAiMetrics.ts` 的 `GenAiMetrics` 发出，
+调用点全部在 **扩展宿主**，由 VS Code 的 UI 事件触发；Agent Host 只转 trace，不产生这些指标。
+
+| 指标 | 记录位置（`extensions/copilot/src/`） | 触发条件 |
+|---|---|---|
+| `edit.acceptance.count` | `extension/conversation/vscode-node/userActions.ts` | `chatEditingSessionAction`（accepted/rejected，source `chat_editing`）、`chatEditingHunkAction`（`chat_editing_hunk`）、内联聊天完成（`inline_chat`） |
+| `chat_edit.outcome.count` | 同上 | 文件级 chat editing 动作，含 `saved`，带 `has_remaining_edits` |
+| `lines_of_code.count` | 同上 | **仅** `chatEditingHunkAction` 且 outcome=`accepted` 时累加 `linesAdded`/`linesRemoved`；内联聊天接受不计 LOC |
+| `user.action.count` | 同上 | 复制 / 插入 / apply / followup 的用户动作 |
+| `user.feedback.count` | 同上 | 响应点赞（`positive`）/ 点踩（`negative`） |
+| `edit.survival.four_gram` / `no_revert` | 同上、`extension/prompts/node/codeMapper/codeMapperService.ts` | 接受后延迟测量（`time_delay_ms`），source 为 `inline_chat` / `code_mapper` |
+| `agent.edit_response.count` | `extension/intents/node/editCodeIntent.ts` | 每次 edit-code 代理响应，`success` / `error` |
+| `agent.summarization.count` | `extension/intents/node/agentIntent.ts` | 摘要应用/失败；另有 `skipped`（同日重复摘要被跳过） |
+| `pull_request.count` | `extension/chatSessions/copilotcli/node/copilotcliSession.ts` | CLI 代理创建 PR |
+| `cloud.session.count` | `extension/chatSessions/vscode-node/copilotCloudSessionsProvider.ts` | 云/远程会话启动，属性 `partner_agent` |
+| `cloud.operation.count` / `.duration` / `.error.count` | `extension/chatSessions/vscode-node/cloudBackendTelemetry.ts` | 云任务操作（createSession / followUp / sessionActivated 等） |
+
+导出链路：`GenAiMetrics` → `NodeOTelService.incrementCounter/recordMetric`
+→ `PeriodicExportingMetricReader`（**10 秒**）→ OTLP/HTTP `<otlpEndpoint>/v1/metrics`（本项目的 endpoint
+是 `/otlp/copilot-chat`，因此实际路径为 `/otlp/copilot-chat/v1/metrics`）。
+`IdentityMetricExporter` 只过滤身份属性，**不丢弃指标**；因此“卡片为空”只能是没触发 UI 事件、
+OTel 未启用，或指标不在本项目的 allowlist 内。
 
 ---
 

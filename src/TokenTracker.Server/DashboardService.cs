@@ -379,8 +379,15 @@ public sealed class DashboardService
         var detailSource = source == "combined" ? null : source;
         // The session page must honour the selected range like the dashboard
         // does; filtering inside SQL keeps out-of-range rows from being loaded.
-        var calls = _store
-            .GetCallsForSession(sessionId, fromMs, toMs, source: source);
+        // Only the call list payload needs full rows; aggregates read a small
+        // projection instead of materializing thousands of CallRow objects on
+        // every snapshot.
+        var calls = includeCalls
+            ? _store.GetCallsForSession(sessionId, fromMs, toMs, source: source)
+            : (IReadOnlyList<CallRow>)Array.Empty<CallRow>();
+        var samples = includeCalls
+            ? Array.Empty<CallSample>()
+            : _store.GetSessionCallSamples(sessionId, fromMs, toMs, source);
         var totals = new SummaryAccumulator();
         var byModel = new Dictionary<string, SummaryAccumulator>(
             StringComparer.Ordinal);
@@ -396,6 +403,18 @@ public sealed class DashboardService
             accumulator.Add(call);
         }
 
+        foreach (var sample in samples)
+        {
+            totals.Add(sample);
+            if (!byModel.TryGetValue(sample.Model, out var accumulator))
+            {
+                accumulator = new SummaryAccumulator();
+                byModel[sample.Model] = accumulator;
+            }
+
+            accumulator.Add(sample);
+        }
+
         var summary = totals.Build();
         var modelSummaries = byModel
             .Select(entry => new SessionModelPayload(entry.Key, entry.Value.Build()))
@@ -408,30 +427,9 @@ public sealed class DashboardService
             .GetSessionEvents(sessionId, detailSource)
             .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
             .ToList();
-        var chatEvents = calls
-            .GroupBy(
-                call => call.Source ?? "copilot-chat",
-                StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
-            {
-                var durations = group
-                    .Where(call => call.DurationMs is > 0)
-                    .Select(call => call.DurationMs!.Value)
-                    .ToList();
-                return new SessionEventRow
-                {
-                    Operation = "chat",
-                    Source = group.Key,
-                    Count = group.LongCount(),
-                    AvgDurationMs = durations.Count > 0
-                        ? durations.Average()
-                        : null,
-                    ErrorCount = group.Count(call => call.ErrorType is not null),
-                    LastSeenMs = group.Max(call => call.StartTimeMs),
-                };
-            })
-            .OrderByDescending(row => row.Count)
-            .ToList();
+        var chatEvents = includeCalls
+            ? BuildChatEvents(calls)
+            : BuildChatEvents(samples);
         events.InsertRange(0, chatEvents);
 
         var metadata = _metadata.Get(sessionId);
@@ -466,6 +464,69 @@ public sealed class DashboardService
             sessionId,
             metadata?.Title,
             metadata?.WorkspacePath);
+    }
+
+    private static List<SessionEventRow> BuildChatEvents(
+        IReadOnlyList<CallRow> calls) =>
+        BuildChatEvents(
+            calls.Select(call => (call.Source, call.DurationMs, call.ErrorType, call.StartTimeMs))
+                .ToList());
+
+    private static List<SessionEventRow> BuildChatEvents(
+        IReadOnlyList<CallSample> calls) =>
+        BuildChatEvents(
+            calls.Select(call => (call.Source, call.DurationMs, call.ErrorType, call.StartTimeMs))
+                .ToList());
+
+    private static List<SessionEventRow> BuildChatEvents(
+        IReadOnlyList<(string? Source, long? DurationMs, string? ErrorType, long StartTimeMs)> calls)
+    {
+        var rows = new List<SessionEventRow>();
+        foreach (var group in calls.GroupBy(
+                     call => call.Source ?? "copilot-chat",
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            long count = 0;
+            long durationCount = 0;
+            double durationSum = 0;
+            long errorCount = 0;
+            var lastSeen = 0L;
+            foreach (var call in group)
+            {
+                count++;
+                if (call.DurationMs is > 0)
+                {
+                    durationCount++;
+                    durationSum += call.DurationMs.Value;
+                }
+
+                if (call.ErrorType is not null)
+                {
+                    errorCount++;
+                }
+
+                if (call.StartTimeMs > lastSeen)
+                {
+                    lastSeen = call.StartTimeMs;
+                }
+            }
+
+            rows.Add(new SessionEventRow
+            {
+                Operation = "chat",
+                Source = group.Key,
+                Count = count,
+                AvgDurationMs = durationCount > 0
+                    ? durationSum / durationCount
+                    : null,
+                ErrorCount = errorCount,
+                LastSeenMs = lastSeen,
+            });
+        }
+
+        return rows
+            .OrderByDescending(row => row.Count)
+            .ToList();
     }
 
     private static SummaryDto BuildSummary(IReadOnlyCollection<CallRow> calls)
@@ -504,7 +565,24 @@ public sealed class DashboardService
         private long _generationOutputTokens;
         private double _generationMs;
 
-        public void Add(CallRow call)
+        public void Add(CallRow call) => Add(new CallSample(
+            call.Model,
+            call.Source,
+            call.InputTokens,
+            call.CacheReadTokens,
+            call.OutputTokens,
+            call.ReasoningTokens,
+            call.CostCny,
+            call.CacheCostCny,
+            call.UncachedCostCny,
+            call.OutputCostCny,
+            call.ReasoningCostCny,
+            call.TtftMs,
+            call.DurationMs,
+            call.ErrorType,
+            call.StartTimeMs));
+
+        public void Add(CallSample call)
         {
             _calls++;
             _inputTokens += call.InputTokens;
@@ -521,7 +599,7 @@ public sealed class DashboardService
                 _unpricedCalls++;
             }
 
-            var ttft = call.TtftMs is > 0 ? call.TtftMs!.Value : (long?)null;
+            var ttft = call.TtftMs is > 0 ? call.TtftMs : (long?)null;
             if (ttft is long ttftMs)
             {
                 _ttftSamples++;
@@ -547,9 +625,8 @@ public sealed class DashboardService
                 {
                     _generationOutputTokens += call.OutputTokens;
                     _generationMs += generationMs;
-                    if (call.ErrorType is null &&
-                        call.TokensPerSecond is double speed &&
-                        speed > 0)
+                    var speed = call.OutputTokens * 1_000d / generationMs;
+                    if (call.ErrorType is null && speed > 0)
                     {
                         if (speed < _minTokensPerSecond)
                         {
@@ -595,13 +672,23 @@ public sealed class DashboardService
         };
     }
 
-    public TracePayload GetTrace(string sessionId, string? source = null)
+    public TracePayload GetTrace(
+        string sessionId,
+        string? source = null,
+        int offset = 0,
+        int limit = 20)
     {
         var normalized = NormalizeSource(source);
+        var page = _store.GetTracePage(
+            sessionId,
+            normalized == "combined" ? null : normalized,
+            offset,
+            Math.Clamp(limit, 1, 200));
         return new TracePayload(
-            _store.GetTraceNodes(
-                sessionId,
-                normalized == "combined" ? null : normalized).ToList());
+            page.Nodes.ToList(),
+            page.Total,
+            page.Offset,
+            page.Limit);
     }
 
     public void ApplyOverrides() =>

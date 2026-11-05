@@ -9,7 +9,6 @@ import type { DashboardPayload } from '../types';
 import { useUi } from '../ui';
 import {
   TABLE_ROW_DOUBLE_PX,
-  TABLE_ROW_SINGLE_PX,
   clampTableHeight,
 } from '../utils/tableMetrics';
 import { useViewportHeight } from '../utils/useViewportHeight';
@@ -36,7 +35,7 @@ export function DashboardPage({
   const modelHeight = clampTableHeight(
     modelViewportHeight,
     models.length,
-    TABLE_ROW_SINGLE_PX,
+    TABLE_ROW_DOUBLE_PX,
   );
   const pageRowCount = Math.min(
     pageSize,
@@ -78,7 +77,7 @@ export function DashboardPage({
             dataSource={models}
             loading={!data}
             pagination={false}
-            scroll={{ x: 900, y: modelHeight }}
+            scroll={{ x: 1030, y: modelHeight }}
           />
         )}
       </Card>

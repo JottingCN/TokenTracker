@@ -34,14 +34,23 @@ export interface ModelRow {
   inputTokens: number;
   cacheReadTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   hitRate: number | null;
   costCny: number;
+  cacheCostCny: number;
+  uncachedCostCny: number;
+  outputCostCny: number;
+  reasoningCostCny: number;
   unpricedCalls: number;
   avgTtftMs: number | null;
   ttftSamples: number;
   tokensPerSecond: number | null;
   callsText: string;
   tokensText: string;
+  inputText: string;
+  cacheText: string;
+  outputText: string;
+  reasoningText: string;
   hitRateText: string;
   costText: string;
   hitRatePercent: number;
@@ -275,7 +284,6 @@ export interface OutcomeSummary {
   summarizationFailed: number;
   pullRequests: number;
   cloudSessions: number;
-  cloudPrReady: number;
   cloudOperations: number;
   cloudErrors: number;
   cloudOperationAvgMs: number | null;
@@ -312,6 +320,9 @@ export interface TraceNode {
 
 export interface TracePayload {
   nodes: TraceNode[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface ReceiverInfo {

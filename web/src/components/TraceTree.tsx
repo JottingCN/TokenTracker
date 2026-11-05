@@ -14,13 +14,25 @@ interface TraceTreeProps {
   // Changes whenever the session snapshot changes, so newly ingested spans show
   // up without a manual reload.
   version?: string;
+  // Traces are paged whole so a page never splits a parent from its children.
+  page?: number;
+  pageSize?: number;
+  onTotalChange?: (total: number) => void;
 }
 
-export function TraceTree({ sessionId, expanded = false, version }: TraceTreeProps) {
+export function TraceTree({
+  sessionId,
+  expanded = false,
+  version,
+  page = 1,
+  pageSize = 20,
+  onTotalChange,
+}: TraceTreeProps) {
   const { locale, t } = useUi();
   const [nodes, setNodes] = useState<TraceNode[] | null>(null);
   const [loadedFor, setLoadedFor] = useState<string>();
-  const loading = loadedFor !== sessionId;
+  const requestKey = `${sessionId}#${page}#${pageSize}`;
+  const loading = loadedFor !== requestKey;
   const [hostRef, hostHeight] = useAutoTableHeight(0);
   const fillHeight = useViewportHeight(0.82, 400, 2000);
 
@@ -28,11 +40,15 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
     let cancelled = false;
     // Only a new session shows a spinner; later refreshes keep the old tree
     // visible so the panel does not flicker on every snapshot.
-    fetch(`/api/session/${encodeURIComponent(sessionId)}/trace`)
+    const offset = Math.max(0, (page - 1) * pageSize);
+    fetch(
+      `/api/session/${encodeURIComponent(sessionId)}/trace?offset=${offset}&limit=${pageSize}`,
+    )
       .then((response) => (response.ok ? response.json() : null))
       .then((payload: TracePayload | null) => {
         if (!cancelled) {
           setNodes(payload?.nodes ?? []);
+          onTotalChange?.(payload?.total ?? 0);
         }
       })
       .catch(() => {
@@ -42,14 +58,14 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
       })
       .finally(() => {
         if (!cancelled) {
-          setLoadedFor(sessionId);
+          setLoadedFor(requestKey);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [sessionId, version]);
+  }, [requestKey, sessionId, page, pageSize, version, onTotalChange]);
 
   const treeData = useMemo(
     () =>

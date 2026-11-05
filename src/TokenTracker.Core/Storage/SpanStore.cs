@@ -717,7 +717,10 @@ public sealed partial class SpanStore
                     }
                     else
                     {
-                        _combinedDirtySessions.Add(span.SessionId);
+                        MarkCombinedSession(
+                            span.SessionId!,
+                            span.StartTimeMs,
+                            span.EndTimeMs ?? span.StartTimeMs);
                     }
                 }
 
@@ -1384,6 +1387,64 @@ public sealed partial class SpanStore
             Limit = limit,
         });
 
+    public IReadOnlyList<CallSample> GetSessionCallSamples(
+        string sessionId,
+        long fromMs,
+        long toMs,
+        string? source)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT COALESCE(model, '-'), {SourceSql} AS source,
+                   input_tokens, cache_read_tokens, output_tokens, reasoning_tokens,
+                   cost_cny, cache_cost_cny, uncached_cost_cny, output_cost_cny,
+                   reasoning_cost_cny, ttft_ms, end_time_ms, error_type,
+                   start_time_ms
+            FROM spans
+            WHERE session_id = @session_id
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
+            ORDER BY start_time_ms;
+            """;
+        command.Parameters.AddWithValue("@session_id", sessionId);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<CallSample>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var startMs = reader.GetInt64(14);
+            var endMs = reader.IsDBNull(12) ? 0 : reader.GetInt64(12);
+            rows.Add(new CallSample(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3),
+                reader.GetInt64(4),
+                reader.GetInt64(5),
+                reader.IsDBNull(6) ? null : reader.GetDouble(6),
+                reader.IsDBNull(7) ? 0 : reader.GetDouble(7),
+                reader.IsDBNull(8) ? 0 : reader.GetDouble(8),
+                reader.IsDBNull(9) ? 0 : reader.GetDouble(9),
+                reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
+                reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                endMs > 0 && endMs > startMs ? endMs - startMs : null,
+                reader.IsDBNull(13) ? null : reader.GetString(13),
+                startMs));
+        }
+
+        return rows;
+    }
+
     private static IReadOnlyList<CallRow> ReadCallRows(SqliteCommand command)
     {
         var rows = new List<CallRow>();
@@ -1606,7 +1667,12 @@ public sealed partial class SpanStore
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(reasoning_tokens), 0),
                 COALESCE(SUM(cost_cny), 0),
+                COALESCE(SUM(cache_cost_cny), 0),
+                COALESCE(SUM(uncached_cost_cny), 0),
+                COALESCE(SUM(output_cost_cny), 0),
+                COALESCE(SUM(reasoning_cost_cny), 0),
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
                 AVG(ttft_ms),
                 COUNT(ttft_ms),
@@ -1638,11 +1704,16 @@ public sealed partial class SpanStore
                 InputTokens = inputTokens,
                 CacheReadTokens = cacheReadTokens,
                 OutputTokens = reader.GetInt64(4),
-                CostCny = reader.GetDouble(5),
-                UnpricedCalls = reader.GetInt64(6),
-                AvgTtftMs = reader.IsDBNull(7) ? null : reader.GetDouble(7),
-                TtftSamples = reader.GetInt64(8),
-                TokensPerSecond = reader.IsDBNull(9) ? null : reader.GetDouble(9),
+                ReasoningTokens = reader.GetInt64(5),
+                CostCny = reader.GetDouble(6),
+                CacheCostCny = reader.GetDouble(7),
+                UncachedCostCny = reader.GetDouble(8),
+                OutputCostCny = reader.GetDouble(9),
+                ReasoningCostCny = reader.GetDouble(10),
+                UnpricedCalls = reader.GetInt64(11),
+                AvgTtftMs = reader.IsDBNull(12) ? null : reader.GetDouble(12),
+                TtftSamples = reader.GetInt64(13),
+                TokensPerSecond = reader.IsDBNull(14) ? null : reader.GetDouble(14),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -2489,6 +2560,11 @@ public sealed partial class SpanStore
     {
         var connection = new SqliteConnection(_connectionString);
         connection.Open();
+        // Pooled private caches would otherwise reserve SQLite's default 2 MB
+        // each; 1 MB is plenty for the small tables this server keeps.
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA cache_size = -1024;";
+        command.ExecuteNonQuery();
         return connection;
     }
 

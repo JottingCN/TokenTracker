@@ -848,6 +848,20 @@ export function ModelSettingsDrawer({ open, onClose }: ModelSettingsDrawerProps)
     },
   ];
 
+  const priceColumn = (
+    labelKey: Parameters<typeof t>[0],
+    field: 'uncachedInput' | 'cachedInput' | 'cacheWrite' | 'output',
+  ): ColumnsType<ModelSettingsRow>[number] => ({
+    title: t(labelKey),
+    key: field,
+    width: field === 'uncachedInput' ? 112 : 100,
+    align: 'right',
+    render: (_, row) =>
+      row.priced
+        ? money.toPriceInput(row[field] ?? 0).toFixed(money.pricePrecision)
+        : '-',
+  });
+
   const modelColumns: ColumnsType<ModelSettingsRow> = [
     {
       title: t('icon'),
@@ -859,7 +873,7 @@ export function ModelSettingsDrawer({ open, onClose }: ModelSettingsDrawerProps)
     {
       title: t('model.id'),
       key: 'model',
-      width: 300,
+      width: 280,
       render: (_, row) => (
         <Space size={6} wrap={false} style={{ maxWidth: '100%' }}>
           <Typography.Text
@@ -880,7 +894,7 @@ export function ModelSettingsDrawer({ open, onClose }: ModelSettingsDrawerProps)
     {
       title: t('provider'),
       key: 'provider',
-      width: 200,
+      width: 180,
       render: (_, row) => (
         <Space size={6}>
           <span>{providerOf(row.model, row.provider)}</span>
@@ -891,21 +905,23 @@ export function ModelSettingsDrawer({ open, onClose }: ModelSettingsDrawerProps)
     {
       title: t('calls'),
       key: 'calls',
-      width: 90,
+      width: 84,
       align: 'right',
       render: (_, row) => Math.round(row.calls).toLocaleString(),
     },
     {
-      title: `${t('input')} / ${t('output')}`,
+      title: (
+        <Tooltip title={t('base.price.hint')}>
+          <span>{t('price.per.million')}</span>
+        </Tooltip>
+      ),
       key: 'price',
-      width: 190,
-      align: 'right',
-      render: (_, row) =>
-        row.priced
-          ? `${money.toPriceInput(row.cachedInput).toFixed(money.pricePrecision)} / ${money
-              .toPriceInput(row.output)
-              .toFixed(money.pricePrecision)}`
-          : '-',
+      children: [
+        priceColumn('uncached.input', 'uncachedInput'),
+        priceColumn('cached.input', 'cachedInput'),
+        priceColumn('cache.write', 'cacheWrite'),
+        priceColumn('output', 'output'),
+      ],
     },
     {
       title: t('actions'),
@@ -994,7 +1010,7 @@ export function ModelSettingsDrawer({ open, onClose }: ModelSettingsDrawerProps)
                     )}
                     loading={loading}
                     pagination={false}
-                    scroll={{ x: 990, y: tableHeight(400) }}
+                    scroll={{ x: 1170, y: tableHeight(400) }}
                   />
                 </Card>
               </div>

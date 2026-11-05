@@ -368,9 +368,11 @@ app.MapGet("/api/session/{sessionId}", (
 
 app.MapGet("/api/session/{sessionId}/trace", (
     string sessionId,
-    string? source) =>
+    string? source,
+    int? offset,
+    int? limit) =>
     Results.Json(
-        service.GetTrace(sessionId, source),
+        service.GetTrace(sessionId, source, offset ?? 0, limit ?? 20),
         AppJsonContext.Default.TracePayload));
 
 app.MapGet("/api/calls", (

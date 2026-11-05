@@ -98,18 +98,63 @@ export function modelColumns(
       align: 'right',
     },
     {
-      title: t('input.cached'),
-      dataIndex: 'tokensText',
-      key: 'tokens',
-      width: 180,
+      title: t('input'),
+      key: 'input',
+      width: 100,
+      align: 'right',
+      render: (_, row) =>
+        tokenWithCost(
+          row.inputText,
+          formatMoney(row.uncachedCostCny + row.cacheCostCny),
+        ),
+    },
+    {
+      title: t('cached'),
+      key: 'cache',
+      width: 100,
+      align: 'right',
+      render: (_, row) =>
+        tokenWithCost(row.cacheText, formatMoney(row.cacheCostCny)),
+    },
+    {
+      title: t('hit'),
+      dataIndex: 'hitRateText',
+      key: 'hitRate',
+      width: 70,
       align: 'right',
     },
     {
-      title: t('hit.rate'),
-      dataIndex: 'hitRateText',
-      key: 'hitRate',
+      title: (
+        <Tooltip
+          title={t('output.tokens.include.reasoning.tokens.and.are.priced')}
+        >
+          {t('output')}
+        </Tooltip>
+      ),
+      key: 'output',
       width: 90,
       align: 'right',
+      render: (_, row) =>
+        tokenWithCost(row.outputText, formatMoney(row.outputCostCny)),
+    },
+    {
+      title: (
+        <Tooltip
+          title={t('reasoning.tokens.are.part.of.output.their.cost.is.2')}
+        >
+          {t('reasoning')}
+        </Tooltip>
+      ),
+      key: 'reasoning',
+      width: 90,
+      align: 'right',
+      render: (_, row) =>
+        tokenWithCost(
+          row.reasoningText,
+          row.reasoningTokens > 0
+            ? formatMoney(row.reasoningCostCny)
+            : '-',
+        ),
     },
     {
       title: (
@@ -120,7 +165,7 @@ export function modelColumns(
         </Tooltip>
       ),
       key: 'ttft',
-      width: 100,
+      width: 96,
       align: 'right',
       render: (_, row) => formatLatency(row.avgTtftMs),
     },
@@ -133,14 +178,14 @@ export function modelColumns(
         </Tooltip>
       ),
       key: 'speed',
-      width: 110,
+      width: 104,
       align: 'right',
       render: (_, row) => formatSpeed(row.tokensPerSecond),
     },
     {
       title: t('estimated.cost'),
       key: 'cost',
-      width: 120,
+      width: 110,
       align: 'right',
       render: (_, row) => formatCost(row.costCny, row.unpricedCalls),
     },
