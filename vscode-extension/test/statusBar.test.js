@@ -63,6 +63,7 @@ const {
   selectLatestSession,
   sessionName,
   truncateForTip,
+  renderStatusTemplate,
   StatusBarController,
 } = require(path.join(__dirname, '..', 'out', 'statusBar.js'));
 
@@ -213,6 +214,122 @@ test('tooltip carries no workspace attribution text', () => {
   controller.dispose();
 });
 
+test('asks for a server restart after repeated failures', async () => {
+  let restarts = 0;
+  const controller = new StatusBarController(
+    1, // closed port: every poll fails immediately
+    4,
+    '全部',
+    [],
+    { unit: 'cny', usdRate: 7.2, creditRate: 0.01 },
+    '$(pulse) {hit}',
+    () => {},
+    () => {},
+    () => {
+      restarts += 1;
+    },
+  );
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await controller.poll();
+  }
+  assert.equal(restarts, 1, 'third failure should request one restart');
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await controller.poll();
+  }
+  assert.equal(restarts, 1, 'the cooldown must suppress a second restart');
+  controller.dispose();
+});
+
+test('status bar reports the newest main-agent model but can scope cost', () => {
+  const money = { unit: 'cny', usdRate: 7.2, creditRate: 0.01 };
+  const summary = session('session-1', root, 20, {
+    model: 'session-model',
+    inputTokens: 1_000,
+    cacheReadTokens: 500,
+    hitRate: 0.5,
+    avgTtftMs: 900,
+    tokensPerSecond: 10,
+    costCny: 1.5,
+    unpricedCalls: 0,
+    calls: 10,
+    outputTokens: 100,
+    reasoningTokens: 0,
+    avgDurationMs: 2_000,
+  });
+  const details = {
+    models: [
+      {
+        model: 'older-model',
+        calls: 6,
+        inputTokens: 600,
+        cacheReadTokens: 450,
+        outputTokens: 60,
+        reasoningTokens: 0,
+        costCny: 1.1,
+        unpricedCalls: 0,
+        cacheCostCny: 0,
+        uncachedCostCny: 0,
+        outputCostCny: 0,
+        reasoningCostCny: 0,
+        ttftMs: 1_500,
+        tokensPerSecond: 5,
+        firstSeenMs: 10,
+        lastSeenMs: 100,
+        totalDurationMs: 12_000,
+        durationSamples: 6,
+        ttftSamples: 6,
+        generationOutput: 0,
+        generationMs: 0,
+      },
+      {
+        model: 'newest-model',
+        calls: 4,
+        inputTokens: 400,
+        cacheReadTokens: 100,
+        outputTokens: 40,
+        reasoningTokens: 0,
+        costCny: 0.4,
+        unpricedCalls: 0,
+        cacheCostCny: 0,
+        uncachedCostCny: 0,
+        outputCostCny: 0,
+        reasoningCostCny: 0,
+        ttftMs: 250,
+        tokensPerSecond: 42,
+        firstSeenMs: 110,
+        lastSeenMs: 200,
+        totalDurationMs: 800,
+        durationSamples: 4,
+        ttftSamples: 4,
+        generationOutput: 0,
+        generationMs: 0,
+      },
+    ],
+    events: [],
+    tools: [],
+    agentRuns: [],
+    hooks: [],
+    signalHealth: { agentRuns: 0, hookEvents: 0, metricPoints: 0, lastSignalText: '-' },
+  };
+
+  const template = '{model} | {hit} | {ttft} | {speed} | {cost}';
+  assert.equal(
+    renderStatusTemplate(template, summary, '全部', money, details, 'session'),
+    'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥1.50',
+  );
+  assert.equal(
+    renderStatusTemplate(template, summary, '全部', money, details, 'model'),
+    'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥0.40',
+  );
+  // Without the breakdown the session aggregate is the only available source.
+  assert.equal(
+    renderStatusTemplate(template, summary, '全部', money, undefined, 'session'),
+    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
+  );
+});
+
 test('names an untitled session with the localized fallback', () => {
   assert.equal(
     sessionName({ sessionId: 'e2940513-38f5-45a0-bd49-57c2a13071ab' }),
@@ -236,4 +353,85 @@ test('clips long tool names so the tip cannot overflow', () => {
     truncateForTip('中'.repeat(60), 48),
     `${'中'.repeat(23)}…`,
   );
+});
+
+test('renders the tip tool list with clipped names', () => {
+  const controller = new StatusBarController(
+    0,
+    4,
+    '全部',
+    [root],
+    { unit: 'cny', usdRate: 7.2, creditRate: 0.01 },
+    '$(pulse) {hit}',
+    () => {},
+  );
+
+  const summary = session('session-1', root, 20, {
+    title: '会话标题',
+    firstSeenMs: 20,
+    inputText: '1,000',
+    cacheText: '500',
+    outputText: '10',
+    reasoningText: '0',
+    uncachedCostCny: 0.01,
+    cacheCostCny: 0.001,
+    outputCostCny: 0.002,
+    reasoningCostCny: 0,
+    hitRateText: '50%',
+    avgTtftText: '-',
+    tokensPerSecondText: '-',
+    calls: 1,
+    events: 0,
+  });
+
+  controller.updateTooltip(summary, {
+    models: [],
+    tools: [
+      {
+        // Raw 64-hex name with the server-resolved label the tip must show.
+        tool: 'f'.repeat(64),
+        toolDisplayText: 'screenshotPage',
+        calls: 3,
+        avgDurationMs: 12,
+        maxDurationMs: 30,
+        errorCount: 0,
+        lastSeenMs: 20,
+        toolTypes: ['function'],
+        editTypes: [],
+        skillNames: [],
+        mcpServerHashes: [],
+        mcpToolNames: [],
+        errorTypes: [],
+        agentNames: [],
+      },
+      {
+        tool: 'g'.repeat(64),
+        toolDisplayText: 'g'.repeat(64),
+        calls: 1,
+        avgDurationMs: 5,
+        maxDurationMs: 5,
+        errorCount: 0,
+        lastSeenMs: 20,
+        toolTypes: ['function'],
+        editTypes: [],
+        skillNames: [],
+        mcpServerHashes: [],
+        mcpToolNames: [],
+        errorTypes: [],
+        agentNames: [],
+      },
+    ],
+    hooks: [],
+    agentRuns: [],
+    events: [],
+    calls: [],
+  });
+
+  const tooltip = statusBarItem.tooltip.value;
+  assert.ok(tooltip.includes('- **screenshotPage**'));
+  assert.ok(!tooltip.includes('f'.repeat(18)));
+  // Unresolved hashes still respect the 18-column cap.
+  assert.ok(tooltip.includes(`- **${'g'.repeat(17)}…**`));
+  assert.ok(!tooltip.includes('g'.repeat(18)));
+  controller.dispose();
 });

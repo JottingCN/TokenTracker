@@ -127,6 +127,7 @@ public sealed partial record CallRow
     public string KindText => IsMain ? "main" : "util";
     public string SourceText => DisplayFormat.Source(Source);
     public string TtftText => DisplayFormat.Duration(TtftMs);
+    public string DurationText => DisplayFormat.Duration(DurationMs);
     public string ErrorText => string.IsNullOrWhiteSpace(ErrorType)
         ? "-"
         : ErrorType;
@@ -224,6 +225,7 @@ public sealed class ToolCallRow
 
     public string SourceText => DisplayFormat.Source(Source);
     public string CallsText => DisplayFormat.Number(Calls);
+    public string ToolDisplayText => Otlp.ToolNameResolver.Display(Tool);
     public string AvgDurationText => DisplayFormat.Duration(AvgDurationMs);
     public string MaxDurationText => DisplayFormat.Duration(MaxDurationMs);
     public string LastSeenText => DisplayFormat.LocalTime(LastSeenMs);
@@ -359,7 +361,7 @@ public sealed record TraceNodeRow
 
     public string Label => string.IsNullOrWhiteSpace(Tool)
         ? Name ?? Operation
-        : $"{Operation} {Tool}";
+        : $"{Operation} {Otlp.ToolNameResolver.Display(Tool)}";
     public string SourceText => DisplayFormat.Source(Source);
     public string DurationText => DisplayFormat.Duration(DurationMs);
 }

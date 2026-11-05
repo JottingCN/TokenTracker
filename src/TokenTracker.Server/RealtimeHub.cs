@@ -8,6 +8,22 @@ public sealed class RealtimeHub
 
     private readonly ConcurrentDictionary<long, RealtimeConnection> _connections = new();
     private long _nextId;
+    private long _lastHttpActivityMs;
+
+    // Polling clients (no WebSocket) never appear in _connections, so HTTP API
+    // calls also count as activity; otherwise the server exits under a live client.
+    public void RecordHttpActivity() =>
+        Interlocked.Exchange(
+            ref _lastHttpActivityMs,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+    public bool HasRecentHttpActivity(TimeSpan window)
+    {
+        var last = Interlocked.Read(ref _lastHttpActivityMs);
+        return last > 0 &&
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - last <
+                (long)window.TotalMilliseconds;
+    }
 
     public RealtimeConnection Register()
     {

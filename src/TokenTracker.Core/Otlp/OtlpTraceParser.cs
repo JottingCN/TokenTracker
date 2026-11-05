@@ -564,12 +564,20 @@ public static partial class OtlpTraceParser
                 : copilot.Value);
         }
 
-        var seconds =
-            ParseDouble(attributes, "gen_ai.response.time_to_first_chunk") ??
+        // Documented TTFT beats the generic first-chunk fallback; the chunk value
+        // is often the response completion time, so only use it when nothing else
+        // exists and let the >=90% discard rule in the caller drop it.
+        var explicitTtft =
             ParseDouble(attributes, "gen_ai.server.time_to_first_token") ??
             ParseDouble(attributes, "gen_ai.response.time_to_first_token");
-        return seconds is > 0
-            ? SanitizeDurationMs(seconds.Value * 1_000)
+        if (explicitTtft is > 0)
+        {
+            return SanitizeDurationMs(explicitTtft.Value * 1_000);
+        }
+
+        var chunk = ParseDouble(attributes, "gen_ai.response.time_to_first_chunk");
+        return chunk is > 0
+            ? SanitizeDurationMs(chunk.Value * 1_000)
             : null;
     }
 

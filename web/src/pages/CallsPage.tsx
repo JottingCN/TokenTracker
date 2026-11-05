@@ -24,6 +24,7 @@ interface CallsPageProps {
   fromMs?: number;
   toMs?: number;
   dashboard: DashboardPayload | null;
+  initialQuery?: string;
   onOpenSession: (sessionId: string) => void;
 }
 
@@ -32,6 +33,7 @@ export function CallsPage({
   fromMs,
   toMs,
   dashboard,
+  initialQuery,
   onOpenSession,
 }: CallsPageProps) {
   useMoney();
@@ -42,8 +44,8 @@ export function CallsPage({
   const [period, setPeriod] = useState<'all' | 'peak' | 'idle' | 'flat'>('all');
   const [errorFilter, setErrorFilter] = useState<'all' | 'error' | 'ok'>('all');
   const [agent, setAgent] = useState('');
-  const [search, setSearch] = useState('');
-  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState(initialQuery ?? '');
+  const [query, setQuery] = useState(initialQuery ?? '');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [tableHostRef, tableHeightPx] = useAutoTableHeight(60);
@@ -105,6 +107,9 @@ export function CallsPage({
   };
 
   const total = data?.total ?? 0;
+  // Before the first snapshot arrives the count is unknown; showing 0 would look
+  // like an empty result set right after a deep link such as ?q=<sessionId>.
+  const totalLabel = data ? total : '…';
   const onPageChange = (nextPage: number, nextPageSize: number) => {
     if (nextPageSize !== pageSize) {
       setPageSize(nextPageSize);
@@ -118,7 +123,7 @@ export function CallsPage({
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card
         size="small"
-        title={`${tr('检索结果', 'Results')}(${total})`}
+        title={`${tr('检索结果', 'Results')}(${totalLabel})`}
         extra={
           <CardPagination
             current={page}
@@ -229,7 +234,7 @@ export function CallsPage({
               dataSource={data?.calls ?? []}
               loading={!data}
               pagination={false}
-              scroll={{ x: 1800, y: tableHeightPx }}
+              scroll={{ x: 1900, y: tableHeightPx }}
             />
           </div>
         )}

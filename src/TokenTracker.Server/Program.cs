@@ -122,6 +122,18 @@ if (store.GetSetting("metric_attribution_v1") != "1")
 
 var hub = new RealtimeHub();
 metadata.AhpStatusChanged += hub.NotifyChanged;
+
+// Health probes must not keep an otherwise-unused server alive, but every other
+// request (including polling clients without a WebSocket) counts as activity.
+app.Use(async (context, next) =>
+{
+    if (!context.Request.Path.StartsWithSegments("/healthz"))
+    {
+        hub.RecordHttpActivity();
+    }
+
+    await next();
+});
 var idleExitSeconds = 0;
 if (int.TryParse(
         Environment.GetEnvironmentVariable("TOKENTRACKER_IDLE_EXIT_SECONDS"),
@@ -186,6 +198,10 @@ _ = Task.Run(async () =>
 
 if (idleExitSeconds > 0)
 {
+    // A polling client issues a request every few seconds and never shows up in
+    // ActiveConnections, so HTTP activity within this window also counts.
+    var activityWindow = TimeSpan.FromSeconds(
+        Math.Max(20, idleExitSeconds * 2));
     _ = Task.Run(async () =>
     {
         var idleSince = DateTime.UtcNow;
@@ -193,7 +209,8 @@ if (idleExitSeconds > 0)
         while (true)
         {
             await Task.Delay(TimeSpan.FromSeconds(Math.Min(5, idleExitSeconds)));
-            if (hub.ActiveConnections > 0)
+            if (hub.ActiveConnections > 0 ||
+                hub.HasRecentHttpActivity(activityWindow))
             {
                 hadClients = true;
                 idleSince = DateTime.UtcNow;

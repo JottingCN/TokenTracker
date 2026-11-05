@@ -34,8 +34,8 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
         ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
         : '-',
       hint: tr(
-        '输入 tokens 与下方费用均为总计（含缓存命中部分）；缓存命中、思考为专项展示。估算费用 = 输入金额 + 输出金额。',
-        'Input tokens and the cost shown are totals including cached tokens; cached and reasoning are special breakdowns. Estimated cost = input cost + output cost.',
+        '输入 tokens 与下方费用均为总计（含缓存命中部分）。',
+        'Input tokens and the cost shown are totals including cached tokens.',
       ),
     },
     {
@@ -78,6 +78,10 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
     {
       label: tr('估算费用', 'Estimated cost'),
       value: summary ? formatMoney(summary.costCny) : '-',
+      hint: tr(
+        '估算费用 = 输入金额 + 输出金额；缓存命中、思考为专项展示，不重复累加。',
+        'Estimated cost = input cost + output cost; cached and reasoning are special breakdowns and are not added again.',
+      ),
     },
     lastCard ?? {
       label: tr('会话数', 'Sessions'),

@@ -22,7 +22,10 @@
   "config.costUnit.credit": "Credits",
   "config.creditRate": "CNY value of one credit.",
   "config.usdRate": "CNY value of one US dollar.",
-  "config.statusBarFormat": "Status bar template. Placeholders: {icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turns} {hooks} {range} {model} {session}. Add a format after a colon, e.g. {hit:0.00%}, {ttft:0.0s}, {speed:0.0}, {cost:0.000000}, {calls:0}.",
+  "config.statusBarFormat": "Status bar template. Placeholders: {icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turns} {hooks} {range} {model} {session}. Add a format after a colon, e.g. {hit:0.00%}, {ttft:0.0s}, {speed:0.0}, {cost:0.000000}, {calls:0}. Metrics other than {cost} come from the newest main-agent model.",
+  "config.statusBarCost": "Which cost {cost} reports.",
+  "config.statusBarCost.session": "Whole session total.",
+  "config.statusBarCost.model": "Newest main-agent model only.",
   "config.group.display": "Token Tracker: Status bar and display",
   "config.group.server": "Token Tracker: Server"
 }

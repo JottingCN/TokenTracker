@@ -340,38 +340,16 @@ public sealed class DashboardService
         EnsureCombined(source);
         var detailSource = source == "combined" ? null : source;
         var calls = _store.GetCallsForSession(sessionId, source: source).ToList();
-        var ttftCalls = calls.Where(call => call.TtftMs is > 0).ToList();
-        var generationCalls = calls
-            .Where(call => call.DurationMs is > 0 &&
-                           call.OutputTokens >= 5 &&
-                           call.TtftMs is long ttft &&
-                           call.DurationMs - ttft >= 50)
+        var summary = BuildSummary(calls);
+        var modelSummaries = calls
+            .GroupBy(call => call.Model, StringComparer.Ordinal)
+            .Select(group => new SessionModelPayload(
+                group.Key,
+                BuildSummary(group.ToList())))
+            .OrderByDescending(row => row.Summary.CostCny)
+            .ThenByDescending(row => row.Summary.InputTokens)
+            .ThenBy(row => row.Model, StringComparer.Ordinal)
             .ToList();
-        var generationMs = generationCalls.Sum(
-            call => call.DurationMs!.Value - call.TtftMs!.Value);
-        var summary = new SummaryDto
-        {
-            Calls = calls.Count,
-            InputTokens = calls.Sum(call => call.InputTokens),
-            CacheReadTokens = calls.Sum(call => call.CacheReadTokens),
-            OutputTokens = calls.Sum(call => call.OutputTokens),
-            ReasoningTokens = calls.Sum(call => call.ReasoningTokens),
-            Sessions = calls.Count > 0 ? 1 : 0,
-            CostCny = calls.Sum(call => call.CostCny ?? 0),
-            CacheCostCny = calls.Sum(call => call.CacheCostCny),
-            UncachedCostCny = calls.Sum(call => call.UncachedCostCny),
-            OutputCostCny = calls.Sum(call => call.OutputCostCny),
-            ReasoningCostCny = calls.Sum(call => call.ReasoningCostCny),
-            UnpricedCalls = calls.Count(call => call.CostCny is null),
-            AvgTtftMs = ttftCalls.Count > 0
-                ? ttftCalls.Average(call => call.TtftMs!.Value)
-                : null,
-            TtftSamples = ttftCalls.Count,
-            TokensPerSecond = generationMs > 0
-                ? generationCalls.Sum(call => call.OutputTokens) * 1_000d /
-                  generationMs
-                : null,
-        };
 
         var events = _store.GetSessionEvents(sessionId, detailSource).ToList();
         var chatEvents = calls
@@ -406,6 +384,7 @@ public sealed class DashboardService
 
         return new SessionPayload(
             summary,
+            modelSummaries,
             calls,
             events,
             tools,
@@ -420,6 +399,42 @@ public sealed class DashboardService
             sessionId,
             metadata?.Title,
             metadata?.WorkspacePath);
+    }
+
+    private static SummaryDto BuildSummary(IReadOnlyCollection<CallRow> calls)
+    {
+        var ttftCalls = calls.Where(call => call.TtftMs is > 0).ToList();
+        var generationCalls = calls
+            .Where(call => call.DurationMs is > 0 &&
+                           call.OutputTokens >= 5 &&
+                           call.TtftMs is long ttft &&
+                           call.DurationMs - ttft >= 50)
+            .ToList();
+        var generationMs = generationCalls.Sum(
+            call => call.DurationMs!.Value - call.TtftMs!.Value);
+        return new SummaryDto
+        {
+            Calls = calls.Count,
+            InputTokens = calls.Sum(call => call.InputTokens),
+            CacheReadTokens = calls.Sum(call => call.CacheReadTokens),
+            OutputTokens = calls.Sum(call => call.OutputTokens),
+            ReasoningTokens = calls.Sum(call => call.ReasoningTokens),
+            Sessions = calls.Count > 0 ? 1 : 0,
+            CostCny = calls.Sum(call => call.CostCny ?? 0),
+            CacheCostCny = calls.Sum(call => call.CacheCostCny),
+            UncachedCostCny = calls.Sum(call => call.UncachedCostCny),
+            OutputCostCny = calls.Sum(call => call.OutputCostCny),
+            ReasoningCostCny = calls.Sum(call => call.ReasoningCostCny),
+            UnpricedCalls = calls.Count(call => call.CostCny is null),
+            AvgTtftMs = ttftCalls.Count > 0
+                ? ttftCalls.Average(call => call.TtftMs!.Value)
+                : null,
+            TtftSamples = ttftCalls.Count,
+            TokensPerSecond = generationMs > 0
+                ? generationCalls.Sum(call => call.OutputTokens) * 1_000d /
+                  generationMs
+                : null,
+        };
     }
 
     public TracePayload GetTrace(string sessionId, string? source = null)

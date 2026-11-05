@@ -54,7 +54,7 @@ function loadSiderCollapsed(): boolean {
 
 type Route =
   | { view: 'dashboard' }
-  | { view: 'calls' }
+  | { view: 'calls'; query?: string }
   | { view: 'model'; id: string }
   | { view: 'session'; id: string; fromModel?: string };
 
@@ -64,7 +64,9 @@ function parseRoute(): Route {
   const parts = path.split('/').filter(Boolean);
 
   if (parts[0] === 'calls') {
-    return { view: 'calls' };
+    const params = new URLSearchParams(query ?? '');
+    const search = params.get('q')?.trim();
+    return { view: 'calls', query: search || undefined };
   }
   if (parts[0] === 'model' && parts[1]) {
     return { view: 'model', id: decodeURIComponent(parts[1]) };
@@ -343,6 +345,10 @@ export default function App() {
   const openSessionFromModel = (sessionId: string) => {
     const params = route.view === 'model' ? `?model=${encodeURIComponent(route.id)}` : '';
     location.hash = `#/session/${encodeURIComponent(sessionId)}${params}`;
+  };
+
+  const openCallsForSession = (sessionId: string) => {
+    location.hash = `#/calls?q=${encodeURIComponent(sessionId)}`;
   };
 
   const activeSessionId = route.view === 'session' ? route.id : null;
@@ -694,10 +700,12 @@ export default function App() {
               )}
               {route.view === 'calls' && (
                 <CallsPage
+                  key={route.query ?? ''}
                   range={numericRange}
                   fromMs={customFrom}
                   toMs={customTo}
                   dashboard={dashboard}
+                  initialQuery={route.query}
                   onOpenSession={openSessionFromDashboard}
                 />
               )}
@@ -717,6 +725,7 @@ export default function App() {
                   sessionId={route.id}
                   range={numericRange}
                   onMeta={setSessionMeta}
+                  onOpenCalls={openCallsForSession}
                 />
               )}
             </div>

@@ -439,6 +439,22 @@ export function callColumns(
       title: (
         <Tooltip
           title={translate(
+            '本次调用总耗时（请求发出到响应结束）',
+            'Total duration of this call (request to response completion).',
+          )}
+        >
+          {translate('耗时', 'Duration')}
+        </Tooltip>
+      ),
+      key: 'duration',
+      width: 100,
+      align: 'right',
+      render: (_, row) => row.durationText,
+    },
+    {
+      title: (
+        <Tooltip
+          title={translate(
             '首次响应时间（TTFT）：请求发出到收到首个输出 token',
             'Time to first token (TTFT): from request to the first output token.',
           )}

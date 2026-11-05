@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
+  DownOutlined,
+  FilterOutlined,
   FullscreenOutlined,
   ReloadOutlined,
+  UpOutlined,
 } from '@ant-design/icons';
 import {
   Button,
@@ -12,6 +15,7 @@ import {
   Row,
   Space,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -42,12 +46,14 @@ interface SessionPageProps {
   sessionId: string;
   range: number;
   onMeta?: (meta: { title: string; subtitle?: string }) => void;
+  onOpenCalls?: (sessionId: string) => void;
 }
 
 export function SessionPage({
   sessionId,
   range,
   onMeta,
+  onOpenCalls,
 }: SessionPageProps) {
   useMoney();
   const { lang, tr } = useUi();
@@ -56,6 +62,8 @@ export function SessionPage({
     sessionId.length > 20 ? `${sessionId.slice(0, 8)}…` : sessionId;
   const listHeight = useViewportHeight(0.3, 240, 420);
   const [traceExpanded, setTraceExpanded] = useState(false);
+  const [activeScope, setActiveScope] = useState('all');
+  const [openPanels, setOpenPanels] = useState<string[]>([]);
   const { data, refresh } = useRealtime<SessionPayload>({
     view: 'session',
     id: sessionId,
@@ -66,7 +74,22 @@ export function SessionPage({
     data?.events.reduce((total, row) => total + row.count, 0) ?? 0;
   const toolTotal =
     data?.tools.reduce((total, row) => total + row.calls, 0) ?? 0;
-  const summary = data?.summary;
+  const modelScopes = data?.models ?? [];
+  const scopeSummary =
+    activeScope === 'all'
+      ? data?.summary
+      : modelScopes.find((row) => row.model === activeScope)?.summary;
+  const summary = scopeSummary;
+  // The trace is fetched separately, so it needs its own signal to re-read after
+  // new spans arrive over the WebSocket.
+  const traceVersion = data
+    ? [
+        data.calls.length,
+        data.calls.reduce((max, call) => Math.max(max, call.startTimeMs), 0),
+        data.events.reduce((total, row) => total + row.count, 0),
+        data.tools.reduce((total, row) => total + row.calls, 0),
+      ].join('|')
+    : '';
   const pageTitle =
     data?.title?.trim() || `${tr('未命名', 'Unnamed')} · ${shortId}`;
   const pageSubtitle = data?.workspacePath || sessionId;
@@ -74,6 +97,18 @@ export function SessionPage({
   useEffect(() => {
     onMeta?.({ title: pageTitle, subtitle: pageSubtitle });
   }, [onMeta, pageTitle, pageSubtitle]);
+
+  useEffect(() => {
+    setActiveScope('all');
+  }, [sessionId]);
+
+  const togglePanel = (panel: string) => {
+    setOpenPanels((current) =>
+      current.includes(panel)
+        ? current.filter((key) => key !== panel)
+        : [...current, panel],
+    );
+  };
 
   const eventColumns: ColumnsType<SessionEventRow> = [
     {
@@ -122,10 +157,14 @@ export function SessionPage({
   const toolColumns: ColumnsType<ToolCallRow> = [
     {
       title: tr('工具', 'Tool'),
-      dataIndex: 'tool',
       key: 'tool',
       width: 180,
       ellipsis: true,
+      render: (_, row) => (
+        <Tooltip title={row.tool}>
+          <span>{row.toolDisplayText}</span>
+        </Tooltip>
+      ),
     },
     {
       title: tr('类型', 'Type'),
@@ -435,16 +474,46 @@ export function SessionPage({
             {sessionId}
           </Typography.Text>
         </Space>
-        <Tooltip title={tr('刷新标题和元数据', 'Refresh title and metadata')}>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            onClick={refresh}
-          >
-            {tr('刷新', 'Refresh')}
-          </Button>
-        </Tooltip>
+        <Space size={6}>
+          <Tooltip title={tr('在调用明细分页中筛选该会话', 'Filter call details by this session')}>
+            <Button
+              size="small"
+              icon={<FilterOutlined />}
+              disabled={!onOpenCalls}
+              onClick={() => onOpenCalls?.(sessionId)}
+            >
+              {tr('查看明细', 'View calls')}
+            </Button>
+          </Tooltip>
+          <Tooltip title={tr('刷新标题和元数据', 'Refresh title and metadata')}>
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              onClick={refresh}
+            >
+              {tr('刷新', 'Refresh')}
+            </Button>
+          </Tooltip>
+        </Space>
       </div>
+
+      {modelScopes.length > 1 && (
+        <Tabs
+          size="small"
+          activeKey={activeScope}
+          onChange={setActiveScope}
+          items={[
+            {
+              key: 'all',
+              label: `${tr('全部模型', 'All models')}(${modelScopes.length})`,
+            },
+            ...modelScopes.map((row) => ({
+              key: row.model,
+              label: row.model,
+            })),
+          ]}
+        />
+      )}
 
       <SummaryCards
         summary={summary ?? null}
@@ -552,51 +621,67 @@ export function SessionPage({
         size="small"
         title={`${tr('Agent 运行', 'Agent runs')}(${data?.agentRuns.length ?? 0})`}
         extra={
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {tr('root tokens 不计入合计', 'Root tokens excluded from totals')}
-          </Typography.Text>
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {tr('root tokens 不计入合计', 'Root tokens excluded from totals')}
+            </Typography.Text>
+            <CollapseToggle
+              panel="agents"
+              open={openPanels.includes('agents')}
+              onToggle={togglePanel}
+            />
+          </Space>
         }
       >
-        {data && data.agentRuns.length === 0 ? (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={tr('暂无 Agent 运行数据', 'No agent runs yet')}
-          />
-        ) : (
-          <Table
-            size="small"
-            rowKey={(row) => `${row.traceId}:${row.spanId}`}
-            columns={agentRunColumns}
-            dataSource={data?.agentRuns ?? []}
-            loading={!data}
-            pagination={false}
-            scroll={{ x: 1500, y: listHeight }}
-          />
-        )}
+        {openPanels.includes('agents') &&
+          (data && data.agentRuns.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={tr('暂无 Agent 运行数据', 'No agent runs yet')}
+            />
+          ) : (
+            <Table
+              size="small"
+              rowKey={(row) => `${row.traceId}:${row.spanId}`}
+              columns={agentRunColumns}
+              dataSource={data?.agentRuns ?? []}
+              loading={!data}
+              pagination={false}
+              scroll={{ x: 1500, y: listHeight }}
+            />
+          ))}
       </Card>
 
       <Card
         size="small"
         title={`${tr('Hook 执行', 'Hook executions')}(${data?.hooks.length ?? 0})`}
+        extra={
+          <CollapseToggle
+            panel="hooks"
+            open={openPanels.includes('hooks')}
+            onToggle={togglePanel}
+          />
+        }
       >
-        {data && data.hooks.length === 0 ? (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={tr('暂无 Hook 数据', 'No hook data yet')}
-          />
-        ) : (
-          <Table
-            size="small"
-            rowKey={(row) =>
-              `${row.hookType}:${row.decision}:${row.resultKind}`
-            }
-            columns={hookColumns}
-            dataSource={data?.hooks ?? []}
-            loading={!data}
-            pagination={false}
-            scroll={{ x: 1200, y: listHeight }}
-          />
-        )}
+        {openPanels.includes('hooks') &&
+          (data && data.hooks.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={tr('暂无 Hook 数据', 'No hook data yet')}
+            />
+          ) : (
+            <Table
+              size="small"
+              rowKey={(row) =>
+                `${row.hookType}:${row.decision}:${row.resultKind}`
+              }
+              columns={hookColumns}
+              dataSource={data?.hooks ?? []}
+              loading={!data}
+              pagination={false}
+              scroll={{ x: 1200, y: listHeight }}
+            />
+          ))}
       </Card>
 
       <Card
@@ -615,16 +700,25 @@ export function SessionPage({
           </Space>
         }
         extra={
-          data ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {`${tr('指标点', 'Metrics')} ${number.format(
-                data.signalHealth.metricPoints,
-              )}`}
-            </Typography.Text>
-          ) : null
+          <Space size={8}>
+            {data && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {`${tr('指标点', 'Metrics')} ${number.format(
+                  data.signalHealth.metricPoints,
+                )}`}
+              </Typography.Text>
+            )}
+            <CollapseToggle
+              panel="trace"
+              open={openPanels.includes('trace')}
+              onToggle={togglePanel}
+            />
+          </Space>
         }
       >
-        <TraceTree sessionId={sessionId} />
+        {openPanels.includes('trace') && (
+          <TraceTree sessionId={sessionId} version={traceVersion} />
+        )}
       </Card>
 
       <Modal
@@ -636,7 +730,7 @@ export function SessionPage({
         style={{ top: 0, maxWidth: '100vw', padding: 0 }}
         styles={{ body: { height: 'calc(100vh - 55px)', padding: 20 } }}
       >
-        <TraceTree sessionId={sessionId} expanded />
+        <TraceTree sessionId={sessionId} version={traceVersion} expanded />
       </Modal>
 
       <Row gutter={[16, 16]}>
@@ -691,5 +785,31 @@ export function SessionPage({
         </Col>
       </Row>
     </Space>
+  );
+}
+
+// Collapsible sections keep the session page short: the title row stays visible
+// with the counts, and the heavy tables/tree render only when expanded.
+function CollapseToggle({
+  panel,
+  open,
+  onToggle,
+}: {
+  panel: string;
+  open: boolean;
+  onToggle: (panel: string) => void;
+}) {
+  const { tr } = useUi();
+  return (
+    <Button
+      size="small"
+      type="text"
+      aria-expanded={open}
+      aria-label={open ? tr('收起', 'Collapse') : tr('展开', 'Expand')}
+      icon={open ? <UpOutlined /> : <DownOutlined />}
+      onClick={() => onToggle(panel)}
+    >
+      {open ? tr('收起', 'Collapse') : tr('展开', 'Expand')}
+    </Button>
   );
 }

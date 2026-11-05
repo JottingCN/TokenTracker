@@ -130,6 +130,7 @@ export interface CallRow {
   kindText: string;
   sourceText: string;
   ttftText: string;
+  durationText: string;
   tokensPerSecondText: string;
   errorText: string;
   agentText: string;
@@ -152,8 +153,7 @@ export interface SessionEventRow {
 
 export interface ToolCallRow {
   tool: string;
-  source: string | null;
-  calls: number;
+  source: string | null;  calls: number;
   avgDurationMs: number | null;
   maxDurationMs: number | null;
   errorCount: number;
@@ -166,6 +166,7 @@ export interface ToolCallRow {
   errorTypes: string[];
   agentNames: string[];
   callsText: string;
+  toolDisplayText: string;
   avgDurationText: string;
   maxDurationText: string;
   lastSeenText: string;
@@ -354,8 +355,14 @@ export interface ModelPayload {
   model: string;
 }
 
+export interface SessionModelPayload {
+  model: string;
+  summary: Summary;
+}
+
 export interface SessionPayload {
   summary: Summary;
+  models: SessionModelPayload[];
   calls: CallRow[];
   events: SessionEventRow[];
   tools: ToolCallRow[];

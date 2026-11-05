@@ -14,7 +14,11 @@ import {
   serverUrl,
   stopOwnedServer,
 } from './serverManager';
-import { readStatusBarFormat, StatusBarController } from './statusBar';
+import {
+  readStatusBarCostScope,
+  readStatusBarFormat,
+  StatusBarController,
+} from './statusBar';
 
 let statusBar: StatusBarController | undefined;
 let fallbackItem: vscode.StatusBarItem | undefined;
@@ -396,8 +400,10 @@ function useRunningServer(
   running: RunningServer,
   port: number,
   range: StatsRange,
+  idleExitSeconds: number,
 ): void {
   server = running;
+  recoveryAttempts = 0;
   log(
     `server ready: ${running.url} startedHere=${running.startedHere} ` +
       `version=${running.info?.version ?? 'unknown'} pid=${running.pid ?? 'external'}`,
@@ -420,9 +426,48 @@ function useRunningServer(
       lastSnapshotDetail = detail;
       log(`status snapshot: ${detail}`);
     }
-  }, (connected) => metadataWatchers?.setEnabled(!connected));
+  }, (connected) => metadataWatchers?.setEnabled(!connected),
+    () => void recoverServer(context, port, range, idleExitSeconds));
+  statusBar.setStatusBarCostScope(readStatusBarCostScope());
   statusBar.start();
   context.subscriptions.push(statusBar);
+}
+
+let recoveryAttempts = 0;
+let recovering = false;
+const MAX_RECOVERY_ATTEMPTS = 5;
+
+// The status bar only retries its socket, so a server that exited on its own
+// (idle timeout or crash) would never come back until the window is reloaded.
+async function recoverServer(
+  context: vscode.ExtensionContext,
+  port: number,
+  range: StatsRange,
+  idleExitSeconds: number,
+): Promise<void> {
+  if (recovering || recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+    return;
+  }
+
+  recovering = true;
+  recoveryAttempts += 1;
+  log(`server unreachable; recovery attempt ${recoveryAttempts}`);
+  try {
+    const running = await probeRunningServer(port);
+    if (running) {
+      log('server became reachable again');
+    } else {
+      const started = await prepareAndStartServer(context, port, true, idleExitSeconds);
+      useRunningServer(context, started, port, range, idleExitSeconds);
+      log(`server restarted by recovery (attempt ${recoveryAttempts})`);
+      return;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`server recovery failed: ${message}`);
+  } finally {
+    recovering = false;
+  }
 }
 
 async function prepareAndStartServer(
@@ -568,7 +613,7 @@ async function attachOrStartServer(
 ): Promise<void> {
   const running = await probeRunningServer(port);
   if (running) {
-    useRunningServer(context, running, port, range);
+    useRunningServer(context, running, port, range, idleExitSeconds);
     void checkServerUpdateInBackground(context, running);
     return;
   }
@@ -579,7 +624,7 @@ async function attachOrStartServer(
     autoStart,
     idleExitSeconds,
   );
-  useRunningServer(context, started, port, range);
+  useRunningServer(context, started, port, range, idleExitSeconds);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<TokenTrackerApi> {
@@ -763,7 +808,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
     vscode.commands.registerCommand('tokentracker.startServer', async () => {
       try {
         const running = await prepareAndStartServer(context, port, true, idleExitSeconds);
-        useRunningServer(context, running, port, range);
+        useRunningServer(context, running, port, range, idleExitSeconds);
         log('server started by command');
         void vscode.window.showInformationMessage(
           tr('Token Tracker 服务已启动', 'Token Tracker server started'),
@@ -847,6 +892,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
       }
       if (event.affectsConfiguration('tokentracker.statusBarFormat')) {
         statusBar?.setStatusBarFormat(readStatusBarFormat());
+      }
+      if (event.affectsConfiguration('tokentracker.statusBarCost')) {
+        statusBar?.setStatusBarCostScope(readStatusBarCostScope());
       }
     }),
   );

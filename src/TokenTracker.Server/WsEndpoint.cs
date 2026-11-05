@@ -81,13 +81,12 @@ public static class WsEndpoint
                         AppJsonContext.Default.SubscribeMessage);
                     if (message is not null)
                     {
-                        var wasSubscribed = subscription.HasValue;
                         subscription.Update(message);
                         connection.SetVscode(subscription.IsVscode);
-                        if (wasSubscribed)
-                        {
-                            connection.Signal();
-                        }
+                        // Wake the send loop on every subscribe, including the
+                        // first one: otherwise a subscribe arriving after the
+                        // 1s startup poll would wait for FallbackInterval.
+                        connection.Signal();
                     }
                 }
                 catch (JsonException)

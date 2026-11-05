@@ -10,18 +10,23 @@ import { useViewportHeight } from '../utils/useViewportHeight';
 interface TraceTreeProps {
   sessionId: string;
   expanded?: boolean;
+  // Changes whenever the session snapshot changes, so newly ingested spans show
+  // up without a manual reload.
+  version?: string;
 }
 
-export function TraceTree({ sessionId, expanded = false }: TraceTreeProps) {
+export function TraceTree({ sessionId, expanded = false, version }: TraceTreeProps) {
   const { lang, tr } = useUi();
   const [nodes, setNodes] = useState<TraceNode[] | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loadedFor, setLoadedFor] = useState<string>();
+  const loading = loadedFor !== sessionId;
   const [hostRef, hostHeight] = useAutoTableHeight(0);
   const fillHeight = useViewportHeight(0.82, 400, 2000);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Only a new session shows a spinner; later refreshes keep the old tree
+    // visible so the panel does not flicker on every snapshot.
     fetch(`/api/session/${encodeURIComponent(sessionId)}/trace`)
       .then((response) => (response.ok ? response.json() : null))
       .then((payload: TracePayload | null) => {
@@ -36,14 +41,14 @@ export function TraceTree({ sessionId, expanded = false }: TraceTreeProps) {
       })
       .finally(() => {
         if (!cancelled) {
-          setLoading(false);
+          setLoadedFor(sessionId);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, version]);
 
   const treeData = useMemo(
     () =>

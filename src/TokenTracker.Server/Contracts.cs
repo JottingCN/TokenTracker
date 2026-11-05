@@ -47,8 +47,11 @@ public sealed record ModelPayload(
     List<SessionRow> Sessions,
     string Model);
 
+public sealed record SessionModelPayload(string Model, SummaryDto Summary);
+
 public sealed record SessionPayload(
     SummaryDto Summary,
+    List<SessionModelPayload> Models,
     List<CallRow> Calls,
     List<SessionEventRow> Events,
     List<ToolCallRow> Tools,

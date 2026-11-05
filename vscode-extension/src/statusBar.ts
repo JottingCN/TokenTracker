@@ -31,6 +31,15 @@ export function readStatusBarFormat(): string {
   return normalizeStatusBarFormat(value);
 }
 
+export type StatusCostScope = 'session' | 'model';
+
+export function readStatusBarCostScope(): StatusCostScope {
+  const value = vscode.workspace
+    .getConfiguration('tokentracker')
+    .get<string>('statusBarCost', 'session');
+  return value === 'model' ? 'model' : 'session';
+}
+
 interface SessionSummary {
   sessionId: string;
   sessionDisplay: string;
@@ -95,6 +104,7 @@ interface SessionEventSummary {
 
 interface SessionToolSummary {
   tool: string;
+  toolDisplayText?: string;
   calls: number;
   avgDurationMs: number | null;
   maxDurationMs: number | null;
@@ -224,9 +234,33 @@ interface LatestScope {
   hasCost: boolean;
 }
 
+// Values rendered by the status bar. Metrics come from the newest main-agent
+// model so subagent or auxiliary calls cannot skew hit rate, TTFT or speed;
+// the cost amount can additionally be scoped to the whole session.
+interface StatusScope {
+  model: string;
+  calls: number;
+  hitRate: number | null;
+  ttftMs: number | null;
+  tokensPerSecond: number | null;
+  inputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  avgDurationMs: number | null;
+  costCny: number;
+  hasCost: boolean;
+}
+
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const numberFormatter = new Intl.NumberFormat('zh-CN');
+
+// After this many consecutive connection failures the controller asks the
+// extension to restart the managed server; the cooldown keeps a server that
+// cannot start from being respawned in a tight loop.
+const UNREACHABLE_THRESHOLD = 3;
+const RESTART_COOLDOWN_MS = 60_000;
 
 export class StatusBarController implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
@@ -239,6 +273,9 @@ export class StatusBarController implements vscode.Disposable {
   private readonly breakdownCache = new Map<string, SessionDetails>();
   private pendingKey: string | undefined;
   private currentSession: SessionSummary | undefined;
+  private consecutiveFailures = 0;
+  private lastRestartRequestAt = 0;
+  private costScope: StatusCostScope = 'session';
 
   constructor(
     private readonly port: number,
@@ -249,6 +286,7 @@ export class StatusBarController implements vscode.Disposable {
     private statusBarFormat: string,
     private readonly onSnapshot?: (detail: string) => void,
     private readonly onAhpStatus?: (connected: boolean) => void,
+    private readonly onUnreachable?: () => void,
   ) {
     this.workspaceRoots = workspaceRoots.map(normalizePath);
 
@@ -281,6 +319,13 @@ export class StatusBarController implements vscode.Disposable {
 
   setStatusBarFormat(format: string): void {
     this.statusBarFormat = normalizeStatusBarFormat(format);
+    if (this.currentSession) {
+      this.renderStatusText(this.currentSession);
+    }
+  }
+
+  setStatusBarCostScope(scope: StatusCostScope): void {
+    this.costScope = scope;
     if (this.currentSession) {
       this.renderStatusText(this.currentSession);
     }
@@ -333,6 +378,7 @@ export class StatusBarController implements vscode.Disposable {
       this.socket = socket;
 
       socket.onopen = () => {
+        this.consecutiveFailures = 0;
         this.subscribe();
       };
       socket.onmessage = (event) => {
@@ -350,6 +396,7 @@ export class StatusBarController implements vscode.Disposable {
       };
       socket.onclose = () => {
         this.socket = undefined;
+        this.noteUnreachable();
         this.scheduleReconnect();
       };
       socket.onerror = () => {
@@ -383,6 +430,28 @@ export class StatusBarController implements vscode.Disposable {
     this.retryTimer = setTimeout(() => this.connect(), 3000);
   }
 
+  // The managed server can exit on its own (idle timeout), so a client that only
+  // retries the socket would stay dead forever; ask for a restart instead.
+  private noteUnreachable(): void {
+    if (this.disposed) {
+      return;
+    }
+
+    this.consecutiveFailures += 1;
+    if (this.consecutiveFailures < UNREACHABLE_THRESHOLD) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.lastRestartRequestAt < RESTART_COOLDOWN_MS) {
+      return;
+    }
+
+    this.lastRestartRequestAt = now;
+    this.consecutiveFailures = 0;
+    this.onUnreachable?.();
+  }
+
   private async poll(): Promise<void> {
     if (this.disposed) {
       return;
@@ -393,8 +462,10 @@ export class StatusBarController implements vscode.Disposable {
       2000,
     );
     if (data?.summary) {
+      this.consecutiveFailures = 0;
       this.render(data);
     } else {
+      this.noteUnreachable();
       this.item.text = tr(
         '$(warning) Token Tracker: 服务不可用',
         '$(warning) Token Tracker: service unavailable',
@@ -462,6 +533,7 @@ export class StatusBarController implements vscode.Disposable {
       this.rangeLabel,
       this.money,
       details,
+      this.costScope,
     );
   }
 
@@ -481,8 +553,12 @@ export class StatusBarController implements vscode.Disposable {
 `);
     };
 
-    const appendBullet = (rawName: string, parts: Array<string | null>) => {
-      const name = truncateForTip(rawName, 48);
+    const appendBullet = (
+      rawName: string,
+      parts: Array<string | null>,
+      maxNameWidth = 48,
+    ) => {
+      const name = truncateForTip(rawName, maxNameWidth);
       const detail = parts.filter((part): part is string => Boolean(part))
         .join(' · ');
       tooltip.appendMarkdown(
@@ -567,16 +643,20 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
           `${numberFormatter.format(details.tools.length)} ${tr('种工具', 'tools')}`,
       );
       for (const row of details.tools.slice(0, 5)) {
-        appendBullet(row.tool, [
-          `${numberFormatter.format(row.calls)} ${tr('次', 'calls')}`,
-          `${tr('平均', 'Avg')} ${formatDuration(row.avgDurationMs)}`,
-          row.toolTypes.length > 0 ? row.toolTypes.join('/') : null,
-          row.mcpToolNames.length > 0
-            ? `MCP ${truncateForTip(row.mcpToolNames.join('/'), 48)}`
-            : null,
-          row.agentNames.length > 0 ? row.agentNames.join('/') : null,
-          row.errorCount > 0 ? `$(error) ${row.errorCount}` : null,
-        ]);
+        appendBullet(
+          row.toolDisplayText ?? row.tool,
+          [
+            `${numberFormatter.format(row.calls)} ${tr('次', 'calls')}`,
+            `${tr('平均', 'Avg')} ${formatDuration(row.avgDurationMs)}`,
+            row.toolTypes.length > 0 ? row.toolTypes.join('/') : null,
+            row.mcpToolNames.length > 0
+              ? `MCP ${truncateForTip(row.mcpToolNames.join('/'), 48)}`
+              : null,
+            row.agentNames.length > 0 ? row.agentNames.join('/') : null,
+            row.errorCount > 0 ? `$(error) ${row.errorCount}` : null,
+          ],
+          TOOL_NAME_MAX_WIDTH,
+        );
       }
     }
 
@@ -1053,6 +1133,8 @@ function padDisplayStart(value: string, width: number): string {
 
 // Telemetry-sourced tool names can be arbitrarily long; clip them so a single
 // unbreakable token does not stretch the tooltip past its hover width.
+const TOOL_NAME_MAX_WIDTH = 18;
+
 export function truncateForTip(value: string, maxWidth: number): string {
   if (displayWidth(value) <= maxWidth) {
     return value;
@@ -1109,13 +1191,15 @@ function normalizeStatusBarFormat(value: string | null | undefined): string {
   return trimmed || DEFAULT_STATUS_BAR_FORMAT;
 }
 
-function renderStatusTemplate(
+export function renderStatusTemplate(
   template: string,
   session: SessionSummary,
   rangeLabel: string,
   money: MoneySettings,
   details: SessionDetails | undefined,
+  costScope: StatusCostScope,
 ): string {
+  const scope = statusScope(session, details);
   const rendered = template.replace(
     /\{([a-zA-Z][\w.-]*)(?::([^}]*))?\}/g,
     (_match, name: string, spec: string | undefined) =>
@@ -1123,45 +1207,102 @@ function renderStatusTemplate(
         name,
         spec,
         session,
+        scope,
         rangeLabel,
         money,
         details,
+        costScope,
       ) ?? '',
   );
   return cleanStatusText(rendered) || '$(pulse) -';
+}
+
+// Session rows aggregate every model in the session; the status bar instead
+// reports the model of the newest main call so mixed-model sessions stay honest.
+function statusScope(
+  session: SessionSummary,
+  details: SessionDetails | undefined,
+): StatusScope {
+  const models = details?.models ?? [];
+  if (models.length === 0) {
+    return {
+      model: session.model,
+      calls: session.calls,
+      hitRate: session.hitRate,
+      ttftMs: session.avgTtftMs,
+      tokensPerSecond: session.tokensPerSecond,
+      inputTokens: session.inputTokens,
+      cacheReadTokens: session.cacheReadTokens,
+      outputTokens: session.outputTokens,
+      reasoningTokens: session.reasoningTokens,
+      avgDurationMs: session.avgDurationMs,
+      costCny: session.costCny,
+      hasCost: sessionHasCost(session),
+    };
+  }
+
+  const newest = models.reduce((current, row) =>
+    row.lastSeenMs > current.lastSeenMs ? row : current,
+  );
+  return {
+    model: newest.model,
+    calls: newest.calls,
+    hitRate:
+      newest.inputTokens > 0
+        ? newest.cacheReadTokens / newest.inputTokens
+        : null,
+    ttftMs: newest.ttftMs,
+    tokensPerSecond: newest.tokensPerSecond,
+    inputTokens: newest.inputTokens,
+    cacheReadTokens: newest.cacheReadTokens,
+    outputTokens: newest.outputTokens,
+    reasoningTokens: newest.reasoningTokens,
+    avgDurationMs:
+      newest.durationSamples > 0
+        ? newest.totalDurationMs / newest.durationSamples
+        : null,
+    costCny: newest.costCny,
+    hasCost: newest.costCny > 0 || newest.unpricedCalls === 0,
+  };
 }
 
 function resolveStatusValue(
   rawName: string,
   spec: string | undefined,
   session: SessionSummary,
+  scope: StatusScope,
   rangeLabel: string,
   money: MoneySettings,
   details: SessionDetails | undefined,
+  costScope: StatusCostScope,
 ): string | null {
   switch (normalizePlaceholder(rawName)) {
     case 'hit':
-      return formatPercentMetric(session.hitRate, spec);
+      return formatPercentMetric(scope.hitRate, spec);
     case 'ttft':
-      return formatDurationMetric(session.avgTtftMs, spec);
+      return formatDurationMetric(scope.ttftMs, spec);
     case 'speed':
-      return formatSpeedMetric(session.tokensPerSecond, spec);
+      return formatSpeedMetric(scope.tokensPerSecond, spec);
     case 'cost':
-      return sessionHasCost(session)
-        ? formatCostMetric(session.costCny, spec, money)
-        : null;
+      return costScope === 'model'
+        ? scope.hasCost
+          ? formatCostMetric(scope.costCny, spec, money)
+          : null
+        : sessionHasCost(session)
+          ? formatCostMetric(session.costCny, spec, money)
+          : null;
     case 'calls':
-      return formatCountMetric(session.calls, spec);
+      return formatCountMetric(scope.calls, spec);
     case 'duration':
-      return formatDurationMetric(session.avgDurationMs, spec);
+      return formatDurationMetric(scope.avgDurationMs, spec);
     case 'input':
-      return formatCountMetric(session.inputTokens, spec);
+      return formatCountMetric(scope.inputTokens, spec);
     case 'cache':
-      return formatCountMetric(session.cacheReadTokens, spec);
+      return formatCountMetric(scope.cacheReadTokens, spec);
     case 'output':
-      return formatCountMetric(session.outputTokens, spec);
+      return formatCountMetric(scope.outputTokens, spec);
     case 'reasoning':
-      return formatCountMetric(session.reasoningTokens, spec);
+      return formatCountMetric(scope.reasoningTokens, spec);
     case 'events':
       return formatCountMetric(session.events, spec);
     case 'tools':
@@ -1205,7 +1346,7 @@ function resolveStatusValue(
     case 'range':
       return rangeLabel;
     case 'model':
-      return session.model || null;
+      return scope.model || null;
     case 'session':
       return sessionName(session);
     case 'icon':

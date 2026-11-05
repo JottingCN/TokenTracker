@@ -134,10 +134,11 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 
 ### 状态栏 / Tip
 
-- 状态栏：当前工作区最新会话的命中率、平均 TTFT、平均生成速度与费用；默认模板 `$(pulse) {hit} · {ttft} · {speed} · {cost}`，可通过 `tokentracker.statusBarFormat` 自定义占位符与格式（如 `{hit:0.00%}`、`{ttft:0.0s}`、`{cost:0.000000}`），缺失的可选项自动省略。
+- 状态栏：当前工作区最新会话的命中率、平均 TTFT、平均生成速度与费用；默认模板 `$(pulse) {hit} · {ttft} · {speed} · {cost}`，可通过 `tokentracker.statusBarFormat` 自定义占位符与格式（如 `{hit:0.00%}`、`{ttft:0.0s}`、`{cost:0.000000}`），缺失的可选项自动省略。除 `{cost}` 外的指标取**最新主 agent 模型**的值（子代理/辅助调用的模型不参与），`{model}` 同样显示该模型；`{cost}` 口径由 `tokentracker.statusBarCost` 决定：`session`（默认，整会话合计）/ `model`（仅最新模型）。breakdown 尚未加载时回退为会话汇总值。
 - 状态栏严格按工作区匹配：打开文件夹的窗口只显示归属该文件夹（或其子目录）的会话；工作区未知的会话与其他工作区的会话都不显示，Tip 里也不写工作区信息。工作区归属缺失应由 `session_workspaces` 缓存回补，而不是靠状态栏放宽匹配。
 - 状态栏与 Tip 的费用单位由 `tokentracker.costUnit` 决定（`cny` / `usd` / `credit`，按 `usdRate` / `creditRate` 换算）。
 - Tip：标题为正文加粗 `Token Tracker · 会话名`（不使用大号标题）；时间范围与统计范围合并为一行；每个模型独立成节，节标题为 `模型名 · 最后使用时间`，展示按显示宽度对齐的四类 token 明细表格，以及次数、总用时、平均耗时、命中率、TTFT、速度与费用；多于一个模型时在末尾展示合计。工具调用节标题带 `N 次 · M 种工具`，Hook 节标题带 `N 次 · M 组`，各自只列 Top 5。不在 Tip 中展示 Agent 运行与“其他事件”统计（看板会话页仍完整展示）。
+- Tip 工具名按 18 显示列截断（宽字符计 2 列）；上游把扩展宿主注册的外部工具名发成 `SHA-256(工具名)`，客户端用内置工具清单现算哈希反查（`toolNames.ts`，不维护哈希表），只覆盖 VS Code/Copilot 公开内置工具名，MCP server 哈希保持不可解读。
 - 不在 Tip 中显示工作区信息。
 
 ### 辅助调用
@@ -147,6 +148,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 来源（Copilot Chat `github.copilot.chat.otel`、Agent Host `chat.agentHost.otel`）只用于接收端归因；Web 与扩展默认展示**综合**数据，不提供来源切换和来源标签。`source=combined`（旧 `source=all` 作为别名）表示跨来源同一会话/模型/输入输出且 span 时间区间重叠的调用合并为一条，优先保留有效 TTFT、缓存、推理等字段（费用按合并后的 token 重新计算），原始来源记录仍保留供合并与诊断使用。接收端优先用路径区分：`/otlp/copilot-chat`、`/otlp/agent-host`（同时接受 `/v1/traces` 后缀，旧路径 `/otlp/extension-host` 作为别名）；旧 `/v1/traces` 再按资源属性判定。Agent Host 统一带 `service.namespace=vscode.agent-host`，其 `service.name` 可能为 `github-copilot`、`claude-code`、`codex-app-server`、`vscode-agent-host`；Copilot Chat 默认为 `copilot-chat` 且通常无 namespace。无法判断时写入 `unknown`，不要默认归入 Copilot Chat。会话页事件统计来自 `session_events`（`execute_tool` / `invoke_agent` 等），工具统计按 `gen_ai.tool.name` 汇总；工具事件同时保存 `gen_ai.tool.type`、`github.copilot.tool.parameters.edit_type` 与 `...skill_name`。仅事件、没有 chat span 的会话也会进入会话列表（调用列显示 `0 (N 事件)`）。
 - 调用明细使用服务端分页（`total` / `offset` / `limit`，单页上限 500），不要重新引入固定 2000 条截断；文本检索在服务端匹配会话标题（元数据）、模型与会话 ID 后直接分页。combined 行按“脏会话”增量重建，只在相关会话新增/变更时更新；无 `session_id` 的辅助调用按批次时间窗增量重建（窗口沿重叠区间扩展，超过 12 小时或 4 轮仍不收敛才回退全量重建），**不要恢复“辅助调用批次 → 全表重建”**：实测 2 万 span 时全量重建单次读取消耗 3~12 秒 CPU，窗口重建只需 0.16 秒。窗口查询必须写成可用 `ix_spans_start` / `ix_spans_end` 的 OR 形式，`COALESCE(end_time_ms, start_time_ms)` 会退化成全表扫描。
 - 左侧“系统信息”抽屉读取 `GET /api/system`，展示数据库路径/大小、表与行数、原始/综合 span、outcome 指标、监听与读取路径、AHP 状态；页脚状态栏已移除。路径表每行都带当前用途标记（`扩展监控中` / `AHP 在线，暂停监控` / `查询时读取` / `AHP 端点轮询中` / `仅导入时读取` / `未使用`），由服务端的 AHP 状态推导，与扩展的监控开关同源，不要写成静态清单。
+- 工具名统一用 `ToolNameResolver`（Core）显示：上游把扩展宿主注册的外部工具名发成 `SHA-256(工具名)`，解析器用内置的公开工具清单现算哈希反查（不维护哈希表）；`ToolCallRow.ToolDisplayText` 与 Trace 节点 `label` 都用它，Web/Tip/拓扑一处生效。MCP server 哈希保持不可解读。
+- 会话页在存在多个模型时显示模型 Tab（`全部模型(N)` + 各模型），切换后摘要卡片与“响应与速度”按该模型统计；数据来自 `SessionPayload.models`（服务端用与总会话相同的 `BuildSummary` 计算，口径一致）。Trace 拓扑按快照版本（调用数/最新开始时间/事件数/工具次数）自动重取，换会话才显示 loading。
 
 ### OpenTelemetry 数据源
 
@@ -156,7 +159,7 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 子代理 `invoke_agent` 写入 `agent_runs`（父 span 为对应 `execute_tool`），其工具调用计入根会话工具统计；子代理 chat span 是真实 LLM 调用，计入会话调用与费用，但 `agent_runs` 汇总 token 不重复计入 chat 汇总。
 - Anthropic/Claude 的 `input_tokens` 不含缓存：解析时把 cache read + cache creation 合并为总输入；cache creation 按缓存写入价计费，未配置时回退到未缓存输入价。
 - 扩展管线若带 `copilot_chat.copilot_usage_nano_aiu`，调用列表在估算费用下方显示实际 AIC（nano-AIU / 1e9）；Agent Host 无该字段。
-- 首次响应时间优先 `copilot_chat.time_to_first_token`（毫秒），其次 `gen_ai.server.time_to_first_token` / `gen_ai.response.time_to_first_token`；`gen_ai.response.time_to_first_chunk` 仅在没有明确 TTFT 且明显小于总耗时时使用，≥90% 总耗时视为非流式/代理缓冲并丢弃。生成速度只在有有效 TTFT 时按“输出 token /（耗时 − TTFT）”计算；生成时间不足 50 ms、输出少于 5 token 或无 TTFT 显示 `-`。
+- 首次响应时间优先 `copilot_chat.time_to_first_token`（毫秒），其次 `gen_ai.server.time_to_first_token` / `gen_ai.response.time_to_first_token`，最后才是 `gen_ai.response.time_to_first_chunk`；`gen_ai.response.time_to_first_chunk` 仅在没有任何明确 TTFT 时作为回退，且明显小于总耗时时才使用，≥90% 总耗时视为非流式/代理缓冲并丢弃（`HasExplicitTtft` 不含 chunk 键，因此回退值始终受该规则约束）。生成速度只在有有效 TTFT 时按“输出 token /（耗时 − TTFT）”计算；生成时间不足 50 ms、输出少于 5 token 或无 TTFT 显示 `-`。
 - 模型名按来源规范化：Copilot Chat 的 `gen_ai.*.model` 是规范 ID（如 `gpt-4o-mini-2024-07-18`），只做小写与去注解，**不裁剪日期/版本/`-latest`**；Agent Host 模型名带上游前缀（实测 `DeepSeek/deepseek-flash`），只去最外层一段前缀，保留 `provider/model`。价格表键同样只去最外层前缀，查找时优先精确匹配。不做历史模型名回填。
 - 去重只使用文档化标识：span 以 `(trace_id, span_id)` 为主键，工具事件同来源按 `gen_ai.tool.call.id` 去重；**不要**按会话/模型/token/时间窗口猜测合并同来源 span。两套管线的 `gen_ai.response.id`、`trace_id`、`span_id` 互不相通，跨管线没有共享唯一 ID，因此 combined 只能用“会话 + 规范化模型 + 输入/输出 token + 主/辅助 + span 时间区间重叠”匹配（派生行写入 `otel_source='combined'`），原始记录保持不变，原始 span 变化后懒重建。费用不继承任一来源估算值，按合并后 token 与配置价格重算。
 - Trace 拓扑始终排除 combined 派生行；综合视图在时间区间重叠时合并跨来源重复的 chat 节点并重挂子节点。拓扑按开始时间排序、用 depth 缩进展示层级、节点显示 chat 输入/输出/缓存 token；不要引入 git graph；超过 5000 节点保留最新一段，前端虚拟滚动并阻止滚动链到页面，支持全屏查看。
@@ -187,7 +190,8 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 首次激活按 RID 从**最新的服务端 Release** 下载并校验 `.sha256`（支持 `http.proxy` / `HTTPS_PROXY`），Release 检查缓存 30 分钟；本地开发目录存在 `server/` 时优先使用内置副本。
 - 端口上已有健康服务时：激活只探测 `/healthz` + `/api/version` 并立即接管（`attachOrStartServer`），**不下载、不重启**运行中的实例（即使是扩展自己启动且 buildId 不一致的）。Release 检查与下载在 `checkServerUpdateInBackground` 后台执行，成功或失败都只写 `extension.log`；检测到新版本只提示一次并给“重启服务”动作，由用户决定是否替换。
 - 只有 `Token Tracker: 启动服务` 命令才执行完整的“准备服务端 + 启动/替换过期自建实例”。
-- 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出（扩展默认 5 秒，`0` = 不退出）。
+- 无 Windows 服务；所有客户端断开后按 `tokentracker.idleExitSeconds` 退出（扩展默认 5 秒，`0` = 不退出）。空闲判定同时看 WebSocket 连接和近期的 HTTP API 活动（窗口 `max(20s, 2×idleExitSeconds)`，`/healthz` 不计），避免纯轮询客户端被误判为空闲。
+- 状态栏 WS 连续失败 3 次后触发一次服务端自愈（`recoverServer`，先探测再 `ensureServer`），60 秒冷却、每次激活最多 5 次；WS 连上即清零。用户手动 `停止服务` 时状态栏已 dispose，不会触发自愈。
 - 数据保留默认 90 天（`TOKENTRACKER_RETENTION_DAYS` 或 `POST /api/settings`，`0` = 永久），修改后立即清理，后台每 6 小时再执行。
 
 ## 发布

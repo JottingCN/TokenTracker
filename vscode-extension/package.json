@@ -46,6 +46,20 @@
             "type": "string",
             "order": 1
           },
+          "tokentracker.statusBarCost": {
+            "default": "session",
+            "description": "%config.statusBarCost%",
+            "enum": [
+              "session",
+              "model"
+            ],
+            "enumDescriptions": [
+              "%config.statusBarCost.session%",
+              "%config.statusBarCost.model%"
+            ],
+            "type": "string",
+            "order": 2
+          },
           "tokentracker.statsRange": {
             "default": "7d",
             "description": "%config.statsRange%",

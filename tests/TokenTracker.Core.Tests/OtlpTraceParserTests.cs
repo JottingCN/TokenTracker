@@ -48,6 +48,56 @@ public sealed class OtlpTraceParserTests
     }
 
     [Fact]
+    public void ExplicitServerTtftWinsOverFirstChunk()
+    {
+        // Both keys on one span: the documented TTFT must win, and because it is
+        // explicit the >=90% discard rule must not apply to the chunk value.
+        var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
+        var json = $$"""
+        {
+          "resourceSpans": [
+            {
+              "resource": {
+                "attributes": [
+                  { "key": "service.name", "value": { "stringValue": "github-copilot" } },
+                  { "key": "service.namespace", "value": { "stringValue": "vscode.agent-host" } }
+                ]
+              },
+              "scopeSpans": [
+                {
+                  "spans": [
+                    {
+                      "traceId": "ttft-priority",
+                      "spanId": "ttft-priority-span",
+                      "name": "chat deepseek-flash",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "endTimeUnixNano": "{{startNanos + 4_000_000_000}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                        { "key": "gen_ai.request.model", "value": { "stringValue": "deepseek-flash" } },
+                        { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "100" } },
+                        { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "20" } },
+                        { "key": "gen_ai.server.time_to_first_token", "value": { "doubleValue": 0.25 } },
+                        { "key": "gen_ai.response.time_to_first_chunk", "value": { "doubleValue": 3.9 } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var document = JsonDocument.Parse(json);
+        var span = Assert.Single(
+            OtlpTraceParser.ParseTraces(
+                document,
+                PeakUtc.ToUnixTimeMilliseconds()));
+        Assert.Equal(250, span.TtftMs);
+    }
+
+    [Fact]
     public void IgnoresGenericFirstChunkCloseToTotalDuration()
     {
         var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
