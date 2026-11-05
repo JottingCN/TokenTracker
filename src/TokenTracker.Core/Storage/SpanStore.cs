@@ -1659,7 +1659,25 @@ public sealed partial class SpanStore
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
                 AVG(ttft_ms),
                 COUNT(ttft_ms),
-                {SpeedSql}
+                {SpeedSql},
+                MIN(CASE WHEN error_type IS NULL AND ttft_ms > 0
+                    THEN ttft_ms END),
+                MAX(CASE WHEN error_type IS NULL AND ttft_ms > 0
+                    THEN ttft_ms END),
+                MIN(CASE WHEN error_type IS NULL
+                    AND end_time_ms > start_time_ms
+                    AND ttft_ms IS NOT NULL
+                    AND output_tokens >= 5
+                    AND end_time_ms - start_time_ms - ttft_ms >= 50
+                    THEN output_tokens * 1000.0 /
+                        (end_time_ms - start_time_ms - ttft_ms) END),
+                MAX(CASE WHEN error_type IS NULL
+                    AND end_time_ms > start_time_ms
+                    AND ttft_ms IS NOT NULL
+                    AND output_tokens >= 5
+                    AND end_time_ms - start_time_ms - ttft_ms >= 50
+                    THEN output_tokens * 1000.0 /
+                        (end_time_ms - start_time_ms - ttft_ms) END)
             FROM spans
             WHERE model = @model
               AND start_time_ms >= @from
@@ -1696,6 +1714,12 @@ public sealed partial class SpanStore
             AvgTtftMs = reader.IsDBNull(12) ? null : reader.GetDouble(12),
             TtftSamples = reader.GetInt64(13),
             TokensPerSecond = reader.IsDBNull(14) ? null : reader.GetDouble(14),
+            MinTtftMs = reader.IsDBNull(15) ? null : reader.GetDouble(15),
+            MaxTtftMs = reader.IsDBNull(16) ? null : reader.GetDouble(16),
+            MinTokensPerSecond =
+                reader.IsDBNull(17) ? null : reader.GetDouble(17),
+            MaxTokensPerSecond =
+                reader.IsDBNull(18) ? null : reader.GetDouble(18),
         };
     }
 

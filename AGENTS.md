@@ -68,7 +68,7 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 | GET | `/api/system` | 数据库路径/大小、表与行数、原始/综合 span、outcome 指标、监听与 AHP 状态 |
 | GET | `/api/dashboard` | `range=0..4`、`source`；汇总、按模型（含辅助调用）、会话（主调用） |
 | GET | `/api/model/{model}` | `range` 或 `from`/`to`、`source`；模型详情、TTFT、平均生成速度、会话列表 |
-| GET | `/api/session/{sessionId}` | 会话汇总、调用、事件统计、Agent 运行、Hook、工具统计、outcome 指标 |
+| GET | `/api/session/{sessionId}` | 会话汇总、调用、事件统计、Agent 运行、Hook、工具统计、outcome 指标；`range` 或 `from`/`to`、`source`、`includeCalls`（默认 true，Web 会话页传 false 以免每次快照传输数百 KB 调用明细），`models` 为按模型拆分的同口径汇总 |
 | GET | `/api/session/{sessionId}/trace` | Trace 拓扑节点（时间升序，最多 5000，超限保留最新） |
 | GET | `/api/calls` | 服务端分页明细：`range/source/model/query/kind/priced/period/offset/limit` |
 | GET/POST/DELETE | `/api/prices` | 价格列表、新增或更新（保存后重算历史）、按 model 删除 |
@@ -150,6 +150,11 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 左侧“系统信息”抽屉读取 `GET /api/system`，展示数据库路径/大小、表与行数、原始/综合 span、outcome 指标、监听与读取路径、AHP 状态；页脚状态栏已移除。路径表每行都带当前用途标记（`扩展监控中` / `AHP 在线，暂停监控` / `查询时读取` / `AHP 端点轮询中` / `仅导入时读取` / `未使用`），由服务端的 AHP 状态推导，与扩展的监控开关同源，不要写成静态清单。
 - 工具名统一用 `ToolNameResolver`（Core）显示：上游把扩展宿主注册的外部工具名发成 `SHA-256(工具名)`，解析器用内置的公开工具清单现算哈希反查（不维护哈希表）；`ToolCallRow.ToolDisplayText` 与 Trace 节点 `label` 都用它，Web/Tip/拓扑一处生效。MCP server 哈希保持不可解读。
 - 会话页在存在多个模型时显示模型 Tab（`全部模型(N)` + 各模型），切换后摘要卡片与“响应与速度”按该模型统计；数据来自 `SessionPayload.models`（服务端用与总会话相同的 `BuildSummary` 计算，口径一致）。Trace 拓扑按快照版本（调用数/最新开始时间/事件数/工具次数）自动重取，换会话才显示 loading。
+- 会话页所有统计都遵循标题栏所选时间范围（`GetSession` 的 `range` 或 `from`/`to`）：调用按开始时间、事件/工具/Hook 按 `lastSeenMs`、Agent 运行按 `startTimeMs` 过滤，outcome 指标同样传入该区间；Trace 拓扑不分段，始终是整会话。Web 会话页订阅时传 `includeCalls: false`（调用明细由 VS Code Tip 按需拉取），快照从约 880 KB 降到约 36 KB。
+- 最值口径：TTFT「最快」取 `MinTtftMs`（越小越好），生成速度「最快」取 `MaxTokensPerSecond`（越大越好），两者都只统计 `error_type IS NULL` 的调用。展示为平均值的右上/右下角标注（`flex` + `align-items: stretch` + `justify-content: space-between`，两侧用原生 `span`，antd `Typography` 会重置所需的 margin）。
+- 空闲内存不会无限增长，但所有跨请求缓存都必须有上界：`ToolNameResolver.Cache`（4096 后清空）、`SessionMetadataProvider._cache`（2048 后清空）、`DashboardService._outcomeCache`（32 后清空）。WebSocket 接收缓冲上限 256 KB，超过即断开，避免客户端不发 `EndOfMessage` 时内存无界增长。
+- `SessionMetadataProvider` 的 `workspace.yaml` 缓存被 HTTP 与 WebSocket 快照并发读写，必须持锁访问（普通 `Dictionary` 并发写入会抛 `concurrent update ... corrupted its state` 并返回 500）。`AgentHostTitleReader`、`CopilotChatTitleReader`、`AhpTitleClient` 同样内置锁，新增缓存时保持该约定。
+- `tokentracker.statsRange` 修改后即时生效（`StatusBarController.setRange` 清空 breakdown 缓存并重新订阅），无需重载窗口。
 
 ### OpenTelemetry 数据源
 

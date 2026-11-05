@@ -238,6 +238,9 @@ invoke_agent copilot                           [~15s]
 | `copilot_chat.pull_request.count` | Counter | 通过 Copilot agent 创建的 PR |
 | `copilot_chat.cloud.session.count` | Counter | 云/远程代理会话，按 partner agent |
 | `copilot_chat.cloud.pr_ready.count` | Counter | 远程 agent job PR-ready 通知 |
+| `copilot_chat.cloud.operation.count` | Counter | 云操作次数（远端 agent 侧工具/任务调用） |
+| `copilot_chat.cloud.operation.duration` | Histogram | 云操作耗时 |
+| `copilot_chat.cloud.error.count` | Counter | 云操作失败次数 |
 
 指标包含筛选属性，例如 `gen_ai.request.model`、`gen_ai.provider.name`、`gen_ai.tool.name`、`copilot_chat.edit.source`、`error.type`。
 

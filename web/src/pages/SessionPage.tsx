@@ -22,6 +22,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { OutcomeCard } from '../components/OutcomeCard';
+import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
 import { TraceTree } from '../components/TraceTree';
 import { useRealtime } from '../useRealtime';
@@ -35,7 +36,6 @@ import type {
 import { useUi } from '../ui';
 import {
   formatLatency,
-  formatSpeed,
   formatTime,
   operationLabel,
 } from '../utils/labels';
@@ -69,6 +69,9 @@ export function SessionPage({
     id: sessionId,
     range,
     utility: false,
+    // The page renders aggregates only; the raw call list would add ~800 KB
+    // per snapshot, so it is requested by the VS Code tip instead.
+    includeCalls: false,
   });
   const eventTotal =
     data?.events.reduce((total, row) => total + row.count, 0) ?? 0;
@@ -81,13 +84,18 @@ export function SessionPage({
       : modelScopes.find((row) => row.model === activeScope)?.summary;
   const summary = scopeSummary;
   // The trace is fetched separately, so it needs its own signal to re-read after
-  // new spans arrive over the WebSocket.
+  // new spans arrive over the WebSocket. The call list is not requested on this
+  // page, so the summary count and the event/tool totals drive the refresh.
   const traceVersion = data
     ? [
-        data.calls.length,
-        data.calls.reduce((max, call) => Math.max(max, call.startTimeMs), 0),
+        data.summary.calls,
+        data.events.reduce(
+          (max, row) => Math.max(max, row.lastSeenMs),
+          0,
+        ),
         data.events.reduce((total, row) => total + row.count, 0),
         data.tools.reduce((total, row) => total + row.calls, 0),
+        data.agentRuns.length,
       ].join('|')
     : '';
   const pageTitle =
@@ -525,97 +533,34 @@ export function SessionPage({
 
       <OutcomeCard outcomes={data?.outcomes} />
 
-      <Card size="small" title={tr('响应与速度', 'Latency and speed')}>
-        <Row gutter={[12, 12]}>
-          <Col xs={24} md={8}>
-            <Card size="small" style={{ height: '100%' }}>
-              <Tooltip
-                title={tr(
-                  '首次响应时间（TTFT）：请求发出到收到首个输出 token 的平均耗时',
-                  'Average time from request to the first output token.',
-                )}
-              >
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {tr('平均首次响应', 'Average TTFT')}
-                </Typography.Text>
-              </Tooltip>
-              <div
-                style={{
-                  fontSize: 24,
-                  fontWeight: 500,
-                  fontVariantNumeric: 'tabular-nums',
-                  lineHeight: 1.3,
-                }}
-              >
-                {formatLatency(summary?.avgTtftMs)}
-              </div>
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                {summary
-                  ? tr(
-                      `${number.format(summary.ttftSamples)} 次调用包含 TTFT 数据`,
-                      `${number.format(summary.ttftSamples)} calls include TTFT data`,
-                    )
-                  : '-'}
-              </Typography.Text>
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card size="small" style={{ height: '100%' }}>
-              <Tooltip
-                title={tr(
-                  '生成速度 = 输出 token 总数 / 生成耗时（总耗时减首 token 等待）',
-                  'Generation speed = total output tokens / generation time (duration minus TTFT).',
-                )}
-              >
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {tr('平均生成速度', 'Average generation speed')}
-                </Typography.Text>
-              </Tooltip>
-              <div
-                style={{
-                  fontSize: 24,
-                  fontWeight: 500,
-                  fontVariantNumeric: 'tabular-nums',
-                  lineHeight: 1.3,
-                }}
-              >
-                {formatSpeed(summary?.tokensPerSecond)}
-              </div>
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                {tr(
-                  '有效样本优先；不足时按总耗时',
-                  'Valid samples first; falls back to total duration',
-                )}
-              </Typography.Text>
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card size="small" style={{ height: '100%' }}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {tr('工具调用', 'Tool calls')}
-              </Typography.Text>
-              <div
-                style={{
-                  fontSize: 24,
-                  fontWeight: 500,
-                  fontVariantNumeric: 'tabular-nums',
-                  lineHeight: 1.3,
-                }}
-              >
-                {data ? number.format(toolTotal) : '-'}
-              </div>
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                {data
-                  ? tr(
-                      `${number.format(data.tools.length)} 种工具`,
-                      `${number.format(data.tools.length)} tools`,
-                    )
-                  : '-'}
-              </Typography.Text>
-            </Card>
-          </Col>
-        </Row>
-      </Card>
+      <LatencyCards
+        summary={summary}
+        extra={
+          <Card size="small" style={{ height: '100%' }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {tr('工具调用', 'Tool calls')}
+            </Typography.Text>
+            <div
+              style={{
+                fontSize: 24,
+                fontWeight: 500,
+                fontVariantNumeric: 'tabular-nums',
+                lineHeight: 1.3,
+              }}
+            >
+              {data ? number.format(toolTotal) : '-'}
+            </div>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              {data
+                ? tr(
+                    `${number.format(data.tools.length)} 种工具`,
+                    `${number.format(data.tools.length)} tools`,
+                  )
+                : '-'}
+            </Typography.Text>
+          </Card>
+        }
+      />
 
       <Card
         size="small"

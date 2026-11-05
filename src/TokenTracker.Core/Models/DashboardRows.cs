@@ -18,6 +18,13 @@ public sealed class SummaryDto
     public long TtftSamples { get; init; }
     public double? TokensPerSecond { get; init; }
 
+    // Fastest/slowest over successful calls only (error_type IS NULL); failed
+    // requests often lack TTFT or end early and would skew the extremes.
+    public double? MinTtftMs { get; init; }
+    public double? MaxTtftMs { get; init; }
+    public double? MinTokensPerSecond { get; init; }
+    public double? MaxTokensPerSecond { get; init; }
+
     public double? HitRate =>
         InputTokens > 0 ? (double)CacheReadTokens / InputTokens : null;
 
@@ -27,7 +34,13 @@ public sealed class SummaryDto
     public string ReasoningCostText => DisplayFormat.Price(ReasoningCostCny);
     public string ReasoningTokensText => DisplayFormat.Number(ReasoningTokens);
     public string AvgTtftText => DisplayFormat.Duration(AvgTtftMs);
+    public string MinTtftText => DisplayFormat.Duration(MinTtftMs);
+    public string MaxTtftText => DisplayFormat.Duration(MaxTtftMs);
     public string TokensPerSecondText => DisplayFormat.Speed(TokensPerSecond);
+    public string MinTokensPerSecondText =>
+        DisplayFormat.Speed(MinTokensPerSecond);
+    public string MaxTokensPerSecondText =>
+        DisplayFormat.Speed(MaxTokensPerSecond);
 }
 
 public sealed partial record SessionRow
@@ -402,6 +415,10 @@ public sealed class OutcomeSummary
     public long PullRequests { get; init; }
     public long CloudSessions { get; init; }
     public long CloudPrReady { get; init; }
+    // Cloud agent operations (recordCloudOperation / incrementCloudError).
+    public long CloudOperations { get; init; }
+    public long CloudErrors { get; init; }
+    public double? CloudOperationAvgMs { get; init; }
     public long ToolMetricCalls { get; init; }
     public double? ToolMetricAvgMs { get; init; }
 
@@ -420,6 +437,7 @@ public sealed class OutcomeSummary
         UserApply + UserFollowup + FeedbackPositive + FeedbackNegative +
         AgentEditSuccess + AgentEditError + SummarizationApplied +
         SummarizationFailed + PullRequests + CloudSessions + CloudPrReady +
+        CloudOperations + CloudErrors +
         ToolMetricCalls > 0 ||
         SurvivalFourGram is not null ||
         SurvivalNoRevert is not null;

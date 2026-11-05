@@ -404,6 +404,55 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void ModelSummaryReportsExtremesForSuccessfulCallsOnly()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                // Successful: TTFT 100/900 ms, generation speed differs by duration.
+                Span("t1", "s1", "s1", "extremes-model", 1_000,
+                    1_000, 0, 100, 0.1, ttftMs: 100, durationMs: 2_100),
+                Span("t2", "s2", "s1", "extremes-model", 2_000,
+                    1_000, 0, 100, 0.1, ttftMs: 900, durationMs: 5_900),
+                // Failed call with an extreme TTFT must not become the minimum.
+                Span("t3", "s3", "s1", "extremes-model", 3_000,
+                    1_000, 0, 100, 0.1, ttftMs: 5, durationMs: 10_000,
+                    errorType: "ToolError"),
+            });
+
+            var summary = store.GetModelSummary(
+                "extremes-model",
+                0,
+                includeUtility: true);
+
+            Assert.Equal(3, summary.Calls);
+            Assert.Equal(3, summary.TtftSamples);
+            Assert.Equal(100, summary.MinTtftMs);
+            Assert.Equal(900, summary.MaxTtftMs);
+
+            // Speed = output / (duration - ttft): 100/2000 = 50, 100/5000 = 20.
+            Assert.Equal(20, summary.MinTokensPerSecond!.Value, 3);
+            Assert.Equal(50, summary.MaxTokensPerSecond!.Value, 3);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void CallTextQueryMatchesModelSessionAndSessionList()
     {
         var directory = Path.Combine(
@@ -1172,7 +1221,8 @@ public sealed class SpanStoreTests
         string source = "copilot-chat",
         long durationMs = 100,
         string? parentSpanId = null,
-        string? windowSessionId = null) =>
+        string? windowSessionId = null,
+        string? errorType = null) =>
         new()
         {
             TraceId = traceId,
@@ -1195,6 +1245,7 @@ public sealed class SpanStoreTests
             HitRate = inputTokens > 0 ? (double)cacheReadTokens / inputTokens : null,
             CostCny = cost,
             PricingPeriod = "peak",
+            ErrorType = errorType,
             ReceivedAtMs = startMs,
         };
 }

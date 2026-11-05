@@ -186,6 +186,7 @@ _ = Task.Run(async () =>
         {
             if (settings.ApplyRetention(store) > 0)
             {
+                service.InvalidateOutcomes();
                 hub.NotifyChanged();
             }
         }
@@ -404,9 +405,26 @@ app.MapGet("/api/model/{model}", (
             : service.GetModel(model, range ?? 2, source),
         AppJsonContext.Default.ModelPayload));
 
-app.MapGet("/api/session/{sessionId}", (string sessionId, string? source) =>
+app.MapGet("/api/session/{sessionId}", (
+    string sessionId,
+    int? range,
+    long? from,
+    long? to,
+    bool? includeCalls,
+    string? source) =>
     Results.Json(
-        service.GetSession(sessionId, source),
+        from is > 0 && to > from
+            ? service.GetSession(
+                sessionId,
+                source,
+                from.Value,
+                to.Value,
+                includeCalls ?? true)
+            : service.GetSession(
+                sessionId,
+                range ?? 4,
+                source,
+                includeCalls ?? true),
         AppJsonContext.Default.SessionPayload));
 
 app.MapGet("/api/session/{sessionId}/trace", (
@@ -511,7 +529,10 @@ app.MapPost("/api/settings", (SettingsUpdateRequest request) =>
     store.SetSetting("retention_days", days.ToString());
     try
     {
-        settings.ApplyRetention(store);
+        if (settings.ApplyRetention(store) > 0)
+        {
+            service.InvalidateOutcomes();
+        }
     }
     catch (Exception exception)
     {
@@ -630,7 +651,8 @@ static async Task<IResult> IngestOtelMetrics(
     object captureLock,
     SpanStore store,
     ReceiverCounters counters,
-    RealtimeHub hub)
+    RealtimeHub hub,
+    DashboardService service)
 {
     try
     {
@@ -650,9 +672,11 @@ static async Task<IResult> IngestOtelMetrics(
             var inserted = parsed.Count > 0
                 ? store.InsertMetricPoints(parsed)
                 : 0;
+            counters.RecordMetrics(parsed.Count, inserted);
             if (inserted > 0)
             {
                 counters.Record(inserted);
+                service.InvalidateOutcomes();
                 hub.NotifyChanged();
             }
 
@@ -722,7 +746,8 @@ app.MapPost("/v1/metrics", async (HttpContext context) =>
         otelCaptureLock,
         store,
         counters,
-        hub));
+        hub,
+        service));
 
 app.MapPost("/otlp/{source}/v1/metrics", async (HttpContext context, string source) =>
 {
@@ -740,7 +765,8 @@ app.MapPost("/otlp/{source}/v1/metrics", async (HttpContext context, string sour
         otelCaptureLock,
         store,
         counters,
-        hub);
+        hub,
+        service);
 });
 
 app.MapGet("/ws", (HttpContext context) =>

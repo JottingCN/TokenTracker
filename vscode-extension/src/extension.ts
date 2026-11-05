@@ -80,6 +80,11 @@ function resolveStatsRange(value: string): StatsRange {
   }
 }
 
+function readStatsRange(): StatsRange {
+  const configuration = vscode.workspace.getConfiguration('tokentracker');
+  return resolveStatsRange(configuration.get<string>('statsRange', '7d'));
+}
+
 function currentWorkspaceRoots(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
 }
@@ -427,7 +432,7 @@ function useRunningServer(
       log(`status snapshot: ${detail}`);
     }
   }, (connected) => metadataWatchers?.setEnabled(!connected),
-    () => void recoverServer(context, port, range, idleExitSeconds));
+    () => void recoverServer(context, port, idleExitSeconds));
   statusBar.setStatusBarCostScope(readStatusBarCostScope());
   statusBar.start();
   context.subscriptions.push(statusBar);
@@ -442,7 +447,6 @@ const MAX_RECOVERY_ATTEMPTS = 5;
 async function recoverServer(
   context: vscode.ExtensionContext,
   port: number,
-  range: StatsRange,
   idleExitSeconds: number,
 ): Promise<void> {
   if (recovering || recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
@@ -458,7 +462,8 @@ async function recoverServer(
       log('server became reachable again');
     } else {
       const started = await prepareAndStartServer(context, port, true, idleExitSeconds);
-      useRunningServer(context, started, port, range, idleExitSeconds);
+      // Read the range again: the setting may have changed while the server was down.
+      useRunningServer(context, started, port, readStatsRange(), idleExitSeconds);
       log(`server restarted by recovery (attempt ${recoveryAttempts})`);
       return;
     }
@@ -895,6 +900,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
       }
       if (event.affectsConfiguration('tokentracker.statusBarCost')) {
         statusBar?.setStatusBarCostScope(readStatusBarCostScope());
+      }
+      if (event.affectsConfiguration('tokentracker.statsRange')) {
+        const next = readStatsRange();
+        log(`stats range changed: ${next.label} (${next.index})`);
+        statusBar?.setRange(next.index, next.label);
       }
     }),
   );

@@ -367,6 +367,61 @@ public sealed class SessionMetadataProviderTests
         }
     }
 
+    [Fact]
+    public void ConcurrentReadsDoNotCorruptTheCache()
+    {
+        var root = CreateRoot();
+        try
+        {
+            const int sessionCount = 40;
+            for (var index = 0; index < sessionCount; index += 1)
+            {
+                WriteWorkspace(
+                    root,
+                    $"session-{index}",
+                    $"""
+                    id: session-{index}
+                    cwd: d:\source\demo
+                    name: 并发会话 {index}
+                    user_named: true
+                    """);
+            }
+
+            var provider = new SessionMetadataProvider(
+                root,
+                System.IO.Path.Combine(root, "agent-host.db"));
+            var errors = 0;
+
+            // The provider is shared by parallel HTTP and WebSocket snapshot
+            // requests; a plain Dictionary here used to throw
+            // "concurrent update ... corrupted its state" under this load.
+            Parallel.For(
+                0,
+                800,
+                index =>
+                {
+                    try
+                    {
+                        var metadata = provider.Get($"session-{index % sessionCount}");
+                        if (metadata?.Title is null)
+                        {
+                            Interlocked.Increment(ref errors);
+                        }
+                    }
+                    catch
+                    {
+                        Interlocked.Increment(ref errors);
+                    }
+                });
+
+            Assert.Equal(0, errors);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string CreateRoot()
     {
         var root = Path.Combine(

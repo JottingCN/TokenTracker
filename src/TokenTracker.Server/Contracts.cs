@@ -9,7 +9,10 @@ public sealed record ReceiverInfo(
     bool Running,
     long Batches,
     long Spans,
-    string? LastError);
+    string? LastError,
+    long MetricBatches = 0,
+    long MetricPoints = 0,
+    long MetricRejectedBatches = 0);
 
 public sealed record AhpSessionPayload(
     string Resource,
@@ -127,7 +130,8 @@ public sealed record SubscribeMessage(
     bool? HasError,
     string? Agent,
     int? Offset,
-    int? Limit);
+    int? Limit,
+    bool? IncludeCalls);
 
 public sealed record ModelPriceRowPayload(
     string Model,

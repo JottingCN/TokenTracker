@@ -18,6 +18,9 @@ public sealed class SessionMetadataProvider
     private readonly AgentHostTitleReader _agentHost;
     private readonly CopilotChatTitleReader _copilotChat;
     private readonly AhpTitleClient _ahp;
+    // Shared by concurrent HTTP and WebSocket snapshot requests, so every access
+    // must hold the gate; a plain Dictionary corrupts under parallel writes.
+    private readonly object _cacheGate = new();
     private readonly Dictionary<string, CacheEntry> _cache =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -127,7 +130,7 @@ public sealed class SessionMetadataProvider
 
         if (!File.Exists(file))
         {
-            _cache.Remove(sessionId);
+            RemoveCached(sessionId);
             return null;
         }
 
@@ -138,34 +141,66 @@ public sealed class SessionMetadataProvider
         }
         catch (IOException)
         {
-            return _cache.TryGetValue(sessionId, out var cached) ? cached.Metadata : null;
+            return ReadCached(sessionId);
         }
 
-        if (_cache.TryGetValue(sessionId, out var entry) &&
-            entry.LastWriteUtc == lastWriteUtc)
+        lock (_cacheGate)
         {
-            return entry.Metadata;
+            if (_cache.TryGetValue(sessionId, out var entry) &&
+                entry.LastWriteUtc == lastWriteUtc)
+            {
+                return entry.Metadata;
+            }
         }
 
         try
         {
             var metadata = Parse(sessionId, File.ReadLines(file));
-            _cache[sessionId] = new CacheEntry(lastWriteUtc, metadata);
+            lock (_cacheGate)
+            {
+                // One entry per session is small, but a long-lived process sees
+                // every session ever queried; drop stale entries rather than grow.
+                if (_cache.Count > 2048 && !_cache.ContainsKey(sessionId))
+                {
+                    _cache.Clear();
+                }
+
+                _cache[sessionId] = new CacheEntry(lastWriteUtc, metadata);
+            }
+
             return metadata;
         }
         catch (FileNotFoundException)
         {
-            _cache.Remove(sessionId);
+            RemoveCached(sessionId);
             return null;
         }
         catch (DirectoryNotFoundException)
         {
-            _cache.Remove(sessionId);
+            RemoveCached(sessionId);
             return null;
         }
         catch (IOException)
         {
-            return _cache.TryGetValue(sessionId, out var cached) ? cached.Metadata : null;
+            return ReadCached(sessionId);
+        }
+    }
+
+    private SessionMetadata? ReadCached(string sessionId)
+    {
+        lock (_cacheGate)
+        {
+            return _cache.TryGetValue(sessionId, out var cached)
+                ? cached.Metadata
+                : null;
+        }
+    }
+
+    private void RemoveCached(string sessionId)
+    {
+        lock (_cacheGate)
+        {
+            _cache.Remove(sessionId);
         }
     }
 

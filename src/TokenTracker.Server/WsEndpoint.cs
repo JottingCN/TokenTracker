@@ -5,6 +5,7 @@ namespace TokenTracker.Server;
 
 public static class WsEndpoint
 {
+    private const int MaxMessageBytes = 256 * 1024;
     public static async Task HandleAsync(
         HttpContext context,
         DashboardService service,
@@ -65,6 +66,17 @@ public static class WsEndpoint
                 var result = await socket.ReceiveAsync(buffer, token);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    return;
+                }
+
+                // A client that never sets EndOfMessage (or sends a huge frame)
+                // would otherwise grow this buffer without bound. Subscribe
+                // messages are tiny, so anything past the cap is not a real
+                // subscription: drop the connection instead of hoarding memory.
+                if (pending.Length + result.Count > MaxMessageBytes)
+                {
+                    Console.Error.WriteLine(
+                        $"ws message exceeded {MaxMessageBytes} bytes; closing");
                     return;
                 }
 
@@ -150,7 +162,18 @@ public static class WsEndpoint
                             JsonSerializer.SerializeToUtf8Bytes(
                                 new SessionMessage(
                                     "snapshot",
-                                    service.GetSession(state.Id!, state.Source)),
+                                    customRange
+                                        ? service.GetSession(
+                                            state.Id!,
+                                            state.Source,
+                                            state.FromMs!.Value,
+                                            state.ToMs!.Value,
+                                            state.IncludeCalls)
+                                        : service.GetSession(
+                                            state.Id!,
+                                            state.Range,
+                                            state.Source,
+                                            state.IncludeCalls)),
                                 AppJsonContext.Default.SessionMessage),
                         "calls" => JsonSerializer.SerializeToUtf8Bytes(
                             new CallsMessage(
@@ -240,6 +263,7 @@ public static class WsEndpoint
         private string? _agent;
         private int? _offset;
         private int? _limit;
+        private bool _includeCalls = true;
         private bool _isVscode;
         private bool _hasValue;
 
@@ -285,6 +309,7 @@ public static class WsEndpoint
                 _agent = message.Agent;
                 _offset = message.Offset;
                 _limit = message.Limit;
+                _includeCalls = message.IncludeCalls ?? true;
                 _isVscode = string.Equals(
                     message.Client,
                     "vscode",
@@ -313,7 +338,8 @@ public static class WsEndpoint
                     _hasError,
                     _agent,
                     _offset,
-                    _limit);
+                    _limit,
+                    _includeCalls);
             }
         }
 
@@ -333,6 +359,7 @@ public static class WsEndpoint
             bool? HasError,
             string? Agent,
             int? Offset,
-            int? Limit);
+            int? Limit,
+            bool IncludeCalls);
     }
 }

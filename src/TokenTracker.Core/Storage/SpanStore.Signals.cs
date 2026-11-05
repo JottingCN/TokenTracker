@@ -906,6 +906,10 @@ public sealed partial class SpanStore
         long pullRequests = 0;
         long cloudSessions = 0;
         long cloudPrReady = 0;
+        long cloudOperations = 0;
+        long cloudErrors = 0;
+        double cloudDurationSum = 0;
+        long cloudDurationCount = 0;
         long toolCalls = 0;
         double survivalFourGramSum = 0;
         long survivalFourGramCount = 0;
@@ -1016,6 +1020,16 @@ public sealed partial class SpanStore
                 case "copilot_chat.cloud.pr_ready.count":
                     cloudPrReady += count;
                     break;
+                case "copilot_chat.cloud.operation.count":
+                    cloudOperations += count;
+                    break;
+                case "copilot_chat.cloud.error.count":
+                    cloudErrors += count;
+                    break;
+                case "copilot_chat.cloud.operation.duration":
+                    cloudDurationSum += delta.Sum ?? 0;
+                    cloudDurationCount += delta.Count ?? 0;
+                    break;
                 case "copilot_chat.tool.call.count":
                     toolCalls += count;
                     break;
@@ -1062,6 +1076,11 @@ public sealed partial class SpanStore
             PullRequests = pullRequests,
             CloudSessions = cloudSessions,
             CloudPrReady = cloudPrReady,
+            CloudOperations = cloudOperations,
+            CloudErrors = cloudErrors,
+            CloudOperationAvgMs = cloudDurationCount > 0
+                ? cloudDurationSum / cloudDurationCount
+                : null,
             ToolMetricCalls = toolCalls,
             ToolMetricAvgMs = toolDurationCount > 0
                 ? toolDurationSum / toolDurationCount

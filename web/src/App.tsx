@@ -351,6 +351,10 @@ export default function App() {
     location.hash = `#/calls?q=${encodeURIComponent(sessionId)}`;
   };
 
+  const openModelPage = (model: string) => {
+    location.hash = `#/model/${encodeURIComponent(model)}`;
+  };
+
   const activeSessionId = route.view === 'session' ? route.id : null;
 
   useEffect(() => {
@@ -696,6 +700,7 @@ export default function App() {
                 <DashboardPage
                   data={dashboard}
                   onOpenSession={openSessionFromDashboard}
+                  onOpenModel={openModelPage}
                 />
               )}
               {route.view === 'calls' && (

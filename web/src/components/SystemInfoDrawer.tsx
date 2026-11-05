@@ -227,8 +227,8 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 'No outcome metrics received yet',
               )}
               description={tr(
-                '编辑接受率、代码行数、反馈、PR 等来自 OTel metrics。当前 metric_points 中没有结果类指标，因此 Dashboard 的“编辑与结果指标”卡片不会显示；这不是统计错误。',
-                'Edit acceptance, LOC, feedback and PR metrics come from OTel metrics. metric_points currently has no outcome metrics, so the dashboard outcomes card is hidden. This is not a calculation error.',
+                `编辑接受率、代码行数、反馈、PR 等来自 OTel metrics。当前 metric_points 中没有结果类指标，因此 Dashboard 的“编辑与结果指标”卡片不会显示；这不是统计错误。本次运行已收到 ${data.receiver.metricBatches} 批 metrics（${data.receiver.metricPoints} 个结果点，${data.receiver.metricRejectedBatches} 批全部被过滤）；若为 0，说明 Copilot/Agent Host 根本没有导出 metrics，请确认 OTel 启用命令已执行并重载窗口。`,
+                `Edit acceptance, LOC, feedback and PR metrics come from OTel metrics. metric_points currently has no outcome metrics, so the dashboard outcomes card is hidden. This run received ${data.receiver.metricBatches} metric batches (${data.receiver.metricPoints} outcome points, ${data.receiver.metricRejectedBatches} fully filtered); at 0, Copilot/Agent Host never exported metrics, so re-run the OTel enable command and reload the window.`,
               )}
             />
           )}

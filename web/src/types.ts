@@ -14,6 +14,10 @@ export interface Summary {
   avgTtftMs: number | null;
   ttftSamples: number;
   tokensPerSecond: number | null;
+  minTtftMs: number | null;
+  maxTtftMs: number | null;
+  minTokensPerSecond: number | null;
+  maxTokensPerSecond: number | null;
   hitRate: number | null;
   cacheCostText: string;
   uncachedCostText: string;
@@ -272,6 +276,9 @@ export interface OutcomeSummary {
   pullRequests: number;
   cloudSessions: number;
   cloudPrReady: number;
+  cloudOperations: number;
+  cloudErrors: number;
+  cloudOperationAvgMs: number | null;
   toolMetricCalls: number;
   toolMetricAvgMs: number | null;
   editAcceptRate: number | null;
@@ -313,6 +320,9 @@ export interface ReceiverInfo {
   batches: number;
   spans: number;
   lastError: string | null;
+  metricBatches: number;
+  metricPoints: number;
+  metricRejectedBatches: number;
 }
 
 export interface AhpSessionInfo {
@@ -398,6 +408,7 @@ export interface Subscription {
   agent?: string;
   offset?: number;
   limit?: number;
+  includeCalls?: boolean;
 }
 
 export interface ModelPriceRow {
@@ -460,6 +471,9 @@ export interface SystemInfo {
     batches: number;
     spans: number;
     lastError: string | null;
+    metricBatches: number;
+    metricPoints: number;
+    metricRejectedBatches: number;
   };
   retentionDays: number;
   dataDirectory: string;

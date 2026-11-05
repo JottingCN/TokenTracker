@@ -16,6 +16,11 @@ public static class MetricNames
             "copilot_chat.pull_request.count",
             "copilot_chat.cloud.session.count",
             "copilot_chat.cloud.pr_ready.count",
+            // Recorded by recordCloudOperation/incrementCloudError; not yet in the
+            // monitoring docs but emitted by the current extension.
+            "copilot_chat.cloud.operation.count",
+            "copilot_chat.cloud.operation.duration",
+            "copilot_chat.cloud.error.count",
             "copilot_chat.tool.call.count",
             "copilot_chat.edit.survival.four_gram",
             "copilot_chat.edit.survival.no_revert",

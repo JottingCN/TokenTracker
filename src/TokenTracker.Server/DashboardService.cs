@@ -10,12 +10,28 @@ public sealed class ReceiverCounters
 {
     private long _batches;
     private long _spans;
+    private long _metricBatches;
+    private long _metricPoints;
+    private long _metricRejected;
     private string? _lastError;
 
     public void Record(int spans)
     {
         Interlocked.Increment(ref _batches);
         Interlocked.Add(ref _spans, spans);
+    }
+
+    // Metrics are tracked separately: an empty metric_points table is either
+    // "nothing arrived" or "everything was filtered by the outcome allowlist",
+    // and the two need different fixes.
+    public void RecordMetrics(int parsedPoints, int storedPoints)
+    {
+        Interlocked.Increment(ref _metricBatches);
+        Interlocked.Add(ref _metricPoints, storedPoints);
+        if (parsedPoints == 0)
+        {
+            Interlocked.Increment(ref _metricRejected);
+        }
     }
 
     public void RecordError(string message) => _lastError = message;
@@ -26,7 +42,10 @@ public sealed class ReceiverCounters
             running,
             Interlocked.Read(ref _batches),
             Interlocked.Read(ref _spans),
-            _lastError);
+            _lastError,
+            Interlocked.Read(ref _metricBatches),
+            Interlocked.Read(ref _metricPoints),
+            Interlocked.Read(ref _metricRejected));
 }
 
 public sealed class DashboardService
@@ -40,6 +59,7 @@ public sealed class DashboardService
     private readonly Dictionary<string, (DateTimeOffset At, OutcomeSummary Value)>
         _outcomeCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan OutcomeCacheTtl = TimeSpan.FromMinutes(2);
+    private long _outcomeVersion;
     private readonly SessionWorkspaceCache _workspaces;
 
     public DashboardService(
@@ -334,12 +354,32 @@ public sealed class DashboardService
         return new CallsPayload(calls, total, pageOffset, pageSize);
     }
 
-    public SessionPayload GetSession(string sessionId, string? source = null)
+    public SessionPayload GetSession(
+        string sessionId,
+        int range,
+        string? source = null,
+        bool includeCalls = true)
+    {
+        var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
+        return GetSession(sessionId, source, fromMs, toMs, includeCalls);
+    }
+
+    public SessionPayload GetSession(
+        string sessionId,
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue,
+        bool includeCalls = true)
     {
         source = NormalizeSource(source);
         EnsureCombined(source);
         var detailSource = source == "combined" ? null : source;
-        var calls = _store.GetCallsForSession(sessionId, source: source).ToList();
+        // The session page must honour the selected range like the dashboard
+        // does; without the filter it always reported all-time totals.
+        var calls = _store
+            .GetCallsForSession(sessionId, source: source)
+            .Where(call => call.StartTimeMs >= fromMs && call.StartTimeMs < toMs)
+            .ToList();
         var summary = BuildSummary(calls);
         var modelSummaries = calls
             .GroupBy(call => call.Model, StringComparer.Ordinal)
@@ -351,7 +391,10 @@ public sealed class DashboardService
             .ThenBy(row => row.Model, StringComparer.Ordinal)
             .ToList();
 
-        var events = _store.GetSessionEvents(sessionId, detailSource).ToList();
+        var events = _store
+            .GetSessionEvents(sessionId, detailSource)
+            .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
+            .ToList();
         var chatEvents = calls
             .GroupBy(
                 call => call.Source ?? "copilot-chat",
@@ -379,21 +422,32 @@ public sealed class DashboardService
         events.InsertRange(0, chatEvents);
 
         var metadata = _metadata.Get(sessionId);
-        var tools = _store.GetSessionTools(sessionId, detailSource).ToList();
+        var tools = _store
+            .GetSessionTools(sessionId, detailSource)
+            .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
+            .ToList();
         _workspaces.Flush();
 
         return new SessionPayload(
             summary,
             modelSummaries,
-            calls,
+            // The call list dominates the payload (hundreds of KB); only the
+            // client that aggregates per-model details asks for it.
+            includeCalls ? calls : new List<CallRow>(),
             events,
             tools,
-            _store.GetAgentRuns(sessionId, detailSource).ToList(),
-            _store.GetHookSummaries(sessionId, detailSource).ToList(),
+            _store
+                .GetAgentRuns(sessionId, detailSource)
+                .Where(row => row.StartTimeMs >= fromMs && row.StartTimeMs < toMs)
+                .ToList(),
+            _store
+                .GetHookSummaries(sessionId, detailSource)
+                .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
+                .ToList(),
             _store.GetSignalHealth(sessionId, detailSource),
             _store.GetOutcomeSummary(
-                0,
-                long.MaxValue,
+                fromMs,
+                toMs,
                 detailSource,
                 sessionId),
             sessionId,
@@ -412,6 +466,13 @@ public sealed class DashboardService
             .ToList();
         var generationMs = generationCalls.Sum(
             call => call.DurationMs!.Value - call.TtftMs!.Value);
+        var okTtft = ttftCalls.Where(call => call.ErrorType is null).ToList();
+        var okSpeeds = generationCalls
+            .Where(call => call.ErrorType is null)
+            .Select(call => call.TokensPerSecond)
+            .Where(value => value is > 0)
+            .Select(value => value!.Value)
+            .ToList();
         return new SummaryDto
         {
             Calls = calls.Count,
@@ -434,6 +495,14 @@ public sealed class DashboardService
                 ? generationCalls.Sum(call => call.OutputTokens) * 1_000d /
                   generationMs
                 : null,
+            MinTtftMs = okTtft.Count > 0
+                ? okTtft.Min(call => call.TtftMs!.Value)
+                : null,
+            MaxTtftMs = okTtft.Count > 0
+                ? okTtft.Max(call => call.TtftMs!.Value)
+                : null,
+            MinTokensPerSecond = okSpeeds.Count > 0 ? okSpeeds.Min() : null,
+            MaxTokensPerSecond = okSpeeds.Count > 0 ? okSpeeds.Max() : null,
         };
     }
 
@@ -659,12 +728,13 @@ public sealed class DashboardService
         long toMs,
         string? source)
     {
-        const long bucketMs = 5 * 60 * 1000;
+        var bucketMs = 5 * 60 * 1000L;
         var fromBucket = fromMs - fromMs % bucketMs;
         var toBucket = toMs == long.MaxValue
             ? long.MaxValue
             : toMs - toMs % bucketMs;
-        var key = $"{source ?? "all"}|{fromBucket}|{toBucket}";
+        var key =
+            $"{source ?? "all"}|{fromBucket}|{toBucket}|{Interlocked.Read(ref _outcomeVersion)}";
         lock (_outcomeCacheLock)
         {
             if (_outcomeCache.TryGetValue(key, out var cached) &&
@@ -687,6 +757,11 @@ public sealed class DashboardService
 
         return value;
     }
+
+    /// <summary>
+    /// metric_points 变化后结果类指标会变，缓存必须失效，否则新指标最长 2 分钟不可见。
+    /// </summary>
+    public void InvalidateOutcomes() => Interlocked.Increment(ref _outcomeVersion);
 
     private static string? NormalizeSource(string? source)
     {

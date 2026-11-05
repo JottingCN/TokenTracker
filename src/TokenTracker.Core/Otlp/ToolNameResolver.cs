@@ -155,6 +155,13 @@ public static class ToolNameResolver
         }
 
         candidate = candidate.ToLowerInvariant();
+        // Only 64-hex names reach this point and the index is fixed, so the cache
+        // can only grow with unseen hashes; clear it if that ever gets large.
+        if (Cache.Count > 4096)
+        {
+            Cache.Clear();
+        }
+
         return Cache.GetOrAdd(
             candidate,
             key => Hashed.Value.TryGetValue(key, out var resolved) ? resolved : null);

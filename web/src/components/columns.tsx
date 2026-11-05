@@ -72,16 +72,23 @@ function periodLabel(row: CallRow): string {
   }
 }
 
-export function modelColumns(): ColumnsType<ModelRow> {
+export function modelColumns(
+  onOpenModel?: (model: string) => void,
+): ColumnsType<ModelRow> {
   return [
     {
       title: translate('模型', 'Model'),
       key: 'model',
       width: 200,
       ellipsis: true,
-      render: (_, row) => (
-        <ModelCell model={row.model} />
-      ),
+      render: (_, row) =>
+        onOpenModel ? (
+          <a onClick={() => onOpenModel(row.model)}>
+            <ModelCell model={row.model} />
+          </a>
+        ) : (
+          <ModelCell model={row.model} />
+        ),
     },
     {
       title: translate('调用', 'Calls'),

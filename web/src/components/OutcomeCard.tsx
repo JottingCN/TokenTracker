@@ -1,6 +1,7 @@
 import { Card, Space, Typography } from 'antd';
 import type { OutcomeSummary } from '../types';
 import { useUi } from '../ui';
+import { formatLatency } from '../utils/labels';
 
 export function OutcomeCard({
   outcomes,
@@ -70,6 +71,15 @@ export function OutcomeCard({
           <Typography.Text>
             {tr('PR / 云会话', 'PR / cloud')}：{outcomes.pullRequests} /{' '}
             {outcomes.cloudSessions}
+          </Typography.Text>
+        )}
+        {outcomes.cloudOperations + outcomes.cloudErrors > 0 && (
+          <Typography.Text>
+            {tr('云操作', 'Cloud operations')}：{outcomes.cloudOperations}
+            {outcomes.cloudErrors > 0 ? ` · ${tr('失败', 'failed')} ${outcomes.cloudErrors}` : ''}
+            {outcomes.cloudOperationAvgMs !== null
+              ? ` · ${formatLatency(outcomes.cloudOperationAvgMs)}`
+              : ''}
           </Typography.Text>
         )}
         {outcomes.agentEditSuccess + outcomes.agentEditError > 0 && (

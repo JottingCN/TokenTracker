@@ -28,6 +28,7 @@ export function useRealtime<T>(subscription: Subscription): {
     agent,
     offset,
     limit,
+    includeCalls,
   } = subscription;
 
   useEffect(() => {
@@ -102,6 +103,7 @@ export function useRealtime<T>(subscription: Subscription): {
     agent,
     offset,
     limit,
+    includeCalls,
   ]);
 
   useEffect(() => {
@@ -137,6 +139,7 @@ function send(socket: WebSocket, subscription: Subscription) {
       agent: subscription.agent,
       offset: subscription.offset,
       limit: subscription.limit,
+      includeCalls: subscription.includeCalls,
       client: 'web',
     }),
   );

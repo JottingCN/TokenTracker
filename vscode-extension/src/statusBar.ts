@@ -279,8 +279,8 @@ export class StatusBarController implements vscode.Disposable {
 
   constructor(
     private readonly port: number,
-    private readonly rangeIndex: number,
-    private readonly rangeLabel: string,
+    private rangeIndex: number,
+    private rangeLabel: string,
     workspaceRoots: string[],
     private money: MoneySettings,
     private statusBarFormat: string,
@@ -329,6 +329,20 @@ export class StatusBarController implements vscode.Disposable {
     if (this.currentSession) {
       this.renderStatusText(this.currentSession);
     }
+  }
+
+  // The stats range is a user setting, so it can change without reloading the
+  // window; re-subscribe so the server recomputes with the new window.
+  setRange(rangeIndex: number, rangeLabel: string): void {
+    if (rangeIndex === this.rangeIndex && rangeLabel === this.rangeLabel) {
+      return;
+    }
+
+    this.rangeIndex = rangeIndex;
+    this.rangeLabel = rangeLabel;
+    this.breakdownCache.clear();
+    this.currentSession = undefined;
+    this.refresh();
   }
 
   start(): void {

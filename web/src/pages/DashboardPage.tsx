@@ -11,11 +11,13 @@ import { useViewportHeight } from '../utils/useViewportHeight';
 interface DashboardPageProps {
   data: DashboardPayload | null;
   onOpenSession: (sessionId: string) => void;
+  onOpenModel?: (model: string) => void;
 }
 
 export function DashboardPage({
   data,
   onOpenSession,
+  onOpenModel,
 }: DashboardPageProps) {
   const { tr } = useUi();
   const models = data?.models ?? [];
@@ -85,7 +87,7 @@ export function DashboardPage({
           <Table
             size="small"
             rowKey="model"
-            columns={modelColumns()}
+            columns={modelColumns(onOpenModel)}
             dataSource={models}
             loading={!data}
             pagination={false}

@@ -330,6 +330,29 @@ test('status bar reports the newest main-agent model but can scope cost', () => 
   );
 });
 
+test('changing the stats range re-subscribes with the new window', () => {
+  const controller = new StatusBarController(
+    0,
+    2,
+    '近 7 天',
+    [],
+    { unit: 'cny', usdRate: 7.2, creditRate: 0.01 },
+    '$(pulse) {hit}',
+    () => {},
+  );
+
+  // Nothing is connected in the test host, so only the state transition matters.
+  controller.setRange(4, '全部');
+  assert.equal(controller['rangeIndex'], 4);
+  assert.equal(controller['rangeLabel'], '全部');
+
+  // An unchanged range must not clear the cached breakdown.
+  controller['rangeIndex'] = 4;
+  controller.setRange(4, '全部');
+  assert.equal(controller['rangeIndex'], 4);
+  controller.dispose();
+});
+
 test('names an untitled session with the localized fallback', () => {
   assert.equal(
     sessionName({ sessionId: 'e2940513-38f5-45a0-bd49-57c2a13071ab' }),
