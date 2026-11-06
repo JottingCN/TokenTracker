@@ -390,14 +390,14 @@ public sealed class HookSummaryRow
 }
 
 /// <summary>
-/// One block of the session topology. Blocks are anchored on whole traces so
-/// parent links stay intact; <see cref="NextCursor"/> walks towards older blocks.
+/// One slice of the FIFO node stream. <see cref="NextCursor"/> walks towards newer
+/// rows; context rows at the start repeat ancestors from earlier slices.
 /// </summary>
 public sealed record TracePage(
     IReadOnlyList<TraceNodeRow> Nodes,
     bool HasMore,
     string? NextCursor,
-    int TraceCount);
+    int Total);
 
 public sealed record TraceNodeRow
 {
@@ -416,6 +416,12 @@ public sealed record TraceNodeRow
     public bool IsError { get; init; }
     public string? ErrorType { get; init; }
     public int Depth { get; init; }
+
+    /// <summary>
+    /// True when this row only repeats an ancestor that lives in an earlier block.
+    /// Context rows carry no counts and must not be summed.
+    /// </summary>
+    public bool IsContext { get; init; }
 
     public string Label => string.IsNullOrWhiteSpace(Tool)
         ? Name ?? Operation

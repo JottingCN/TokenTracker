@@ -66,14 +66,11 @@ public sealed record SessionPayload(
     string? Title,
     string? WorkspacePath);
 
-// Whole-session node cap guard: the panel scrolls through blocks, but a single
-// response still has a hard ceiling so a pathological session cannot stream
-// tens of megabytes.
 public sealed record TracePayload(
     List<TraceNodeRow> Nodes,
     bool HasMore,
     string? NextCursor,
-    int TraceCount);
+    int Total);
 
 public sealed record CallsPayload(
     List<CallRow> Calls,

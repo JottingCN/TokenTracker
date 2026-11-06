@@ -352,8 +352,8 @@ try {
     false,
   );
 
-  // Trace blocks are cursor-paged by whole traces; the payload must expose the
-  // cursor contract so the panel can walk older blocks without re-reading all.
+  // Trace blocks are cursor-paged by start time (FIFO); the payload must expose
+  // the cursor contract so the panel can append newer blocks.
   const sessionId = 'smoke-session';
   await request(`${base}/otlp/copilot-chat`, {
     method: 'POST',
@@ -369,6 +369,7 @@ try {
   check('trace block is bounded by budget', block.nodes.length, 1);
   check('trace block reports hasMore', block.hasMore, true);
   check('trace block exposes a cursor', typeof block.nextCursor, 'string');
+  check('trace block reports the total', block.total, 6);
 
   const older = JSON.parse(
     (
@@ -379,8 +380,13 @@ try {
   );
   check('trace cursor advances', older.nodes[0]?.id === block.nodes[0]?.id, false);
   check(
-    'trace cursor keeps the remaining traces',
+    'trace cursor keeps the remaining rows',
     older.hasMore,
+    true,
+  );
+  check(
+    'trace blocks stay FIFO',
+    older.nodes[0].startTimeMs > block.nodes[0].startTimeMs,
     true,
   );
 

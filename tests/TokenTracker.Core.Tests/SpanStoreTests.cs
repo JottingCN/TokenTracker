@@ -258,7 +258,7 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void TraceBlocksWalkOlderTracesWithACursor()
+    public void TraceBlocksAreFifoAndCarryAncestorsForSplitTraces()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -270,50 +270,96 @@ public sealed class SpanStoreTests
         {
             var store = new SpanStore(databasePath);
             var spans = new List<OtlpSpanRecord>();
-            for (var index = 0; index < 12; index++)
+            // One long trace interleaved with short ones. A block boundary will fall
+            // inside the long trace, so the child rows land in a later block.
+            for (var index = 0; index < 10; index++)
             {
-                // Three nodes per trace so a small budget cannot fit two traces.
-                for (var node = 0; node < 3; node++)
-                {
-                    spans.Add(Span(
-                        $"trace-{index:00}",
-                        $"span-{index:00}-{node}",
-                        "session-1",
-                        "m",
-                        1_000 + index * 1_000 + node,
-                        100,
-                        0,
-                        10,
-                        null));
-                }
+                spans.Add(Span(
+                    "trace-long",
+                    index == 0 ? "root" : $"child-{index:00}",
+                    "session-1",
+                    "m",
+                    1_000 + index * 100,
+                    100,
+                    0,
+                    10,
+                    null,
+                    parentSpanId: index == 0 ? null : "root"));
+                spans.Add(Span(
+                    $"trace-{index:00}",
+                    $"span-{index:00}",
+                    "session-1",
+                    "m",
+                    1_050 + index * 100,
+                    100,
+                    0,
+                    10,
+                    null));
             }
 
             store.InsertMany(spans);
 
-            var first = store.GetTracePage("session-1", budget: 4);
-            Assert.True(first.HasMore);
-            Assert.Equal(12, first.TraceCount);
-            Assert.Equal(3, first.Nodes.Count);
-            Assert.All(
-                first.Nodes,
-                node => Assert.StartsWith("trace-11:", node.Id));
-
             var seen = new List<string>();
-            string? cursor = first.NextCursor;
-            var blocks = 1;
-            while (cursor is not null)
+            var previous = (Start: long.MinValue, Id: string.Empty);
+            var splitChild = false;
+            var blocks = 0;
+            string? cursor = null;
+            var more = true;
+            while (more)
             {
-                var next = store.GetTracePage("session-1", cursor: cursor, budget: 4);
-                seen.AddRange(next.Nodes.Select(node => node.Id));
+                var page = store.GetTracePage(
+                    "session-1",
+                    cursor: cursor,
+                    budget: 4);
+                Assert.NotEmpty(page.Nodes);
+                foreach (var node in page.Nodes)
+                {
+                    if (node.IsContext)
+                    {
+                        // Context rows only repeat ancestors, so they must not be
+                        // counted as new stream rows.
+                        Assert.Equal("context", node.Kind);
+                        Assert.Equal(0, node.InputTokens + node.OutputTokens);
+                        continue;
+                    }
+
+                    Assert.True(
+                        node.StartTimeMs > previous.Start ||
+                        (node.StartTimeMs == previous.Start &&
+                         string.CompareOrdinal(node.Id, previous.Id) > 0),
+                        $"row {node.Id} breaks FIFO after {previous.Id}");
+                    previous = (node.StartTimeMs, node.Id);
+                    seen.Add(node.Id);
+                }
+
+                // A child whose root lives in an earlier block needs a context row
+                // so the indentation still reads correctly.
+                if (page.Nodes.Any(node => node.IsContext))
+                {
+                    splitChild = true;
+                    Assert.Contains(
+                        page.Nodes,
+                        node => node.IsContext && node.Id == "trace-long:root");
+                    Assert.All(
+                        page.Nodes.Where(node => node.IsContext),
+                        node => Assert.Equal(0, node.Depth));
+                    Assert.All(
+                        page.Nodes.Where(node =>
+                            !node.IsContext &&
+                            node.ParentId == "trace-long:root"),
+                        node => Assert.Equal(1, node.Depth));
+                }
+
                 blocks++;
-                cursor = next.HasMore ? next.NextCursor : null;
+                cursor = page.NextCursor;
+                more = page.HasMore;
             }
 
-            // No row is repeated and every older trace is reachable.
-            Assert.Equal(seen.Count, seen.Distinct(StringComparer.Ordinal).Count());
-            Assert.Equal(11 * 3, seen.Count);
-            Assert.Equal(12, blocks);
-            Assert.Contains("trace-00:span-00-0", seen);
+            Assert.True(blocks > 1);
+            Assert.True(splitChild, "the long trace was never split across blocks");
+            Assert.Equal(20, seen.Count);
+            Assert.Equal(20, seen.Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal("trace-long:root", seen[0]);
         }
         finally
         {
@@ -326,7 +372,74 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void TraceBlockCollapsesCrossSourceDuplicatesAtTheBoundary()
+    public void TraceTopologyIsSortedByStartTime()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            var spans = new List<OtlpSpanRecord>();
+            // Interleaved traces: trace-00 spans 1000..9000 while the later traces
+            // start inside it, so ordering must come from start times, not traces.
+            for (var index = 0; index < 6; index++)
+            {
+                spans.Add(Span(
+                    "trace-long",
+                    $"long-{index}",
+                    "session-1",
+                    "m",
+                    1_000 + index * 500,
+                    100,
+                    0,
+                    10,
+                    null));
+                spans.Add(Span(
+                    $"trace-{index:00}",
+                    $"span-{index:00}",
+                    "session-1",
+                    "m",
+                    1_200 + index * 500,
+                    100,
+                    0,
+                    10,
+                    null));
+            }
+
+            store.InsertMany(spans);
+
+            var nodes = store.GetTraceNodes("session-1");
+            Assert.Equal(12, nodes.Count);
+            // FIFO: strictly ascending by start time, traces interleaved as needed.
+            Assert.Equal(
+                nodes.Select(node => node.StartTimeMs).OrderBy(value => value).ToList(),
+                nodes.Select(node => node.StartTimeMs).ToList());
+            Assert.Equal("trace-long:long-0", nodes[0].Id);
+
+            // The node cap keeps the newest window.
+            var capped = store.GetTraceNodes("session-1", limit: 3);
+            Assert.Equal(3, capped.Count);
+            Assert.Equal(nodes[^1].Id, capped[^1].Id);
+            Assert.Equal(
+                capped.Select(node => node.StartTimeMs).ToList(),
+                capped.Select(node => node.StartTimeMs).OrderBy(value => value).ToList());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TraceTopologyCollapsesCrossSourceDuplicates()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -341,9 +454,8 @@ public sealed class SpanStoreTests
             {
                 connection.Open();
                 using var command = connection.CreateCommand();
-                // The same call reported by both pipelines sits exactly on a block
-                // boundary: the second block owns it, so it must appear once and
-                // never leak the agent-host copy.
+                // The same call reported by both pipelines; only the extension-host
+                // copy may survive, whichever order the rows were read in.
                 command.CommandText = """
                     INSERT INTO spans (
                         trace_id, span_id, parent_span_id, name, start_time_ms,
@@ -360,21 +472,167 @@ public sealed class SpanStoreTests
                 command.ExecuteNonQuery();
             }
 
-            var blockIds = new List<string>();
-            string? cursor = null;
-            var more = true;
-            while (more)
+            var nodes = store.GetTraceNodes("session-1");
+            Assert.Equal(
+                new[] { "trace-b:span-b", "trace-a:span-a" },
+                nodes.Select(node => node.Id).ToArray());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
             {
-                var page = store.GetTracePage("session-1", cursor: cursor, budget: 1);
-                blockIds.AddRange(page.Nodes.Select(node => node.Id));
-                cursor = page.NextCursor;
-                more = page.HasMore;
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void UpgradesALegacyDatabaseInPlaceWithoutLosingRows()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            // Shape of a pre-versioning database: no newer columns, no
+            // model_profiles/session_workspaces, plus a leftover table the app no
+            // longer writes.
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    PRAGMA journal_mode=WAL;
+                    CREATE TABLE spans (
+                        trace_id TEXT NOT NULL,
+                        span_id TEXT NOT NULL,
+                        name TEXT,
+                        start_time_ms INTEGER NOT NULL,
+                        end_time_ms INTEGER,
+                        service_name TEXT,
+                        model TEXT,
+                        session_id TEXT,
+                        is_main INTEGER NOT NULL,
+                        input_tokens INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                        hit_rate REAL,
+                        cost_cny REAL,
+                        pricing_period TEXT,
+                        received_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (trace_id, span_id)
+                    );
+                    INSERT INTO spans (
+                        trace_id, span_id, name, start_time_ms, end_time_ms,
+                        service_name, model, session_id, is_main,
+                        input_tokens, output_tokens, cache_read_tokens,
+                        reasoning_tokens, cost_cny, received_at_ms
+                    ) VALUES (
+                        'legacy-trace', 'legacy-span', 'chat', 1000, 2000,
+                        'copilot-chat', 'legacy-model', 'legacy-session', 1,
+                        500, 50, 100, 0, 0.25, 2000
+                    );
+                    CREATE TABLE otel_log_events (body TEXT);
+                    INSERT INTO otel_log_events (body) VALUES ('keep me');
+                    """;
+                command.ExecuteNonQuery();
             }
 
-            Assert.Equal(
-                new[] { "trace-a:span-a", "trace-b:span-b" },
-                blockIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
-            Assert.DoesNotContain("trace-c:span-c", blockIds);
+            var store = new SpanStore(databasePath);
+
+            // Data survives, and the schema is stamped so the next start is a no-op.
+            Assert.Equal(SpanStore.SchemaVersion, store.GetSchemaVersion());
+            Assert.False(store.IsNewerSchema);
+            var summary = store.GetSummary(0);
+            Assert.Equal(1, summary.Calls);
+            Assert.Equal(500, summary.InputTokens);
+            Assert.Equal(0.25, summary.CostCny, 8);
+
+            var call = Assert.Single(store.GetCallsForSession("legacy-session"));
+            Assert.Equal("legacy-model", call.Model);
+
+            using var connection2 = new SqliteConnection($"Data Source={databasePath}");
+            connection2.Open();
+            using (var command = connection2.CreateCommand())
+            {
+                // Additive migrations only: the legacy table is left alone instead
+                // of being dropped during an upgrade.
+                command.CommandText = "SELECT COUNT(*) FROM otel_log_events;";
+                Assert.Equal(1L, Convert.ToInt64(command.ExecuteScalar()));
+
+                command.CommandText = "PRAGMA table_info(spans);";
+                var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    columns.Add(reader.GetString(1));
+                }
+
+                Assert.Contains("otel_source", columns);
+                Assert.Contains("ttft_ms", columns);
+                Assert.Contains("window_session_id", columns);
+                Assert.Contains("uncached_cost_cny", columns);
+            }
+
+            // Reopening an already-upgraded database must not touch the rows.
+            var reopened = new SpanStore(databasePath);
+            Assert.Equal(SpanStore.SchemaVersion, reopened.GetSchemaVersion());
+            Assert.Equal(1, reopened.GetSummary(0).Calls);
+
+            var stats = reopened.GetStorageStats();
+            Assert.Equal(SpanStore.SchemaVersion, stats.SchemaVersion);
+            Assert.Equal(SpanStore.SchemaVersion, stats.SupportedSchemaVersion);
+            Assert.False(stats.SchemaFromNewerBuild);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void LeavesANewerSchemaUntouched()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var futureVersion = SpanStore.SchemaVersion + 5;
+            using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = $"PRAGMA user_version = {futureVersion};";
+                command.ExecuteNonQuery();
+            }
+
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span("t1", "s1", "session-1", "m", 1_000, 100, 0, 10, 0.5),
+            });
+
+            // A newer file keeps its version and still serves reads.
+            Assert.Equal(futureVersion, store.GetSchemaVersion());
+            Assert.True(store.IsNewerSchema);
+            Assert.Equal(1, store.GetSummary(0).Calls);
+            Assert.True(store.GetStorageStats().SchemaFromNewerBuild);
         }
         finally
         {

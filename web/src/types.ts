@@ -313,6 +313,7 @@ export interface TraceNode {
   isError: boolean;
   errorType: string | null;
   depth: number;
+  isContext: boolean;
   label: string;
   sourceText: string;
   durationText: string;
@@ -322,7 +323,7 @@ export interface TracePayload {
   nodes: TraceNode[];
   hasMore: boolean;
   nextCursor: string | null;
-  traceCount: number;
+  total: number;
 }
 
 export interface ReceiverInfo {
@@ -472,6 +473,9 @@ export interface StorageStats {
   combinedSpans: number;
   outcomeMetricPoints: number;
   tables: StorageTableInfo[];
+  schemaVersion: number;
+  supportedSchemaVersion: number;
+  schemaFromNewerBuild: boolean;
 }
 
 export interface SystemInfo {

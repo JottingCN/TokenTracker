@@ -72,7 +72,7 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 | GET | `/api/dashboard` | `range=0..4`、`source`；汇总、按模型（含辅助调用）、会话（主调用） |
 | GET | `/api/model/{model}` | `range` 或 `from`/`to`、`source`；模型详情、TTFT、平均生成速度、会话列表 |
 | GET | `/api/session/{sessionId}` | 会话汇总、调用、事件统计、Agent 运行、Hook、工具统计、outcome 指标；`range` 或 `from`/`to`、`source`、`includeCalls`（默认 true，Web 会话页传 false 以免每次快照传输数百 KB 调用明细），`models` 为按模型拆分的同口径汇总 |
-| GET | `/api/session/{sessionId}/trace` | Trace 拓扑节点：**按 trace 游标分块**（`budget` 为每块节点预算，默认 400；`cursor` 由上一块返回），响应 `nodes/hasMore/nextCursor/traceCount`；节点按时间升序 |
+| GET | `/api/session/{sessionId}/trace` | Trace 拓扑节点：**按时间游标分块、FIFO 顺序**（首块最早，`cursor` 向后取更新的块；`budget` 为每块节点预算，默认 400），响应 `nodes/hasMore/nextCursor/total`；节点按开始时间升序，块首会重复缺失祖先（`isContext=true`，无计数） |
 | GET | `/api/calls` | 服务端分页明细：`range/source/model/query/kind/priced/period/offset/limit` |
 | GET/POST/DELETE | `/api/models` | 模型设置：列表（供应商/图标/价格）、新增或更新（保存后重算历史）、按 model 删除 |
 | GET/POST | `/api/settings` | 数据保留天数（`0` = 永久） |
@@ -173,7 +173,7 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 模型名按来源规范化：Copilot Chat 的 `gen_ai.*.model` 是规范 ID（如 `gpt-4o-mini-2024-07-18`），只做小写与去注解，**不裁剪日期/版本/`-latest`**；Agent Host 模型名带上游前缀（实测 `DeepSeek/deepseek-flash`），只去最外层一段前缀，保留 `provider/model`。价格表键同样只去最外层前缀，查找时优先精确匹配。不做历史模型名回填。
 - 去重只使用文档化标识：span 以 `(trace_id, span_id)` 为主键，工具事件同来源按 `gen_ai.tool.call.id` 去重；**不要**按会话/模型/token/时间窗口猜测合并同来源 span。两套管线的 `gen_ai.response.id`、`trace_id`、`span_id` 互不相通，跨管线没有共享唯一 ID，因此 combined 只能用“会话 + 规范化模型 + 输入/输出 token + 主/辅助 + span 时间区间重叠”匹配（派生行写入 `otel_source='combined'`），原始记录保持不变，原始 span 变化后懒重建。费用不继承任一来源估算值，按合并后 token 与配置价格重算。
 - Trace 拓扑始终排除 combined 派生行；综合视图在时间区间重叠时合并跨来源重复的 chat 节点并重挂子节点。拓扑按开始时间排序、用 depth 缩进展示层级、节点显示 chat 输入/输出/缓存 token；不要引入 git graph；前端虚拟滚动并阻止滚动链到页面，支持全屏查看。
-- Trace 拓扑走**游标分块 + 虚拟滚动**，不要回到“一次拉整会话”，也**不要**做成页码/分页器：块按 trace 锚点（该 trace 最早开始时间）从新到旧切，`budget` 只保证“整条 trace 不被切开”，所以实测首块 359 节点 / 149 KB / 26 ms，而整会话一次要 1.86 MB / 179 ms。前端滚到顶部自动用 `nextCursor` 拉更早的块，并按“锚定行”重算 `scrollTop`（块之间时间可能交错，按新增行数补偿会跳）。跨来源合并只在「本块 + 下一条 trace」范围内做，避免为合并读整会话；被合并掉的对端由其所属块渲染，不会重复也不会丢。深度按块内父链记忆化计算。
+- Trace 拓扑走**时间游标分块 + 虚拟滚动**，分块**必须按 FIFO（开始时间正序）**：首块是最早的行，滚到底部再用 `nextCursor` 追加更新的块。**不要**按“整条 trace 不切开”切块：实测一条 trace 可跨 15.4 小时，它必然与其他 trace 交错，按 trace 切会让块之间时间倒流、观感错乱。分块在**全局排序 + 合并 + 深度计算之后**做切片，所以切块不改变顺序与父子关系；块首缺失的祖先以 `kind=context` / `isContext=true` 的行重复带上（无 token、无费用，`total` 不统计它们），缩进才不会断。`budget` 默认 400（实测首块 172 KB / 44 ms，整会话一次要 1.86 MB / 179 ms）。前端只在接近底部时拉下一块，追加不会移动视口，因此不需要 scrollTop 补偿；块短于视口时自动继续取。
 - 结果指标（编辑接受率、LOC、存活率、反馈/操作、PR/cloud、Agent 编辑）从 `metric_points` 按查询时累计 delta 聚合。metrics 的 `session.id` 是 VS Code 窗口级，归属顺序：自带 `gen_ai.conversation.id` / `copilot_chat.session_id` 直接归属 → 带 `gen_ai.tool.call.id` 时按 `session_events.call_id` 归属 → 否则记录 `window_session_id`，仅当该窗口在 `window_session_links` 中只有一个 chat session 时归属（`attribution_method=window`，置信度 0.6），多会话窗口保留 `window-only`，不要强行分摊。Dashboard 全局指标只按原始 metric point 统计一次。
 - 结果指标的**唯一真实来源**是 Copilot Chat 扩展宿主（`extensions/copilot/src/platform/otel/common/genAiMetrics.ts` 的 `GenAiMetrics`），由 VS Code UI 事件触发（`extension/conversation/vscode-node/userActions.ts` 的接受/拒绝、hunk action、copy/insert/apply、点赞；`intents/node/editCodeIntent.ts`、`agentIntent.ts`、`chatSessions/vscode-node/cloudBackendTelemetry.ts`、`copilotCloudSessionsProvider.ts`、`copilotcliSession.ts`、`codeMapper/codeMapperService.ts`）。Agent Host 只转 trace，provider-native metrics 直出，不会产生 `copilot_chat.*` 结果指标——只用 Agent Host 时卡片为空是预期行为。指标名/属性以 `extensions/copilot/docs/monitoring/agent_monitoring.md` 的 “Agent Activity & Outcome Metrics” 为准；`copilot_chat.cloud.pr_ready.count` 在上游代码与文档中都不存在，不要重新加入 allowlist。`lines_of_code.count` 只在 **accepted 的 hunk** 上累加（`inline_chat` 接受只计 `edit.acceptance.count`，不计 LOC）；`agent.summarization.count` 还有 `skipped` 结果，聚合时忽略（与文档的 applied/failed 一致）。
 - `OutcomeSummary` 里聚合的每个字段都必须在 `OutcomeCard` 渲染出来（或明确标注不展示）：只要 `HasData` 为 true 但卡片没有任何一行，就会出现「空卡片」。当前卡片覆盖 edit acceptance、file edit outcome、summarization、LOC、存活率、反馈、用户操作、PR/云会话、云操作、Agent 编辑、工具指标。
@@ -198,7 +198,9 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - 本地库只存需要的数据：span 元数据、`session_events`、`agent_runs`、outcome `metric_points`、`window_session_links`、`session_workspaces`（会话工作目录缓存）、价格、节假日、设置。不保存原始 `attributes`、日志事件、可由 span 推导的 token/TTFT/duration 指标；会话标题仍只在查询时解析，不入库。
 - 工作目录来源（AHP `workingDirectories` / `agent-host.db` / `workspace.yaml`）大多要求 Agent Host 在线。服务端在解析成功时把 `session_id → workspace_path` 写入 `session_workspaces`，解析不到时回退读该表，因此 AHP 掉线后工作区归属不会丢；`DeleteOlderThan` 会清掉已无 span 的会话缓存。
 - SQLite schema 变更使用幂等迁移（`EnsureColumn` / `CREATE TABLE IF NOT EXISTS`）。**建索引必须放在列迁移之后**：索引引用尚未添加的列会让 DDL 批次中断、后续表缺失并在启动时崩溃。
-- 插件仍在开发期，不考虑历史数据兼容：不要新增旧库迁移、旧字段回填或版本兼容分支（扩展侧已移除旧数据库复制逻辑）。
+- **数据库必须向前兼容**：升级只能做附加式迁移（`CREATE TABLE IF NOT EXISTS`、`EnsureColumn`、`CREATE INDEX IF NOT EXISTS`），**禁止** `DROP TABLE` / `DROP COLUMN` / 清库重建 / 版本不匹配时重建或清空。旧库在升级时原地补齐列与表，任何一行用户数据都不能因为版本变化被删除。
+- 版本标记用 SQLite 的 `PRAGMA user_version`（`SpanStore.SchemaVersion`）。新增列/表时把常量 +1，并在 `Initialize` 里追加幂等语句；启动时把版本写成当前值。读取到 `user_version > SchemaVersion`（更旧的程序打开更新的库）时进入兼容模式：只告警、不改库、不删数据。
+- 唯一允许的删除路径是数据保留期（`DeleteOlderThan`，由 `retention_days` 触发）和按模型删除设置；不要恢复曾经的 `SlimStorage` 一次性清理（它会删 metric_points、DROP 列与 `otel_log_events` 表）。
 
 ### 服务生命周期与更新
 

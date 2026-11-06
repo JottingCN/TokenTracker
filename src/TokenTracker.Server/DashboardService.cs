@@ -672,6 +672,8 @@ public sealed class DashboardService
         };
     }
 
+    public const int TraceBudget = 400;
+
     public TracePayload GetTrace(
         string sessionId,
         string? source = null,
@@ -688,12 +690,8 @@ public sealed class DashboardService
             page.Nodes.ToList(),
             page.HasMore,
             page.NextCursor,
-            page.TraceCount);
+            page.Total);
     }
-
-    // Keeps a block around 400 rows: enough to fill the panel without the LOH
-    // churn of a multi-megabyte response.
-    public const int TraceBudget = 400;
 
     public void ApplyOverrides() =>
         ModelPricing.SetOverrides(

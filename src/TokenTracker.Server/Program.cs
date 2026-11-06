@@ -96,13 +96,6 @@ var endpoint = $"http://127.0.0.1:{port}";
 var service = new DashboardService(store, metadata, counters, settings, endpoint);
 service.ApplyOverrides();
 
-if (store.GetSetting("storage_slim_v1") != "1")
-{
-    var removed = store.SlimStorage();
-    store.SetSetting("storage_slim_v1", "1");
-    Console.WriteLine($"slimmed storage: {removed} rows removed");
-}
-
 if (store.GetSetting("subagent_sessions_v1") != "1")
 {
     var resolved = store.ResolveSubagentSessions();
@@ -366,8 +359,8 @@ app.MapGet("/api/session/{sessionId}", (
         AppJsonContext.Default.SessionPayload);
 });
 
-// Cursor-paged so the panel never rebuilds a whole session: `cursor` is opaque
-// to clients, `budget` caps the rows per block.
+// FIFO blocks: `cursor` continues after the last returned row, `budget` caps the
+// rows per response. Traces may span blocks; the server repeats missing ancestors.
 app.MapGet("/api/session/{sessionId}/trace", (
     string sessionId,
     string? source,

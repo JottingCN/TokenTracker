@@ -56,8 +56,19 @@ public sealed partial class SpanStore
         END
         """;
 
+    /// <summary>
+    /// Schema generation stored in SQLite's <c>user_version</c>. Bump it when a
+    /// release needs a new column/table, and add the change to
+    /// <see cref="Initialize"/> using only additive statements: an older build must
+    /// still be able to open and read the same file.
+    /// </summary>
+    public const int SchemaVersion = 2;
+
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    // The version found on open, so callers can tell an upgraded file from one that
+    // was written by a newer build.
+    private int _openedSchemaVersion;
 
     public SpanStore(string databasePath)
     {
@@ -188,7 +199,10 @@ public sealed partial class SpanStore
             rawSpans,
             combinedSpans,
             outcomeMetricPoints,
-            tables);
+            tables,
+            _openedSchemaVersion,
+            SchemaVersion,
+            _openedSchemaVersion > SchemaVersion);
     }
 
     private void Initialize()
@@ -503,6 +517,54 @@ public sealed partial class SpanStore
                 """;
             indexes.ExecuteNonQuery();
         }
+
+        // Everything above is additive and idempotent, so an old database is
+        // upgraded in place and no row is ever deleted during a schema change.
+        var version = ReadSchemaVersion(connection);
+        _openedSchemaVersion = version;
+        if (version > SchemaVersion)
+        {
+            // A newer build wrote this file. Keep it untouched: columns we do not
+            // know about are simply ignored, and refusing to start would look like
+            // data loss to the user.
+            Console.Error.WriteLine(
+                $"database schema {version} is newer than {SchemaVersion}; " +
+                "running in compatibility mode without modifying it");
+            return;
+        }
+
+        SetSchemaVersion(connection, SchemaVersion);
+        // The file is now at the current generation, whether it was created here or
+        // upgraded from an older build.
+        _openedSchemaVersion = SchemaVersion;
+    }
+
+    /// <summary>
+    /// SQLite's <c>user_version</c> is the cheap, self-contained schema marker; it
+    /// survives VACUUM and needs no extra table row.
+    /// </summary>
+    public int GetSchemaVersion() => _openedSchemaVersion;
+
+    /// <summary>
+    /// True when the file was written by a newer build and is therefore left
+    /// untouched. Reads keep working; nothing is migrated or deleted.
+    /// </summary>
+    public bool IsNewerSchema => _openedSchemaVersion > SchemaVersion;
+
+    private static int ReadSchemaVersion(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private static void SetSchemaVersion(SqliteConnection connection, int version)
+    {
+        using var command = connection.CreateCommand();
+        // PRAGMA does not accept parameters and the value is a compile-time
+        // constant, so this interpolation cannot be injected.
+        command.CommandText = $"PRAGMA user_version = {version};";
+        command.ExecuteNonQuery();
     }
 
     public int InsertMany(IReadOnlyList<OtlpSpanRecord> spans)
@@ -2934,100 +2996,6 @@ public sealed partial class SpanStore
     private static bool NeedsSessionResolution(string? sessionId) =>
         string.IsNullOrWhiteSpace(sessionId) ||
         sessionId.TrimStart().StartsWith("call_", StringComparison.OrdinalIgnoreCase);
-
-    public int SlimStorage()
-    {
-        _writeLock.Wait();
-        try
-        {
-            using var connection = OpenConnection();
-            var removed = 0;
-
-            using (var command = connection.CreateCommand())
-            {
-                var parameters = MetricNames.Outcome
-                    .Select((_, index) => $"@metric_{index}")
-                    .ToList();
-                command.CommandText =
-                    "DELETE FROM metric_points WHERE metric_name NOT IN " +
-                    $"({string.Join(", ", parameters)});";
-                var index = 0;
-                foreach (var name in MetricNames.Outcome)
-                {
-                    command.Parameters.AddWithValue(
-                        parameters[index++],
-                        name);
-                }
-
-                removed += command.ExecuteNonQuery();
-            }
-
-            foreach (var column in new[] { "attributes", "source_origins", "provenance" })
-            {
-                if (!ColumnExists(connection, "spans", column))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    using var drop = connection.CreateCommand();
-                    drop.CommandText = $"ALTER TABLE spans DROP COLUMN {column};";
-                    drop.ExecuteNonQuery();
-                }
-                catch (SqliteException)
-                {
-                    using var clear = connection.CreateCommand();
-                    clear.CommandText =
-                        $"UPDATE spans SET {column} = NULL WHERE {column} IS NOT NULL;";
-                    clear.ExecuteNonQuery();
-                }
-            }
-
-            using (var dropLogs = connection.CreateCommand())
-            {
-                dropLogs.CommandText = "DROP TABLE IF EXISTS otel_log_events;";
-                dropLogs.ExecuteNonQuery();
-            }
-
-            using (var vacuum = connection.CreateCommand())
-            {
-                vacuum.CommandText = "VACUUM;";
-                vacuum.ExecuteNonQuery();
-            }
-
-            _combinedAllDirty = true;
-            _combinedDirtySessions.Clear();
-            _combinedDirty = true;
-            return removed;
-        }
-        finally
-        {
-            _writeLock.Release();
-        }
-    }
-
-    private static bool ColumnExists(
-        SqliteConnection connection,
-        string table,
-        string column)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA table_info({table});";
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            if (string.Equals(
-                    reader.GetString(1),
-                    column,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     private static void EnsureColumn(
         SqliteConnection connection,

@@ -203,6 +203,13 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
                 children: formatNumber(data.storage.outcomeMetricPoints),
               },
               {
+                key: 'schema',
+                label: t('schema.version'),
+                children: data.storage.schemaFromNewerBuild
+                  ? `${data.storage.schemaVersion} / ${data.storage.supportedSchemaVersion} · ${t('schema.from.newer.build')}`
+                  : `${data.storage.schemaVersion} · ${t('schema.up.to.date')}`,
+              },
+              {
                 key: 'retention',
                 label: t('retention'),
                 children:

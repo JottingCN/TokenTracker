@@ -13,4 +13,7 @@ public sealed record StorageStats(
     long RawSpans,
     long CombinedSpans,
     long OutcomeMetricPoints,
-    List<StorageTableInfo> Tables);
+    List<StorageTableInfo> Tables,
+    int SchemaVersion,
+    int SupportedSchemaVersion,
+    bool SchemaFromNewerBuild);
