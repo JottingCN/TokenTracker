@@ -240,18 +240,87 @@ public sealed partial class SpanStore
                 StringComparer.OrdinalIgnoreCase);
             var windowCandidates = new Dictionary<string, (int Count, string? Session)>(
                 StringComparer.OrdinalIgnoreCase);
+
+            // Cumulative samples are re-exported every ~10 s, so only one row per minute per
+            // series is kept to bound growth. A newer sample has to overwrite that row instead
+            // of being dropped: dropping it loses everything between the last stored row and
+            // the moment the extension host exits, which for rare events such as edit
+            // acceptances means losing the ones that just happened.
+            using var mergeCommand = connection.CreateCommand();
+            mergeCommand.Transaction = transaction;
+            mergeCommand.CommandText = """
+                UPDATE metric_points
+                   SET value = @value, count = @count, sum = @sum, min = @min,
+                       max = @max, bucket_counts = @bucket_counts,
+                       explicit_bounds = @explicit_bounds,
+                       window_session_id = @window_session_id,
+                       attributed_session_id = @attributed_session_id,
+                       attribution_method = @attribution_method,
+                       attribution_confidence = @attribution_confidence,
+                       end_time_ms = @end_time_ms, received_at_ms = @received_at_ms
+                 WHERE otel_source = @otel_source
+                   AND series_key = @series_key
+                   AND end_time_ms = @last_end_time_ms
+                   AND start_time_ms = @start_time_ms
+                   AND NOT EXISTS (
+                       SELECT 1 FROM metric_points same
+                       WHERE same.otel_source = @otel_source
+                         AND same.series_key = @series_key
+                         AND same.end_time_ms = @end_time_ms);
+                """;
+            AddParameter(mergeCommand, "@otel_source", SqliteType.Text);
+            AddParameter(mergeCommand, "@series_key", SqliteType.Text);
+            AddParameter(mergeCommand, "@last_end_time_ms", SqliteType.Integer);
+            AddParameter(mergeCommand, "@start_time_ms", SqliteType.Integer);
+            AddParameter(mergeCommand, "@window_session_id", SqliteType.Text);
+            AddParameter(mergeCommand, "@attributed_session_id", SqliteType.Text);
+            AddParameter(mergeCommand, "@attribution_method", SqliteType.Text);
+            AddParameter(mergeCommand, "@attribution_confidence", SqliteType.Real);
+            AddParameter(mergeCommand, "@end_time_ms", SqliteType.Integer);
+            AddParameter(mergeCommand, "@value", SqliteType.Real);
+            AddParameter(mergeCommand, "@count", SqliteType.Integer);
+            AddParameter(mergeCommand, "@sum", SqliteType.Real);
+            AddParameter(mergeCommand, "@min", SqliteType.Real);
+            AddParameter(mergeCommand, "@max", SqliteType.Real);
+            AddParameter(mergeCommand, "@bucket_counts", SqliteType.Text);
+            AddParameter(mergeCommand, "@explicit_bounds", SqliteType.Text);
+            AddParameter(mergeCommand, "@received_at_ms", SqliteType.Integer);
+
             var inserted = 0;
             foreach (var point in points)
             {
                 var seriesKey = $"{point.Source}\u001f{point.SeriesKey}";
-                if (lastEndBySeries.TryGetValue(seriesKey, out var lastEnd) &&
-                    lastEnd > 0 &&
-                    point.EndTimeMs - lastEnd < sampleIntervalMs)
+                lastEndBySeries.TryGetValue(seriesKey, out var lastEnd);
+                if (lastEnd > 0 && point.EndTimeMs <= lastEnd)
                 {
+                    // An older or replayed sample holds nothing the stored row lacks.
                     continue;
                 }
 
-                lastEndBySeries[seriesKey] = point.EndTimeMs;
+                var attribution = ResolveMetricAttribution(
+                    connection,
+                    transaction,
+                    point,
+                    callSessions,
+                    windowCandidates);
+
+                if (lastEnd > 0 && point.EndTimeMs - lastEnd < sampleIntervalMs)
+                {
+                    mergeCommand.Parameters["@otel_source"].Value = point.Source;
+                    mergeCommand.Parameters["@series_key"].Value = point.SeriesKey;
+                    mergeCommand.Parameters["@last_end_time_ms"].Value = lastEnd;
+                    BindMetricSample(mergeCommand, point, attribution);
+                    if (mergeCommand.ExecuteNonQuery() > 0)
+                    {
+                        lastEndBySeries[seriesKey] = point.EndTimeMs;
+                        inserted++;
+                        continue;
+                    }
+
+                    // The aggregation epoch changed (counter restart) or that timestamp is
+                    // already taken: keep this sample as its own row instead.
+                }
+
                 command.Parameters["@otel_source"].Value = point.Source;
                 command.Parameters["@series_key"].Value = point.SeriesKey;
                 command.Parameters["@metric_name"].Value = point.MetricName;
@@ -264,40 +333,14 @@ public sealed partial class SpanStore
                     (object?)point.ScopeName ?? DBNull.Value;
                 command.Parameters["@attrs"].Value =
                     (object?)point.Attributes ?? DBNull.Value;
-                command.Parameters["@window_session_id"].Value =
-                    (object?)point.WindowSessionId ?? DBNull.Value;
-                var attribution = ResolveMetricAttribution(
-                    connection,
-                    transaction,
-                    point,
-                    callSessions,
-                    windowCandidates);
-                command.Parameters["@attributed_session_id"].Value =
-                    (object?)attribution.SessionId ?? DBNull.Value;
-                command.Parameters["@attribution_method"].Value =
-                    (object?)attribution.Method ?? DBNull.Value;
-                command.Parameters["@attribution_confidence"].Value =
-                    attribution.Confidence is null
-                        ? DBNull.Value
-                        : attribution.Confidence.Value;
-                command.Parameters["@start_time_ms"].Value = point.StartTimeMs;
-                command.Parameters["@end_time_ms"].Value = point.EndTimeMs;
-                command.Parameters["@value"].Value =
-                    point.Value is null ? DBNull.Value : point.Value.Value;
-                command.Parameters["@count"].Value =
-                    point.Count is null ? DBNull.Value : point.Count.Value;
-                command.Parameters["@sum"].Value =
-                    point.Sum is null ? DBNull.Value : point.Sum.Value;
-                command.Parameters["@min"].Value =
-                    point.Min is null ? DBNull.Value : point.Min.Value;
-                command.Parameters["@max"].Value =
-                    point.Max is null ? DBNull.Value : point.Max.Value;
-                command.Parameters["@bucket_counts"].Value =
-                    (object?)point.BucketCounts ?? DBNull.Value;
-                command.Parameters["@explicit_bounds"].Value =
-                    (object?)point.ExplicitBounds ?? DBNull.Value;
-                command.Parameters["@received_at_ms"].Value = point.ReceivedAtMs;
-                inserted += command.ExecuteNonQuery();
+                BindMetricSample(command, point, attribution);
+                var changes = command.ExecuteNonQuery();
+                if (changes > 0)
+                {
+                    lastEndBySeries[seriesKey] = point.EndTimeMs;
+                }
+
+                inserted += changes;
             }
 
             transaction.Commit();
@@ -307,6 +350,47 @@ public sealed partial class SpanStore
         {
             _writeLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Binds the columns shared by inserting a sample and merging a newer cumulative sample
+    /// of the same series into the stored row.
+    /// </summary>
+    private static void BindMetricSample(
+        SqliteCommand command,
+        OtlpMetricPointRecord point,
+        (
+            string? SessionId,
+            string? Method,
+            double? Confidence) attribution)
+    {
+        command.Parameters["@window_session_id"].Value =
+            (object?)point.WindowSessionId ?? DBNull.Value;
+        command.Parameters["@attributed_session_id"].Value =
+            (object?)attribution.SessionId ?? DBNull.Value;
+        command.Parameters["@attribution_method"].Value =
+            (object?)attribution.Method ?? DBNull.Value;
+        command.Parameters["@attribution_confidence"].Value =
+            attribution.Confidence is null
+                ? DBNull.Value
+                : attribution.Confidence.Value;
+        command.Parameters["@start_time_ms"].Value = point.StartTimeMs;
+        command.Parameters["@end_time_ms"].Value = point.EndTimeMs;
+        command.Parameters["@value"].Value =
+            point.Value is null ? DBNull.Value : point.Value.Value;
+        command.Parameters["@count"].Value =
+            point.Count is null ? DBNull.Value : point.Count.Value;
+        command.Parameters["@sum"].Value =
+            point.Sum is null ? DBNull.Value : point.Sum.Value;
+        command.Parameters["@min"].Value =
+            point.Min is null ? DBNull.Value : point.Min.Value;
+        command.Parameters["@max"].Value =
+            point.Max is null ? DBNull.Value : point.Max.Value;
+        command.Parameters["@bucket_counts"].Value =
+            (object?)point.BucketCounts ?? DBNull.Value;
+        command.Parameters["@explicit_bounds"].Value =
+            (object?)point.ExplicitBounds ?? DBNull.Value;
+        command.Parameters["@received_at_ms"].Value = point.ReceivedAtMs;
     }
 
     private static (

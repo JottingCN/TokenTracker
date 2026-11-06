@@ -1668,6 +1668,51 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void MergesCumulativeSamplesInsideTheSamplingInterval()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+
+            // The SDK re-exports cumulative counters every 10 s and the host stops before the
+            // next minute boundary, so dropping the in-interval samples would report 3.
+            Assert.Equal(3, store.InsertMetricPoints(new[]
+            {
+                MetricPoint("accepted", 3, 1_000, 0),
+                MetricPoint("accepted", 7, 11_000, 0),
+                MetricPoint("accepted", 9, 21_000, 0),
+            }));
+            Assert.Equal(9, store.GetOutcomeSummary(0, long.MaxValue).EditAccepted);
+
+            // A replayed older total must not walk the stored value back.
+            Assert.Equal(
+                0,
+                store.InsertMetricPoints(new[] { MetricPoint("accepted", 5, 15_000, 0), }));
+            Assert.Equal(9, store.GetOutcomeSummary(0, long.MaxValue).EditAccepted);
+
+            // Past the interval a new row starts, and the delta between rows stays correct.
+            Assert.Equal(
+                1,
+                store.InsertMetricPoints(new[] { MetricPoint("accepted", 12, 95_000, 0), }));
+            Assert.Equal(12, store.GetOutcomeSummary(0, long.MaxValue).EditAccepted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void AttributesWindowMetricsOnlyWhenSessionIsUnique()
     {
         var directory = Path.Combine(

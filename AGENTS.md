@@ -106,10 +106,33 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 | 扩展数据 | `globalStorage/jottingcn.tokentracker/data` | 同左 | 同左 |
 | 会话状态 | `%USERPROFILE%\.copilot\session-state` | `~/.copilot/session-state` | `~/.copilot/session-state` |
 | agent-host.db | `%APPDATA%\Code\User\globalStorage\agent-host.db` | `~/.config/Code/User/globalStorage/agent-host.db` | `~/Library/Application Support/Code/User/globalStorage/agent-host.db` |
-| 扩展 span 库 | `%APPDATA%\Code\User\globalStorage\GitHub.copilot-chat\agent-traces.db` | `~/.config/.../agent-traces.db` | `~/Library/.../agent-traces.db` |
+| 扩展 span 库 | `%APPDATA%\Code\User\globalStorage\github.copilot-chat\agent-traces.db` | `~/.config/Code/User/globalStorage/github.copilot-chat/agent-traces.db` | `~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/agent-traces.db` |
 | Agent Host span 库 | `%APPDATA%\Code\agent-host\otel\agent-host-traces.db` | `~/.config/Code/agent-host/otel/...` | `~/Library/Application Support/Code/agent-host/otel/...` |
 
 两个本地 span 库只保留约 7 天 / 100 会话，长期统计以 Token Tracker 数据库为准。
+
+globalStorage 的扩展目录一律是**全小写** `<publisher>.<id>`（实测同目录还有 `ms-python.python`、`redhat.java`、`jottingcn.tokentracker`），
+不是扩展 ID 的显示形式 `GitHub.copilot-chat`。Windows 大小写不敏感掩盖了这一点，**Linux/macOS 上按大写形式拼路径会找不到库**。
+`localTraceDatabases()` 因此同时探测小写与大写两种目录名（小写优先）。
+
+实测库形态（2026-11-06，两份库同时只读抽样，详见 `docs/` 三份文档的“实测附录”）：
+
+- 两份库的 `spans`/`span_attributes`/`span_events` DDL 逐字相同，主键是 `span_id` 单列；`turn_index` 恒 NULL。
+- **扩展库不保存 resource attributes**：`service.name` / `service.namespace` / `session.id` 全部取不到，管线归因只能靠文件路径。
+- **`gen_ai.usage.cache_creation.input_tokens` 两条管线都不发**，`cache_read` 只有扩展管线有（实测命中 99.03%）；
+  Agent Host 库 `cached_tokens` 全 NULL，所以只用 Agent Host 的会话命中率必然为空，这是数据源缺失而非未命中。
+- **`execute_hook` span 两条管线都是 0 条**，hook 信号在 `span_events`（`github.copilot.hook.start/end` + `hook.type`/`duration`）；
+  `LocalTraceImporter` 因此额外读 `span_events`，**只取 `hook.end`**（带 `hook.duration`，秒浮点）并写成 `operation='execute_hook'` 的
+  `session_events` 行；`hook.start` 不入库，否则次数翻倍。`session_events` 主键是 `(trace_id, span_id)`，
+  一条 span 只能占一行，所以 hook 行的 `span_id` 用 `{spanId}#hook#{invocation_id}` 合成（缺 id 时用 `span_events.rowid`），
+  **不要用真实 span_id**，否则同一条 invoke_agent 上的多个 hook 会被 `INSERT OR IGNORE` 吃掉。
+- Agent Host 库 `gen_ai.usage.reasoning.output_tokens` 属性存在，但 `spans.reasoning_tokens` 列全 NULL；
+  导入时列值为 0 必须回退到该属性（新旧键都试），否则 Agent Host 来源的推理 token 会静默变成 0。
+- `github.copilot.tool.parameters.edit_type` / `skill_name` / `mcp_server_name_hash` / `mcp_tool_name` **实测均不存在**，
+  实际键是 `github.copilot.external_tool.name`、`github.copilot.context.mcp_server_names`（哈希数组）、`github.copilot.context.skills`（明文清单）。
+- 扩展管线 `input_tokens` **已含** cache_read（逐条 `cached ≤ input`），`TokenSemantics.UsesExclusiveInputTokens` 只认 anthropic/claude 是对的。
+- `captureContent` 开启会让扩展库涨到 GB 级（实测 3.63 GB，`gen_ai.input.messages` 单键占 83%）且关闭后不回收；
+  导入用 `DefaultTimeout = 5` 秒对这种库有超时风险。
 
 ## 关键行为（改动前确认）
 
@@ -149,8 +172,11 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 ### 辅助调用
 
 - 当前实现把没有 `session_id` 的 span 视为辅助调用（`is_main = 0`）。该分类是推断，不是 Copilot 显式标记。
+  **实测可用更强的信号**：扩展管线辅助调用的 `gen_ai.agent.name` 带子系统后缀（`copilotLanguageModelWrapper/thinkingTitle` 1084、
+  `/toolRiskAssessment` 7、`progressMessages` 2、`title` 1），本机 1094 条无会话 span 全部能被它归类，主调用是 `copilotLanguageModelWrapper`；
+  Agent Host 的 `chat` span **没有** `gen_ai.agent.name`，该增强只能按来源分别生效。
 - 辅助调用并入 Dashboard 汇总与按模型统计；会话列表仅含主调用；“调用明细”独立菜单展示全部调用（含辅助调用），支持关键字、来源、主/辅助、定价状态与时段检索，并按来源分别计数。辅助调用通常无法可靠归属具体会话。
-- 来源（Copilot Chat `github.copilot.chat.otel`、Agent Host `chat.agentHost.otel`）只用于接收端归因；Web 与扩展默认展示**综合**数据，不提供来源切换和来源标签。`source=combined`（旧 `source=all` 作为别名）表示跨来源同一会话/模型/输入输出且 span 时间区间重叠的调用合并为一条，优先保留有效 TTFT、缓存、推理等字段（费用按合并后的 token 重新计算），原始来源记录仍保留供合并与诊断使用。接收端优先用路径区分：`/otlp/copilot-chat`、`/otlp/agent-host`（同时接受 `/v1/traces` 后缀，旧路径 `/otlp/extension-host` 作为别名）；旧 `/v1/traces` 再按资源属性判定。Agent Host 统一带 `service.namespace=vscode.agent-host`，其 `service.name` 可能为 `github-copilot`、`claude-code`、`codex-app-server`、`vscode-agent-host`；Copilot Chat 默认为 `copilot-chat` 且通常无 namespace。无法判断时写入 `unknown`，不要默认归入 Copilot Chat。会话页事件统计来自 `session_events`（`execute_tool` / `invoke_agent` 等），工具统计按 `gen_ai.tool.name` 汇总；工具事件同时保存 `gen_ai.tool.type`、`github.copilot.tool.parameters.edit_type` 与 `...skill_name`。仅事件、没有 chat span 的会话也会进入会话列表（调用列显示 `0 (N 事件)`）。
+- 来源（Copilot Chat `github.copilot.chat.otel`、Agent Host `chat.agentHost.otel`）只用于接收端归因；Web 与扩展默认展示**综合**数据，不提供来源切换和来源标签。`source=combined`（旧 `source=all` 作为别名）表示跨来源同一会话/模型/输入输出且 span 时间区间重叠的调用合并为一条，优先保留有效 TTFT、缓存、推理等字段（费用按合并后的 token 重新计算），原始来源记录仍保留供合并与诊断使用。接收端优先用路径区分：`/otlp/copilot-chat`、`/otlp/agent-host`（同时接受 `/v1/traces` 后缀，旧路径 `/otlp/extension-host` 作为别名）；旧 `/v1/traces` 再按资源属性判定。Agent Host 统一带 `service.namespace=vscode.agent-host`，其 `service.name` 可能为 `github-copilot`、`claude-code`、`codex-app-server`、`vscode-agent-host`；Copilot Chat 默认为 `copilot-chat` 且通常无 namespace。无法判断时写入 `unknown`，不要默认归入 Copilot Chat。会话页事件统计来自 `session_events`（`execute_tool` / `invoke_agent` 等），工具统计按 `gen_ai.tool.name` 汇总；工具事件同时保存 `gen_ai.tool.type` 与 `github.copilot.tool.parameters.edit_type` / `...skill_name`（**后两键实测在两份离线库里都从未出现，属于“有则存”的可选字段**；Agent Host 实际给的是 `github.copilot.external_tool.name`、`context.mcp_server_names`、`context.skills`，不要按 `tool.parameters.*` 键名写查询，也不要用 `gen_ai.tool.type` 区分 MCP——实测全为 `function`）。仅事件、没有 chat span 的会话也会进入会话列表（调用列显示 `0 (N 事件)`）。
 - 调用明细使用服务端分页（`total` / `offset` / `limit`，单页上限 500），不要重新引入固定 2000 条截断；文本检索在服务端匹配会话标题（元数据）、模型与会话 ID 后直接分页。combined 行按“脏会话 + 会话级时间窗”增量重建，只重建受影响区间（窗口沿重叠区间扩展，超过 12 小时或 4 轮仍不收敛才回退该会话全量重建）；**不要**恢复“按会话整库重算”（单个新 span 会重算整个 5k span 会话，实测 208 ms/次）。无 `session_id` 的辅助调用按批次时间窗增量重建，**不要恢复“辅助调用批次 → 全表重建”**：实测 2 万 span 时全量重建单次读取消耗 3~12 秒 CPU，窗口重建只需 0.16 秒。窗口查询必须写成可用 `ix_spans_start` / `ix_spans_end` 的 OR 形式，`COALESCE(end_time_ms, start_time_ms)` 会退化成全表扫描。
 - 左侧“系统信息”抽屉读取 `GET /api/system`，展示数据库路径/大小、表与行数、原始/综合 span、outcome 指标、监听与读取路径、AHP 状态；页脚状态栏已移除。路径表每行都带当前用途标记（`扩展监控中` / `AHP 在线，暂停监控` / `查询时读取` / `AHP 端点轮询中` / `仅导入时读取` / `未使用`），由服务端的 AHP 状态推导，与扩展的监控开关同源，不要写成静态清单。
 - 工具名统一用 `ToolNameResolver`（Core）显示：上游把扩展宿主注册的外部工具名发成 `SHA-256(工具名)`，解析器用内置的公开工具清单现算哈希反查（不维护哈希表）；`ToolCallRow.ToolDisplayText` 与 Trace 节点 `label` 都用它，Web/Tip/拓扑一处生效。MCP server 哈希保持不可解读。
@@ -167,19 +193,25 @@ npm run package        # 生成 tokentracker-*.vsix（排除 server/）
 - Agent Host 设置需完整退出并重新打开 VS Code 才生效；仅重载窗口可能复用旧 host。
 - 模型归因优先 `gen_ai.response.model`（Auto 模式下 request model 可能是 `auto`）；会话 ID 优先 `copilot_chat.parent_chat_session_id`（子代理归到父级/根会话），其次 `copilot_chat.session_id`、`gen_ai.conversation.id`、`copilot_chat.chat_session_id`；`call_` 开头的是工具调用 ID，不是会话 ID，必须忽略。子代理的 `execute_tool` span 会把会话字段写成父 call id，需沿 `parent_span_id` 回溯归属根会话；启动时以 `subagent_sessions_v1` 修复历史行。
 - 子代理 `invoke_agent` 写入 `agent_runs`（父 span 为对应 `execute_tool`），其工具调用计入根会话工具统计；子代理 chat span 是真实 LLM 调用，计入会话调用与费用，但 `agent_runs` 汇总 token 不重复计入 chat 汇总。
-- Anthropic/Claude 的 `input_tokens` 不含缓存：解析时把 cache read + cache creation 合并为总输入；cache creation 按缓存写入价计费，未配置时回退到未缓存输入价。
+- Anthropic/Claude 的 `input_tokens` 不含缓存：解析时把 cache read + cache creation 合并为总输入；cache creation 按缓存写入价计费，未配置时回退到未缓存输入价。**实测：`cache_creation.input_tokens` 在两条管线的离线库里都是 0 次，所以“缓存写入价”分支目前不会被触发；`cache_read` 只有扩展管线有。测试费用回归时不要依赖这条分支。**
 - 扩展管线若带 `copilot_chat.copilot_usage_nano_aiu`，调用列表在估算费用下方显示实际 AIC（nano-AIU / 1e9）；Agent Host 无该字段。
-- 首次响应时间优先 `copilot_chat.time_to_first_token`（毫秒），其次 `gen_ai.server.time_to_first_token` / `gen_ai.response.time_to_first_token`，最后才是 `gen_ai.response.time_to_first_chunk`；`gen_ai.response.time_to_first_chunk` 仅在没有任何明确 TTFT 时作为回退，且明显小于总耗时时才使用，≥90% 总耗时视为非流式/代理缓冲并丢弃（`HasExplicitTtft` 不含 chunk 键，因此回退值始终受该规则约束）。生成速度只在有有效 TTFT 时按“输出 token /（耗时 − TTFT）”计算；生成时间不足 50 ms、输出少于 5 token 或无 TTFT 显示 `-`。
+- 首次响应时间优先 `copilot_chat.time_to_first_token`（毫秒），其次 `gen_ai.server.time_to_first_token` / `gen_ai.response.time_to_first_token`，最后才是 `gen_ai.response.time_to_first_chunk`；**实测 `gen_ai.response.time_to_first_chunk` 单位是秒**（同一条 span 上 `496` ms 对应 `0.498`），`ParseTtftMs` 的 ×1000 换算是对的，两条管线也都只靠它拿 TTFT。`gen_ai.response.time_to_first_chunk` 仅在没有任何明确 TTFT 时作为回退，且明显小于总耗时时才使用，≥90% 总耗时视为非流式/代理缓冲并丢弃（`HasExplicitTtft` 不含 chunk 键，因此回退值始终受该规则约束）。生成速度只在有有效 TTFT 时按“输出 token /（耗时 − TTFT）”计算；生成时间不足 50 ms、输出少于 5 token 或无 TTFT 显示 `-`。
 - 模型名按来源规范化：Copilot Chat 的 `gen_ai.*.model` 是规范 ID（如 `gpt-4o-mini-2024-07-18`），只做小写与去注解，**不裁剪日期/版本/`-latest`**；Agent Host 模型名带上游前缀（实测 `DeepSeek/deepseek-flash`），只去最外层一段前缀，保留 `provider/model`。价格表键同样只去最外层前缀，查找时优先精确匹配。不做历史模型名回填。
 - 去重只使用文档化标识：span 以 `(trace_id, span_id)` 为主键，工具事件同来源按 `gen_ai.tool.call.id` 去重；**不要**按会话/模型/token/时间窗口猜测合并同来源 span。两套管线的 `gen_ai.response.id`、`trace_id`、`span_id` 互不相通，跨管线没有共享唯一 ID，因此 combined 只能用“会话 + 规范化模型 + 输入/输出 token + 主/辅助 + span 时间区间重叠”匹配（派生行写入 `otel_source='combined'`），原始记录保持不变，原始 span 变化后懒重建。费用不继承任一来源估算值，按合并后 token 与配置价格重算。
 - Trace 拓扑始终排除 combined 派生行；综合视图在时间区间重叠时合并跨来源重复的 chat 节点并重挂子节点。拓扑按开始时间排序、用 depth 缩进展示层级、节点显示 chat 输入/输出/缓存 token；不要引入 git graph；前端虚拟滚动并阻止滚动链到页面，支持全屏查看。
 - Trace 拓扑走**时间游标分块 + 虚拟滚动**，分块**必须按 FIFO（开始时间正序）**：首块是最早的行，滚到底部再用 `nextCursor` 追加更新的块。**不要**按“整条 trace 不切开”切块：实测一条 trace 可跨 15.4 小时，它必然与其他 trace 交错，按 trace 切会让块之间时间倒流、观感错乱。分块在**全局排序 + 合并 + 深度计算之后**做切片，所以切块不改变顺序与父子关系；块首缺失的祖先以 `kind=context` / `isContext=true` 的行重复带上（无 token、无费用，`total` 不统计它们），缩进才不会断。`budget` 默认 400（实测首块 172 KB / 44 ms，整会话一次要 1.86 MB / 179 ms）。前端只在接近底部时拉下一块，追加不会移动视口，因此不需要 scrollTop 补偿；块短于视口时自动继续取。
 - 结果指标（编辑接受率、LOC、存活率、反馈/操作、PR/cloud、Agent 编辑）从 `metric_points` 按查询时累计 delta 聚合。metrics 的 `session.id` 是 VS Code 窗口级，归属顺序：自带 `gen_ai.conversation.id` / `copilot_chat.session_id` 直接归属 → 带 `gen_ai.tool.call.id` 时按 `session_events.call_id` 归属 → 否则记录 `window_session_id`，仅当该窗口在 `window_session_links` 中只有一个 chat session 时归属（`attribution_method=window`，置信度 0.6），多会话窗口保留 `window-only`，不要强行分摊。Dashboard 全局指标只按原始 metric point 统计一次。
+  **实测（0.73.0 bundle）：`incrementCounter` 只做 `counter.add(value, attrs)`，编辑类指标（acceptance / chat_edit / LOC / action / feedback / summarization / survival）既不带 `gen_ai.conversation.id` 也不带 `gen_ai.tool.call.id`，前两级归属对它们永不命中**——每会话卡片只有“窗口唯一会话”这一条路，多会话窗口下卡片为空属预期，别去改匹配阈值。这些指标也不带模型/provider 维度，不能按模型拆。
+  **累计计数器每 10 秒重发同一 series，`InsertMetricPoints` 为控制行数只留每分钟一行：区间内的新点必须覆盖（UPDATE）已有行的 value/count/sum/min/max/end_time，不能丢弃**——丢弃会让进程退出前最后 ≤60 秒的增量永久失踪（接受编辑这种低频事件最先受害，回归用例 `SpanStoreTests.MergesCumulativeSamplesInsideTheSamplingInterval`）。早于已存点或时间戳重复的采样直接忽略。
+- 结果指标**只能来自在线 OTLP `/v1/metrics`**：两份离线 span 库里没有任何 metrics，所以 `POST /api/import-local` 导入的会话结果卡片必然为空。上游会发但 allowlist 未收录、当前静默丢弃的有
+  `copilot_chat.session.count`、`agent.turn.count`、`agent.invocation.duration`、`time_to_first_token`（轮次/TTFT 用 span 属性即可）；`tool.call.count` 带 `success` 布尔，聚合目前不区分成功失败。
 - 结果指标的**唯一真实来源**是 Copilot Chat 扩展宿主（`extensions/copilot/src/platform/otel/common/genAiMetrics.ts` 的 `GenAiMetrics`），由 VS Code UI 事件触发（`extension/conversation/vscode-node/userActions.ts` 的接受/拒绝、hunk action、copy/insert/apply、点赞；`intents/node/editCodeIntent.ts`、`agentIntent.ts`、`chatSessions/vscode-node/cloudBackendTelemetry.ts`、`copilotCloudSessionsProvider.ts`、`copilotcliSession.ts`、`codeMapper/codeMapperService.ts`）。Agent Host 只转 trace，provider-native metrics 直出，不会产生 `copilot_chat.*` 结果指标——只用 Agent Host 时卡片为空是预期行为。指标名/属性以 `extensions/copilot/docs/monitoring/agent_monitoring.md` 的 “Agent Activity & Outcome Metrics” 为准；`copilot_chat.cloud.pr_ready.count` 在上游代码与文档中都不存在，不要重新加入 allowlist。`lines_of_code.count` 只在 **accepted 的 hunk** 上累加（`inline_chat` 接受只计 `edit.acceptance.count`，不计 LOC）；`agent.summarization.count` 还有 `skipped` 结果，聚合时忽略（与文档的 applied/failed 一致）。
 - `OutcomeSummary` 里聚合的每个字段都必须在 `OutcomeCard` 渲染出来（或明确标注不展示）：只要 `HasData` 为 true 但卡片没有任何一行，就会出现「空卡片」。当前卡片覆盖 edit acceptance、file edit outcome、summarization、LOC、存活率、反馈、用户操作、PR/云会话、云操作、Agent 编辑、工具指标。
 - 只统计 `gen_ai.operation.name=chat` 的 span，避免与 `invoke_agent` / `execute_tool` 重复计数。
 - 隐私约束：trace/metric 解析只保存非内容元数据 allowlist；即使 `captureContent` 开启，也不写入 prompt/response、工具参数/结果、单次调用的 file path、command、raw MCP server name、session title 或身份字段。唯一例外是 `session_workspaces` 保存的**会话工作区根目录**，它来自本机 VS Code 元数据（AHP / agent-host.db / workspace.yaml），不来自遥测内容，仅用于工作区归属匹配。
 - `POST /api/import-local` 只读导入 chat span、工具/Hook 事件与 `invoke_agent`，按 `(trace_id, span_id)` / tool call id 去重。导入 chat span 必须复用在线解析的同一套规则（`ParseSessionId`、`ParseTtftMs` + `HasExplicitTtft` 的首块 ≥90% 丢弃、`ErrorTypeFrom`、provider/agent/finish_reasons/service.namespace），字段来自 `spans` 表的 `ttft_ms`/`agent_name`/`status_code` 列与 `span_attributes` 批量读取；只按列拼 session_id 会丢掉子代理归属和 TTFT、生成速度。
+  Hook 事件来自 `span_events` 的 `github.copilot.hook.end`（见上节），`gen_ai.usage.reasoning.output_tokens` / `cache_creation.input_tokens` 一律从属性读而不是只读列；
+  `gen_ai.tool.call.id` 存在空串，必须当缺失处理（否则跨调用误去重）。
 
 ### 费用与定价
 

@@ -30,12 +30,12 @@ public sealed class LocalTraceImporterTests
 
             var first = LocalTraceImporter.Import(store, new[] { sourcePath });
 
-            Assert.Equal(3, first.Scanned);
+            Assert.Equal(6, first.Scanned);
             Assert.Equal(2, first.Matched);
             Assert.Equal(2, first.Inserted);
             Assert.Equal(0, first.Skipped);
-            Assert.Equal(1, first.EventsMatched);
-            Assert.Equal(1, first.EventsInserted);
+            Assert.Equal(4, first.EventsMatched);
+            Assert.Equal(4, first.EventsInserted);
             Assert.Empty(first.Errors);
 
             var calls = store.GetCalls(0, includeUtility: true);
@@ -46,6 +46,9 @@ public sealed class LocalTraceImporterTests
             Assert.Equal("session-import", call.SessionId);
             Assert.Equal(1_300, call.InputTokens);
             Assert.Equal(200, call.CacheReadTokens);
+            // The Agent Host exporter leaves spans.reasoning_tokens NULL and only writes
+            // the attribute, so the import must fall back to it.
+            Assert.Equal(64L, call.ReasoningTokens);
             Assert.Equal(1_500_000_000, call.NanoAiu);
             Assert.Equal("1.5 AIC", call.AiuText);
             Assert.Null(call.CostCny);
@@ -71,14 +74,25 @@ public sealed class LocalTraceImporterTests
             Assert.Equal(new[] { "str_replace" }, tool.EditTypes);
             Assert.Equal(new[] { "review" }, tool.SkillNames);
 
+            // Hooks are span events in both exporters, never execute_hook spans.
+            var hooks = store.GetHookSummaries("session-import");
+            Assert.Equal(2, hooks.Count);
+            var pre = Assert.Single(hooks, row => row.HookType == "preToolUse");
+            Assert.Equal(1, pre.Count);
+            Assert.Equal(500d, pre.AvgDurationMs);
+            var post = Assert.Single(hooks, row => row.HookType == "postToolUse");
+            Assert.Equal(1, post.Count);
+            Assert.Equal(1_500d, post.AvgDurationMs);
+
             var second = LocalTraceImporter.Import(store, new[] { sourcePath });
 
-            Assert.Equal(3, second.Scanned);
+            Assert.Equal(6, second.Scanned);
             Assert.Equal(2, second.Matched);
             Assert.Equal(0, second.Inserted);
             Assert.Equal(2, second.Skipped);
-            Assert.Equal(1, second.EventsMatched);
+            Assert.Equal(4, second.EventsMatched);
             Assert.Equal(0, second.EventsInserted);
+            Assert.Equal(2, store.GetHookSummaries("session-import").Count);
         }
         finally
         {
@@ -130,6 +144,14 @@ public sealed class LocalTraceImporterTests
                 PRIMARY KEY (span_id, key)
             );
 
+            CREATE TABLE span_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                span_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                attributes TEXT
+            );
+
             INSERT INTO spans (
                 span_id, trace_id, name, start_time_ms, end_time_ms,
                 operation_name, provider_name, conversation_id,
@@ -140,7 +162,7 @@ public sealed class LocalTraceImporterTests
                 'span-import', 'trace-import', 'chat', {{startMs}}, {{startMs + 1000}},
                 'chat', 'anthropic', 'conversation-import',
                 'auto', 'deepseek-flash',
-                1000, 100, 200, 0,
+                1000, 100, 200, NULL,
                 'session-import', 'copilot', 250
             );
 
@@ -167,8 +189,19 @@ public sealed class LocalTraceImporterTests
                 'read_file', 'call-import', 'function'
             );
 
+            INSERT INTO spans (
+                span_id, trace_id, name, start_time_ms, end_time_ms,
+                status_code, operation_name, provider_name,
+                conversation_id, chat_session_id, agent_name
+            ) VALUES (
+                'span-agent', 'trace-import', 'invoke_agent explore',
+                {{startMs}}, {{startMs + 5000}}, 1, 'invoke_agent',
+                'anthropic', 'conversation-import', 'session-import', 'explore'
+            );
+
             INSERT INTO span_attributes (span_id, key, value) VALUES
                 ('span-import', 'gen_ai.usage.cache_creation.input_tokens', '100'),
+                ('span-import', 'gen_ai.usage.reasoning.output_tokens', '64'),
                 ('span-import', 'copilot_chat.copilot_usage_nano_aiu', '1500000000'),
                 ('span-import', 'copilot_chat.time_to_first_token', '250'),
                 ('span-import', 'gen_ai.response.finish_reasons', '["stop"]'),
@@ -178,6 +211,14 @@ public sealed class LocalTraceImporterTests
                 ('span-buffered', 'copilot_chat.parent_chat_session_id', 'root-session'),
                 ('span-tool', 'github.copilot.tool.parameters.edit_type', 'str_replace'),
                 ('span-tool', 'github.copilot.tool.parameters.skill_name', 'review');
+
+            INSERT INTO span_events (span_id, name, timestamp_ms, attributes) VALUES
+                ('span-agent', 'github.copilot.hook.start', {{startMs + 100}},
+                 '{"github.copilot.hook.type":"preToolUse","github.copilot.hook.invocation_id":"hook-1"}'),
+                ('span-agent', 'github.copilot.hook.end', {{startMs + 100}},
+                 '{"github.copilot.hook.type":"preToolUse","github.copilot.hook.invocation_id":"hook-1","github.copilot.hook.duration":0.5}'),
+                ('span-agent', 'github.copilot.hook.end', {{startMs + 900}},
+                 '{"github.copilot.hook.type":"postToolUse","github.copilot.hook.invocation_id":"hook-2","github.copilot.hook.duration":1.5}');
             """;
         command.ExecuteNonQuery();
     }

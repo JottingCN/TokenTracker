@@ -123,11 +123,17 @@ interface LocalImportResult {
   errors: string[];
 }
 
+// globalStorage folders are lowercase `<publisher>.<id>`; the capitalized extension ID only
+// resolves on case-insensitive filesystems, so probe both.
+const copilotChatStorageFolders = ['github.copilot-chat', 'GitHub.copilot-chat'];
+
 function localTraceDatabases(): string[] {
   const storageDirectories = defaultAgentHostDirectories();
   const candidates = [
-    ...storageDirectories.map((directory) =>
-      path.join(directory, 'GitHub.copilot-chat', 'agent-traces.db'),
+    ...storageDirectories.flatMap((directory) =>
+      copilotChatStorageFolders.map((folder) =>
+        path.join(directory, folder, 'agent-traces.db'),
+      ),
     ),
     ...storageDirectories.map((directory) =>
       path.join(

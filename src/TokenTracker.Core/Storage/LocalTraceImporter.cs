@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Otlp;
@@ -285,8 +286,136 @@ public static class LocalTraceImporter
             }
         }
 
+        // Runtime hooks land in span_events, not in execute_hook spans: neither exporter
+        // writes hook spans, so this is the only source of hook statistics offline.
+        using var hookCommand = connection.CreateCommand();
+        hookCommand.CommandText = """
+            SELECT e.rowid, e.span_id, e.timestamp_ms, e.attributes,
+                   s.trace_id, s.agent_name, s.provider_name,
+                   s.conversation_id, s.chat_session_id
+            FROM span_events e
+            JOIN spans s ON s.span_id = e.span_id
+            WHERE e.name IN ('github.copilot.hook.end', 'copilot_chat.hook.end')
+            ORDER BY e.timestamp_ms, e.rowid;
+            """;
+        using (var reader = hookCommand.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                scanned++;
+                var item = ReadHookEvent(reader, source);
+                if (item is not null)
+                {
+                    events.Add(item);
+                }
+            }
+        }
+
         return (scanned, records, events, agentRuns);
     }
+
+    private static OtlpEventRecord? ReadHookEvent(
+        SqliteDataReader reader,
+        string source)
+    {
+        var traceId = reader.IsDBNull(4) ? null : reader.GetString(4);
+        var spanId = reader.IsDBNull(1) ? null : reader.GetString(1);
+        if (string.IsNullOrWhiteSpace(traceId) ||
+            string.IsNullOrWhiteSpace(spanId))
+        {
+            return null;
+        }
+
+        var payload = reader.IsDBNull(3) ? null : reader.GetString(3);
+        var hookType = TrimToNull(
+            ReadJsonField(payload, "github.copilot.hook.type") ??
+            ReadJsonField(payload, "copilot_chat.hook.type"));
+        var durationMs = ParseSecondsToMs(
+            ReadJsonField(payload, "github.copilot.hook.duration") ??
+            ReadJsonField(payload, "copilot_chat.hook.duration"));
+        // span_events has no stable identity of its own, but session_events is keyed by
+        // (trace_id, span_id); re-importing the same file must not duplicate or shift rows.
+        var invocationId = TrimToNull(
+            ReadJsonField(payload, "github.copilot.hook.invocation_id") ??
+            ReadJsonField(payload, "copilot_chat.hook.invocation_id"));
+        var eventKey = invocationId ??
+            reader.GetInt64(0).ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
+
+        var startMs = reader.GetInt64(2);
+        return new OtlpEventRecord
+        {
+            TraceId = traceId,
+            SpanId = $"{spanId}#hook#{eventKey}",
+            ParentSpanId = spanId,
+            Operation = "execute_hook",
+            Name = hookType is null ? "execute_hook" : $"execute_hook {hookType}",
+            HookType = hookType,
+            HookDurationMs = durationMs,
+            SessionId = FirstNonEmpty(
+                reader.IsDBNull(8) ? null : reader.GetString(8),
+                reader.IsDBNull(7) ? null : reader.GetString(7)),
+            ServiceName = reader.IsDBNull(6) ? null : reader.GetString(6),
+            ProviderName = reader.IsDBNull(6) ? null : reader.GetString(6),
+            AgentName = reader.IsDBNull(5) ? null : reader.GetString(5),
+            Source = source == "agent-host" ? "agent-host" : "copilot-chat",
+            StartTimeMs = startMs,
+            EndTimeMs = durationMs is null
+                ? null
+                : startMs + (long)Math.Round(durationMs.Value),
+            IsError = false,
+            ReceivedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+    }
+
+    private static string? ReadJsonField(string? json, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty(propertyName, out var value))
+            {
+                return null;
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False
+                    => value.GetRawText(),
+                _ => null,
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static double? ParseSecondsToMs(string? value)
+    {
+        if (!double.TryParse(
+                value,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var seconds) ||
+            !double.IsFinite(seconds) ||
+            seconds < 0)
+        {
+            return null;
+        }
+
+        return seconds * 1000d;
+    }
+
+    private static string? TrimToNull(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static AgentRunRecord? ReadAgentRun(
         SqliteDataReader reader,
@@ -381,9 +510,8 @@ public static class LocalTraceImporter
             errorType = "Error";
         }
 
-        var hookSeconds = reader.IsDBNull(22)
-            ? null
-            : ParseLong(reader.GetString(22));
+        var hookDurationMs = ParseSecondsToMs(
+            reader.IsDBNull(22) ? null : reader.GetString(22));
         return new OtlpEventRecord
         {
             TraceId = traceId,
@@ -391,8 +519,8 @@ public static class LocalTraceImporter
             ParentSpanId = reader.IsDBNull(15) ? null : reader.GetString(15),
             Operation = operation.ToLowerInvariant(),
             Name = reader.IsDBNull(3) ? null : reader.GetString(3),
-            ToolName = reader.IsDBNull(10) ? null : reader.GetString(10),
-            CallId = reader.IsDBNull(11) ? null : reader.GetString(11),
+            ToolName = TrimToNull(reader.IsDBNull(10) ? null : reader.GetString(10)),
+            CallId = TrimToNull(reader.IsDBNull(11) ? null : reader.GetString(11)),
             ToolType = reader.IsDBNull(12) ? null : reader.GetString(12),
             EditType = reader.IsDBNull(13) ? null : reader.GetString(13),
             SkillName = reader.IsDBNull(14) ? null : reader.GetString(14),
@@ -411,7 +539,7 @@ public static class LocalTraceImporter
             McpServerHash = reader.IsDBNull(19) ? null : reader.GetString(19),
             McpToolName = reader.IsDBNull(20) ? null : reader.GetString(20),
             HookDecision = reader.IsDBNull(21) ? null : reader.GetString(21),
-            HookDurationMs = hookSeconds is null ? null : hookSeconds * 1000d,
+            HookDurationMs = hookDurationMs,
             HookToolNames = reader.IsDBNull(23) ? null : reader.GetString(23),
             HookType = reader.IsDBNull(24) ? null : reader.GetString(24),
             HookResultKind = reader.IsDBNull(25) ? null : reader.GetString(25),
@@ -430,6 +558,8 @@ public static class LocalTraceImporter
             SELECT span_id, key, value FROM span_attributes
             WHERE key IN (
                 'gen_ai.usage.cache_creation.input_tokens',
+                'gen_ai.usage.reasoning.output_tokens',
+                'gen_ai.usage.reasoning_tokens',
                 'copilot_chat.copilot_usage_nano_aiu',
                 'error.type',
                 'gen_ai.response.finish_reasons',
@@ -502,6 +632,15 @@ public static class LocalTraceImporter
         var outputTokens = reader.IsDBNull(10) ? 0 : reader.GetInt64(10);
         var cacheReadTokens = reader.IsDBNull(11) ? 0 : reader.GetInt64(11);
         var reasoningTokens = reader.IsDBNull(12) ? 0 : reader.GetInt64(12);
+        if (reasoningTokens == 0)
+        {
+            // The Agent Host exporter leaves spans.reasoning_tokens NULL while still writing
+            // the attribute, so the column alone would silently report zero reasoning tokens.
+            reasoningTokens =
+                ParseLong(Value(attributes, "gen_ai.usage.reasoning.output_tokens")) ??
+                ParseLong(Value(attributes, "gen_ai.usage.reasoning_tokens")) ??
+                0;
+        }
         var cacheCreationTokens =
             ParseLong(Value(attributes, "gen_ai.usage.cache_creation.input_tokens")) ?? 0;
         var nanoAiu = ParseLong(Value(attributes, "copilot_chat.copilot_usage_nano_aiu"));
@@ -607,9 +746,7 @@ public static class LocalTraceImporter
             : null;
 
     private static string? FirstNonEmpty(string? first, string? second) =>
-        !string.IsNullOrWhiteSpace(first)
-            ? first.Trim()
-            : !string.IsNullOrWhiteSpace(second) ? second.Trim() : null;
+        TrimToNull(first) ?? TrimToNull(second);
 
     private static long? ParseLong(string? value)
     {
