@@ -571,7 +571,8 @@ test('the tip shows the current turn with its step count', () => {
 
   const tooltip = statusBarItem.tooltip.value;
   assert.ok(tooltip.includes('对话轮次'));
-  assert.ok(tooltip.includes('2 / 2'));
-  assert.ok(tooltip.includes('11'));
+  // The heading names the totals once: "2轮 · 11步", not "2 / 2".
+  assert.ok(tooltip.includes('2轮 · 11步'));
+  assert.ok(!tooltip.includes('2 / 2'));
   controller.dispose();
 });

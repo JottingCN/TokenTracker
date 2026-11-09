@@ -34,5 +34,6 @@
 - 纯 Copilot Chat 数据没有轮次标记，`turns` 为空是预期；首个轮次之前的调用不计入任何轮次。
 - **进行中的轮次**：根 `invoke_agent` 只有在整轮结束时才导出，所以运行中的那一轮永远不会出现在边界列表里。`GetSessionTurns` 同时返回每轮的 `end_time_ms`，最后一个已知轮次用**自己的结束时间**封口；它之后的活动（有调用/工具但还没有边界）生成一条额外的 `InProgress=true` 行并排在最后。否则运行期间状态栏会一直显示上一轮，且本轮的调用被算进上一轮。会话页用「进行中」标签、Tip 用 `live` 标记、状态栏显示 `第N轮 M步（进行中）`。
 - 汇总一致性：`summary.calls` 必须等于 `turns` 的 calls 之和（同一 `CallSample` 投影），`InProgress` 行也计入。
+- **只有模型调用能开启新轮次**：宿主会先关闭 `invoke_agent`（该轮的 agent 循环结束）再导出最后几个工具 span，所以最后一轮之后只剩工具时，那些工具属于**该轮自己的尾巴**，必须并回上一轮（同时延长 `EndTimeMs`），不能拆成新轮次——实测把一轮拆成 52 + 6，而客户端显示 59 步。尾部若出现新的 chat 调用，才生成 `InProgress` 行。
 - **入参顺序不可信**：调用明细走 `GetCalls` 的 `ORDER BY start_time_ms DESC`（分页需要最新在前），而样本投影是升序。`BuildTurns` 必须先归一化为升序再单向前进，否则所有调用会被塞进最后一轮——实测最后一个轮次显示 2690 次调用与整会话费用（回归用例在 `scripts/smoke-server.mjs` 的两轮场景）。
 - 消费方：`SessionPayload.turns`（会话页「按对话」卡片）与状态栏 `{turn}` / `{step}` / `{turns}`（见[扩展 UI](extension-ui.md)）。

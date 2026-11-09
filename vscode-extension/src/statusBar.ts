@@ -663,9 +663,8 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
         appendSection(
           '$(history)',
           `${tr('对话轮次', 'Conversation turn')} · ` +
-            `${numberFormatter.format(latest.index)} / ` +
-            `${numberFormatter.format(details.turns.length)} · ` +
-            `${numberFormatter.format(latest.toolCalls)} ${tr('步', 'steps')} · ` +
+            `${numberFormatter.format(details.turns.length)}${tr('轮', ' turns')} · ` +
+            `${numberFormatter.format(latest.toolCalls)}${tr('步', ' steps')} · ` +
             `${formatShortTime(latest.startTimeMs)} · ` +
             `${tr('耗时', 'Duration')} ${formatDuration(
               latest.endTimeMs === null

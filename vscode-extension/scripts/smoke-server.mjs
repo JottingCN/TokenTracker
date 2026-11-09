@@ -170,6 +170,191 @@ function turnPayload(sessionId) {
   });
 }
 
+// A turn plus a tool and its approval, where the permission span carries no
+// tool_name (which is what the host actually sends).
+function approvalWithoutToolNamePayload(sessionId) {
+  const now = Date.now();
+  const traceId = 'ffffffffffffffffffffffffffffffff';
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId,
+                spanId: 'turn-approval-0001',
+                name: 'invoke_agent',
+                kind: 1,
+                startTimeUnixNano: `${now}000000`,
+                endTimeUnixNano: `${now + 500}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+              {
+                traceId,
+                spanId: 'chat-approval-0001',
+                parentSpanId: 'turn-approval-0001',
+                name: 'chat smoke-model',
+                kind: 1,
+                startTimeUnixNano: `${now + 10}000000`,
+                endTimeUnixNano: `${now + 20}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+                  { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+                  { key: 'gen_ai.usage.input_tokens', value: { stringValue: '100' } },
+                  { key: 'gen_ai.usage.output_tokens', value: { stringValue: '10' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+              {
+                traceId,
+                spanId: 'tool-approval-0001',
+                parentSpanId: 'turn-approval-0001',
+                name: 'execute_tool grep',
+                kind: 1,
+                startTimeUnixNano: `${now + 30}000000`,
+                endTimeUnixNano: `${now + 130}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'execute_tool' } },
+                  { key: 'gen_ai.tool.name', value: { stringValue: 'grep' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+              {
+                traceId,
+                spanId: 'perm-approval-0001',
+                parentSpanId: 'tool-approval-0001',
+                name: 'permission',
+                kind: 1,
+                startTimeUnixNano: `${now + 40}000000`,
+                endTimeUnixNano: `${now + 140}000000`,
+                attributes: [
+                  { key: 'github.copilot.permission.kind', value: { stringValue: 'read' } },
+                  { key: 'github.copilot.permission.result', value: { stringValue: 'approved' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function orphanToolPayload(sessionId) {
+  const now = Date.now();
+  const traceId = 'abababababababababababababababab';
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId,
+                spanId: 'turn-orphan-0001',
+                name: 'invoke_agent',
+                kind: 1,
+                startTimeUnixNano: `${now}000000`,
+                endTimeUnixNano: `${now + 500}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+              {
+                traceId,
+                spanId: 'chat-orphan-0001',
+                parentSpanId: 'turn-orphan-0001',
+                name: 'chat smoke-model',
+                kind: 1,
+                startTimeUnixNano: `${now + 10}000000`,
+                endTimeUnixNano: `${now + 20}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+                  { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+                  { key: 'gen_ai.usage.input_tokens', value: { stringValue: '100' } },
+                  { key: 'gen_ai.usage.output_tokens', value: { stringValue: '10' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+              {
+                // The merge drops duplicate pipeline rows, so a tool can point at a
+                // parent that no longer exists. It still belongs below the chat.
+                traceId,
+                spanId: 'tool-orphan-0001',
+                parentSpanId: 'dropped-turn-0001',
+                name: 'execute_tool grep',
+                kind: 1,
+                startTimeUnixNano: `${now + 30}000000`,
+                endTimeUnixNano: `${now + 130}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'execute_tool' } },
+                  { key: 'gen_ai.tool.name', value: { stringValue: 'grep' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function trailingToolPayload(sessionId, atMs) {
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                spanId: 'tool-live-0000001',
+                name: 'execute_tool grep',
+                kind: 1,
+                startTimeUnixNano: `${atMs}000000`,
+                endTimeUnixNano: `${atMs + 100}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'execute_tool' } },
+                  { key: 'gen_ai.tool.name', value: { stringValue: 'grep' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function chainByOperationParent(payload, byId, operation) {
+  const node = payload.nodes.find((item) => item.operation === operation);
+  const parent = node ? byId.get(node.parentId) : undefined;
+  return parent ? parent.operation : undefined;
+}
+
 function turnsPayload(sessionId) {
   const now = Date.now();
   const root = 'cccccccccccccccccccccccccccccccc';
@@ -607,7 +792,23 @@ try {
     approval?.label,
     'shell · approved · powershell',
   );
-
+  const approvalSession = 'smoke-approval';
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: approvalWithoutToolNamePayload(approvalSession),
+  });
+  const approvalTrace = JSON.parse(
+    (await request(`${base}/api/session/${approvalSession}/trace?budget=50`)).body,
+  );
+  const borrowed = approvalTrace.nodes.find(
+    (node) => node.operation === 'permission',
+  );
+  check(
+    'approval borrows the tool from its parent',
+    borrowed?.label,
+    'read · approved · grep',
+  );
   // A root invoke_agent with no chat call and no tool run is not a usable turn.
   const turnOnly = JSON.parse(
     (await request(`${base}/api/session/${sessionId}`)).body,
@@ -662,6 +863,67 @@ try {
   check(
     'the finished turn keeps only its own calls',
     withLive.turns[1]?.calls,
+    1,
+  );
+
+  // A trailing tool-only tail is the last turn's own work: the host closes the
+  // agent span before the final tool spans are exported, so merging it into a new
+  // turn would show two turns where the client shows one (measured: 52 + 6 vs 59).
+  const beforeTools = withLive.turns.length;
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: trailingToolPayload(turnSession, now + 90_000),
+  });
+  const withTail = JSON.parse(
+    (await request(`${base}/api/session/${turnSession}`)).body,
+  );
+  check('a tool-only tail does not add a turn', withTail.turns.length, beforeTools);
+  check(
+    'the tool-only tail joins the running turn',
+    withTail.turns[withTail.turns.length - 1]?.toolCalls,
+    1,
+  );
+
+  // The tool hangs below the model call that requested it, and the approval below
+  // the tool: chat → execute_tool → permission.
+  const chain = JSON.parse(
+    (await request(`${base}/api/session/${approvalSession}/trace?budget=50`)).body,
+  );
+  const chainById = new Map(chain.nodes.map((node) => [node.id, node]));
+  const chainTool = chain.nodes.find((node) => node.operation === 'execute_tool');
+  const chainChat = chainTool ? chainById.get(chainTool.parentId) : undefined;
+  check('a tool hangs below a chat span', chainChat?.operation, 'chat');
+  check(
+    'an approval hangs below its tool',
+    chainByOperationParent(chain, chainById, 'permission'),
+    'execute_tool',
+  );
+
+  // A tool whose parent row was dropped by the pipeline merge used to sit at depth
+  // 0 next to the model calls; it must still hang below the chat.
+  const orphanSession = 'smoke-orphan';
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: orphanToolPayload(orphanSession),
+  });
+  const orphanTrace = JSON.parse(
+    (await request(`${base}/api/session/${orphanSession}/trace?budget=50`)).body,
+  );
+  const orphanById = new Map(orphanTrace.nodes.map((node) => [node.id, node]));
+  const orphanTool = orphanTrace.nodes.find(
+    (node) => node.operation === 'execute_tool',
+  );
+  const orphanChat = orphanTool ? orphanById.get(orphanTool.parentId) : undefined;
+  check(
+    'a tool with a dropped parent still hangs below a chat',
+    orphanChat?.operation,
+    'chat',
+  );
+  check(
+    'the orphan tool is indented under the chat',
+    orphanTool ? orphanTool.depth - orphanChat.depth : -1,
     1,
   );
 

@@ -1007,8 +1007,10 @@ public sealed partial class SpanStore
                     ? PermissionLabel(item)
                     : item.Name,
                 // Permission labels already carry the tool name, so keeping Tool
-                // would repeat it through TraceNodeRow.Label.
-                Tool = item.Operation == "permission" ? null : item.Tool,
+                // would repeat it through TraceNodeRow.Label. The field is still
+                // filled so AttachApprovalTools can tell whether the span named the
+                // tool itself.
+                Tool = item.Tool,
                 Source = item.Source,
                 StartTimeMs = item.StartTimeMs,
                 DurationMs = Math.Max(0, item.EndTimeMs - item.StartTimeMs),
@@ -1022,9 +1024,150 @@ public sealed partial class SpanStore
             return nodes;
         }
 
+        NestedToolsUnderChat(nodes);
+        AttachApprovalTools(nodes);
         nodes.Sort(CompareNodes);
         ApplyDepths(nodes);
         return nodes;
+    }
+
+    /// <summary>
+    /// Agent Host reports every <c>execute_tool</c> under the turn's
+    /// <c>invoke_agent</c>, next to the model calls instead of under them, so the
+    /// tree renders a tool as a sibling of the chat span that requested it
+    /// (invoke_agent → chat, invoke_agent → execute_tool → permission).
+    /// <para>
+    /// The span's own parent cannot be used to fix this: the chat spans of a turn get
+    /// dropped or remapped when the two pipelines' duplicates merge, so a tool's
+    /// trace often no longer contains the chat that caused it (measured: one trace
+    /// holds 85 tools and 0 chats). The topology is a single session sorted by start
+    /// time, so the model call that requested a tool is the nearest preceding chat
+    /// span of the same turn; that is what the tool is re-hung under.
+    /// </para>
+    /// <para>
+    /// The merge can drop the tool's parent as well (measured: 77 tools point at an
+    /// <c>invoke_agent</c> row that no longer exists), which used to leave them at
+    /// depth 0, floating next to the model calls. An unreadable parent is treated
+    /// like <c>invoke_agent</c>: only a parent that is present and is something else
+    /// (a nested tool, an agent) keeps the tool where the host put it.
+    /// </para>
+    /// </summary>
+    private static void NestedToolsUnderChat(List<TraceNodeRow> nodes)
+    {
+        var operations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var positions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < nodes.Count; index++)
+        {
+            operations[nodes[index].Id] = nodes[index].Operation;
+            positions[nodes[index].Id] = index;
+        }
+
+        var ordered = nodes.OrderBy(node => node.StartTimeMs).ToList();
+        var turnStart = long.MinValue;
+        TraceNodeRow? lastChat = null;
+        foreach (var node in ordered)
+        {
+            if (node.Kind != "permission" && node.Operation == "invoke_agent")
+            {
+                turnStart = node.StartTimeMs;
+                lastChat = null;
+                continue;
+            }
+
+            if (node.Kind == "chat")
+            {
+                lastChat = node;
+                continue;
+            }
+
+            if (node.Kind != "event" ||
+                node.Operation != "execute_tool" ||
+                node.ParentId is null)
+            {
+                continue;
+            }
+
+            var parentKnown =
+                operations.TryGetValue(node.ParentId, out var parentOperation);
+            if (parentKnown && parentOperation != "invoke_agent")
+            {
+                continue;
+            }
+
+            if (lastChat is null ||
+                lastChat.StartTimeMs < turnStart ||
+                lastChat.StartTimeMs > node.StartTimeMs)
+            {
+                continue;
+            }
+
+            // Positions are looked up by id: two rows can compare equal (a context
+            // row repeats a real row), and IndexOf uses value equality.
+            nodes[positions[node.Id]] = node with { ParentId = lastChat.Id };
+        }
+    }
+
+    /// <summary>
+    /// A real permission span carries <c>permission.kind/result</c> but usually no
+    /// <c>permission.tool_name</c> (measured: the column is NULL for every row), so
+    /// the label alone says "shell · approved" without telling which tool was
+    /// approved. The approval hangs below its <c>execute_tool</c> span, so the parent
+    /// supplies the tool name. Runs before sorting: the parent can start earlier and
+    /// still be stored in any order.
+    /// </summary>
+    private static void AttachApprovalTools(List<TraceNodeRow> nodes)
+    {
+        Dictionary<string, TraceNodeRow>? byId = null;
+        for (var index = 0; index < nodes.Count; index++)
+        {
+            var node = nodes[index];
+            if (node.Kind != "permission" ||
+                node.ParentId is null ||
+                !string.IsNullOrWhiteSpace(node.Tool))
+            {
+                continue;
+            }
+
+            byId ??= nodes
+                .GroupBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First(),
+                    StringComparer.OrdinalIgnoreCase);
+            if (!byId.TryGetValue(node.ParentId, out var parent))
+            {
+                continue;
+            }
+
+            var tool = parent.Tool;
+            if (string.IsNullOrWhiteSpace(tool) && parent.Kind == "event")
+            {
+                // execute_tool rows keep the tool in Tool; fall back to the parsed
+                // name ("execute_tool powershell") when only that exists.
+                var name = parent.Name ?? string.Empty;
+                tool = name.StartsWith("execute_tool ", StringComparison.Ordinal)
+                    ? name["execute_tool ".Length..].Trim()
+                    : null;
+            }
+
+            if (string.IsNullOrWhiteSpace(tool))
+            {
+                continue;
+            }
+
+            var display = Otlp.ToolNameResolver.Display(tool);
+            if (string.IsNullOrWhiteSpace(display))
+            {
+                continue;
+            }
+
+            nodes[index] = node with
+            {
+                Name = $"{node.Name} · {display}",
+                // Remembered so a later pass cannot append a second tool.
+                Tool = tool,
+            };
+        }
     }
 
     private const int MaxContextAncestors = 64;

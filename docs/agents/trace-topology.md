@@ -21,6 +21,9 @@
 - chat 节点的 label 用**规范化后的 `spans.model`**，不要用 OTel span 名：Agent Host 的 span 名是 `chat DeepSeek/deepseek-flash`（带供应商前缀），而树已经把 operation 单独渲染成标签，用 span 名会显示成 `chat chat DeepSeek/deepseek-flash`，且与状态栏/表格的模型名不一致。
 - 事件节点包含 `execute_tool` / `invoke_agent` / `create_agent` / `execute_hook` / `permission`；permission 行的 label 为 `kind · result · tool`（见 [OTel 解析](otel-parsing.md)）。
 - 深度由 parent 链计算并记忆化；父节点不在本块时靠 `isContext` 行补齐，不要用相邻行推断层级。
+- **层级必须是 chat → execute_tool → permission**：Agent Host 把 `execute_tool` 报在轮次的 `invoke_agent` 下、与 `chat` 平级，原始父链是 `invoke_agent → chat` 与 `invoke_agent → execute_tool`，渲染出来工具像是模型调用的兄弟。`NestedToolsUnderChat` 把工具重挂到**同一轮内最近的前一个 chat 节点**。
+  **不能用「同 trace 的 chat」判断**：两条管线的重复 span 合并时 chat 会被丢弃或 remap，实测存在「85 个工具的 trace 里 0 个 chat」，所以必须按整会话的起始时间顺序取最近的前一个 chat，并限制在最近一个 `invoke_agent` 之后。
+  **父节点本身被合并丢弃时同样要重挂**：实测 77 个工具指向已不存在的 `invoke_agent` 行，旧逻辑把它们留在 depth 0 与模型调用并列。只保留「父节点存在且不是 `invoke_agent`」的情况（嵌套工具、其他 agent）；父节点读不到按 `invoke_agent` 处理。重挂后若目标 chat 落在更早的块，会被 `PrependContextAncestors` 补成 context 行，缩进才不会断。
 - 工具名显示统一走 `ToolNameResolver`（服务端），前端不要再解析哈希。
 
 ## 3. 前端（`web/src/components/TraceTree.tsx`）

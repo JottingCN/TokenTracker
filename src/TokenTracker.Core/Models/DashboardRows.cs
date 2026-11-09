@@ -474,13 +474,15 @@ public sealed record TraceNodeRow
     /// <summary>
     /// One-line label for the tree. The tree renders the operation as its own tag,
     /// so a chat row shows only the model instead of repeating "chat" from the span
-    /// name.
+    /// name, and an approval row keeps the kind/result/tool text it was built with.
     /// </summary>
     public string Label => Kind == "chat"
         ? Model ?? Name ?? Operation
-        : string.IsNullOrWhiteSpace(Tool)
+        : Kind == "permission"
             ? Name ?? Operation
-            : $"{Operation} {Otlp.ToolNameResolver.Display(Tool)}";
+            : string.IsNullOrWhiteSpace(Tool)
+                ? Name ?? Operation
+                : $"{Operation} {Otlp.ToolNameResolver.Display(Tool)}";
     public string SourceText => DisplayFormat.Source(Source);
     public string DurationText => DisplayFormat.Duration(DurationMs);
 }

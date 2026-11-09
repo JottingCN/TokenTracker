@@ -532,8 +532,11 @@ public sealed class DashboardService
 
         if (callIndex < ordered.Count || toolIndex < toolRuns.Count)
         {
-            // Whatever is left starts after the last finished turn: it is the turn
-            // that is running right now, or calls that arrived without a turn.
+            // Whatever is left starts after the last finished turn. Tool runs alone
+            // are the tail of that turn: the host closes the agent span before the
+            // last tool spans are exported, so they must not be split into a new
+            // turn (measured: the client counted 59 steps for a turn we split into
+            // 52 + 6). Only a new model call proves a new turn is running.
             var start = long.MaxValue;
             if (callIndex < ordered.Count)
             {
@@ -545,6 +548,7 @@ public sealed class DashboardService
                 start = Math.Min(start, toolRuns[toolIndex].StartTimeMs);
             }
 
+            var pendingCalls = ordered.Count - callIndex;
             var running = Accumulate(
                 ordered,
                 toolRuns,
@@ -554,7 +558,30 @@ public sealed class DashboardService
                 long.MaxValue);
             if (running.Calls > 0 || running.Tools > 0)
             {
-                rows.Add(running.ToRow(rows.Count + 1, start, inProgress: true));
+                if (pendingCalls == 0 && rows.Count > 0)
+                {
+                    var last = rows[^1];
+                    rows[^1] = new SessionTurnRow
+                    {
+                        Index = last.Index,
+                        StartTimeMs = last.StartTimeMs,
+                        EndTimeMs = Math.Max(
+                            last.EndTimeMs ?? last.StartTimeMs,
+                            running.LastEndMs ?? start),
+                        Calls = last.Calls,
+                        InputTokens = last.InputTokens,
+                        CacheReadTokens = last.CacheReadTokens,
+                        OutputTokens = last.OutputTokens,
+                        ReasoningTokens = last.ReasoningTokens,
+                        CostCny = last.CostCny,
+                        ToolCalls = last.ToolCalls + running.Tools,
+                        InProgress = false,
+                    };
+                }
+                else
+                {
+                    rows.Add(running.ToRow(rows.Count + 1, start, inProgress: true));
+                }
             }
         }
 
@@ -612,6 +639,8 @@ public sealed class DashboardService
         public long Reasoning;
         public double Cost;
         private long? _lastEnd;
+
+        public long? LastEndMs => _lastEnd;
 
         public void Extend(long endMs)
         {

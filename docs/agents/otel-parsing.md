@@ -48,7 +48,7 @@
 | --- | --- |
 | `github.copilot.permission.kind` | `read` / `shell` / `write` / `url` / `custom-tool` |
 | `github.copilot.permission.result` | **只有 `approved` 与 `denied-interactively-by-user`** |
-| `github.copilot.permission.tool_name` | 外部工具为 SHA-256，内置工具明文 |
+| `github.copilot.permission.tool_name` | 文档描述为“外部工具 SHA-256，内置工具明文”，**实测本机 47 条全部缺失**；工具名改由父 `execute_tool` 借用 |
 
 因此只能读现象：
 
@@ -68,6 +68,8 @@
 - 存 `session_events.permission_kind` / `permission_result`（`SchemaVersion=3` 的附加迁移）。
 - 拓扑 label 为 `kind · result · tool`（如 `shell · approved · powershell`），`denied` 显示红色；事件统计里独立成「审批」一行。
 - 本地库导入时 permission span 的 `operation_name` 为 NULL，`LocalTraceImporter` 需要按 span 名 `permission` 提升为 operation。
+- **`permission.tool_name` 实测全部为 NULL**（本机 47 条 permission 全都没有该属性，`tool_name` 列也是空），所以工具名必须从**父 `execute_tool`** 借用（`AttachApprovalTools`，在排序前按 id 索引父节点）。父 span 尚未入库时（宿主先导出审批、后导出工具）暂时只显示 `kind · result` 且 depth 为 0，父 span 到达后由拓扑的尾部窗口重载补齐。
+- 给 permission 节点的 `Tool` 字段赋值用于去重：已有工具名时不再追加，避免出现 `… · powershell · powershell`。
 
 ### 4.2 Hook
 

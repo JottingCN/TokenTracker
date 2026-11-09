@@ -1638,6 +1638,209 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void TraceTopologyHangsToolsUnderTheRequestingChat()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            const string trace = "topo-trace";
+            store.InsertMany(new[]
+            {
+                Span(
+                    trace, "chat-1", "session-1", "deepseek-flash",
+                    2_000, 10, 0, 5, 0.1,
+                    source: "agent-host",
+                    serviceName: "github-copilot",
+                    parentSpanId: "turn-1"),
+            });
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "turn-1",
+                    ParentSpanId = "host-session",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 9_000,
+                    ReceivedAtMs = 9_000,
+                },
+                // Agent Host reports the tool under invoke_agent, next to the chat
+                // span, so the tree has to re-hang it under the model call.
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "tool-1",
+                    ParentSpanId = "turn-1",
+                    Operation = "execute_tool",
+                    ToolName = "powershell",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 3_000,
+                    EndTimeMs = 3_500,
+                    ReceivedAtMs = 3_500,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "perm-1",
+                    ParentSpanId = "tool-1",
+                    Operation = "permission",
+                    PermissionKind = "shell",
+                    PermissionResult = "approved",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 3_100,
+                    EndTimeMs = 3_200,
+                    ReceivedAtMs = 3_200,
+                },
+            });
+
+            var nodes = store.GetTraceNodes("session-1");
+            var chat = Assert.Single(nodes, node => node.Id.EndsWith("chat-1"));
+            var tool = Assert.Single(nodes, node => node.Id.EndsWith("tool-1"));
+            var permission = Assert.Single(nodes, node => node.Id.EndsWith("perm-1"));
+
+            Assert.Equal(1, chat.Depth);
+            Assert.Equal(chat.Id, tool.ParentId);
+            Assert.Equal(2, tool.Depth);
+            Assert.Equal(tool.Id, permission.ParentId);
+            Assert.Equal(3, permission.Depth);
+            Assert.Equal("shell · approved · powershell", permission.Label);
+
+            // The chat span can live in another trace (the merged duplicate wins), so
+            // the tool must attach to the nearest preceding model call of its turn,
+            // not to a chat in its own trace.
+            store.InsertMany(new[]
+            {
+                Span(
+                    "other-trace", "chat-2", "session-1", "deepseek-flash",
+                    4_000, 10, 0, 5, 0.1,
+                    source: "copilot-chat"),
+            });
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "tool-2",
+                    ParentSpanId = "turn-1",
+                    Operation = "execute_tool",
+                    ToolName = "grep",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 5_000,
+                    EndTimeMs = 5_100,
+                    ReceivedAtMs = 5_100,
+                },
+            });
+            var crossTrace = store.GetTraceNodes("session-1");
+            var lateChat = Assert.Single(
+                crossTrace,
+                node => node.Id.EndsWith("chat-2"));
+            var lateTool = Assert.Single(
+                crossTrace,
+                node => node.Id.EndsWith("tool-2"));
+            Assert.Equal(lateChat.Id, lateTool.ParentId);
+            Assert.Equal(lateChat.Depth + 1, lateTool.Depth);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TraceTopologyHangsToolsWhoseParentWasDroppedByTheMerge()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            const string trace = "orphan-trace";
+            store.InsertMany(new[]
+            {
+                Span(
+                    trace, "chat-1", "session-1", "deepseek-flash",
+                    2_000, 10, 0, 5, 0.1,
+                    source: "agent-host",
+                    serviceName: "github-copilot",
+                    parentSpanId: "turn-1"),
+            });
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "turn-1",
+                    ParentSpanId = "host-session",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 9_000,
+                    ReceivedAtMs = 9_000,
+                },
+                // The merge drops duplicate pipeline rows, so a tool can point at a
+                // parent that is no longer in the node list. It must still hang under
+                // the model call instead of floating at depth 0.
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "tool-orphan",
+                    ParentSpanId = "gone-turn",
+                    Operation = "execute_tool",
+                    ToolName = "powershell",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 3_000,
+                    EndTimeMs = 3_500,
+                    ReceivedAtMs = 3_500,
+                },
+            });
+
+            var nodes = store.GetTraceNodes("session-1");
+            var chat = Assert.Single(nodes, node => node.Id.EndsWith("chat-1"));
+            var orphan = Assert.Single(
+                nodes,
+                node => node.Id.EndsWith("tool-orphan"));
+            Assert.Equal(chat.Id, orphan.ParentId);
+            Assert.Equal(chat.Depth + 1, orphan.Depth);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void TraceTopologyShowsApprovalSpansWithKindAndResult()
     {
         var directory = Path.Combine(
@@ -1705,6 +1908,8 @@ public sealed class SpanStoreTests
             var approved = Assert.Single(nodes, node => node.Id == "t1:perm-1");
             Assert.Equal("permission", approved.Kind);
             Assert.Equal("permission", approved.Operation);
+            // The span names its own tool, so the label must not gain a second one
+            // from the parent execute_tool.
             Assert.Equal("shell · approved · powershell", approved.Label);
             Assert.Equal("t1:tool-1", approved.ParentId);
             Assert.Equal(1, approved.Depth);
@@ -1714,6 +1919,44 @@ public sealed class SpanStoreTests
             Assert.Equal("write · denied-interactively-by-user · edit", denied.Label);
             Assert.True(denied.IsError);
             Assert.Equal("denied", denied.ErrorType);
+
+            // Measured real spans carry no permission.tool_name at all; the label has
+            // to borrow the tool from the approval's parent execute_tool.
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = "t2",
+                    SpanId = "tool-2",
+                    Operation = "execute_tool",
+                    ToolName = "grep",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 3_000,
+                    EndTimeMs = 3_500,
+                    ReceivedAtMs = 3_500,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t2",
+                    SpanId = "perm-3",
+                    ParentSpanId = "tool-2",
+                    Operation = "permission",
+                    PermissionKind = "read",
+                    PermissionResult = "approved",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 3_050,
+                    EndTimeMs = 3_060,
+                    ReceivedAtMs = 3_060,
+                },
+            });
+            var enriched = Assert.Single(
+                store.GetTraceNodes("session-1"),
+                node => node.Id == "t2:perm-3");
+            Assert.Equal("read · approved · grep", enriched.Label);
 
             // Approvals take part in the range window like any other row.
             var windowed = store.GetTracePage(
