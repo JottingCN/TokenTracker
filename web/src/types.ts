@@ -303,6 +303,7 @@ export interface TraceNode {
   kind: string;
   operation: string;
   name: string | null;
+  model: string | null;
   tool: string | null;
   source: string | null;
   startTimeMs: number;
@@ -393,6 +394,7 @@ export interface SessionTurnRow {
   reasoningTokens: number;
   costCny: number;
   toolCalls: number;
+  inProgress: boolean;
   indexText: string;
   startText: string;
   durationText: string;

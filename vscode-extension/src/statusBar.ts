@@ -170,6 +170,7 @@ interface SessionTurnSummary {
   calls: number;
   toolCalls: number;
   costCny: number;
+  inProgress?: boolean;
 }
 
 interface SessionPayload {
@@ -662,17 +663,19 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
         appendSection(
           '$(history)',
           `${tr('对话轮次', 'Conversation turn')} · ` +
+            `${numberFormatter.format(latest.index)} / ` +
             `${numberFormatter.format(details.turns.length)} · ` +
-          `${numberFormatter.format(latest.toolCalls)} ${tr('步', 'steps')}`+
-          ` · ${formatShortTime(latest.startTimeMs)}`+
+            `${numberFormatter.format(latest.toolCalls)} ${tr('步', 'steps')} · ` +
+            `${formatShortTime(latest.startTimeMs)} · ` +
             `${tr('耗时', 'Duration')} ${formatDuration(
               latest.endTimeMs === null
                 ? null
                 : latest.endTimeMs - latest.startTimeMs,
-            )}`
+            )}` +
+            (latest.inProgress ? ` · ${tr('进行中', 'live')}` : ''),
         );
         tooltip.appendMarkdown(
-          `${[            
+          `${[
             `${tr('模型调用', 'Model calls')} ${numberFormatter.format(latest.calls)}`,
             `${tr('工具调用', 'Tool calls')} ${numberFormatter.format(latest.toolCalls)}`,
             `${tr('费用', 'Cost')} ${formatMoney(latest.costCny, this.money)}`,
@@ -1405,12 +1408,13 @@ function resolveStatusValue(
         return null;
       }
 
+      const mark = latest.inProgress ? tr('（进行中）', ' (live)') : '';
       return latest.toolCalls > 0
         ? tr(
-            `第${latest.index}轮 ${numberFormatter.format(latest.toolCalls)}步`,
-            `turn ${latest.index} · ${numberFormatter.format(latest.toolCalls)} steps`,
+            `第${latest.index}轮 ${numberFormatter.format(latest.toolCalls)}步${mark}`,
+            `turn ${latest.index} · ${numberFormatter.format(latest.toolCalls)} steps${mark}`,
           )
-        : tr(`第${latest.index}轮`, `turn ${latest.index}`);
+        : tr(`第${latest.index}轮${mark}`, `turn ${latest.index}${mark}`);
     }
     case 'step':
       return details

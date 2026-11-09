@@ -25,6 +25,10 @@ const TRACE_ROW_HEIGHT = 30;
 // Matches the server default so a block roughly fills the panel.
 const TRACE_BLOCK_BUDGET = 400;
 const LOAD_MORE_THRESHOLD_PX = 160;
+// Live refresh reloads the trailing slice instead of the whole list: a span can
+// arrive after rows that start later (a parent lands after its child), and a
+// pure append cursor can never pick those up.
+const REFRESH_TAIL_NODES = 240;
 
 export function TraceTree({
   sessionId,
@@ -74,21 +78,8 @@ export function TraceTree({
       return;
     }
 
-    const current = nodesRef.current ?? [];
-    const seen = new Set(current.map((node) => node.id));
-    const merged = [...current];
-    for (const node of incoming) {
-      if (seen.has(node.id)) {
-        continue;
-      }
-
-      seen.add(node.id);
-      merged.push(node);
-    }
-
-    nodesRef.current = merged;
-    setNodes(merged);
-  }, []);
+    applyNodes(mergeNodes(nodesRef.current ?? [], incoming));
+  }, [applyNodes]);
 
   const traceUrl = useCallback(
     (nextCursor?: string | null) => {
@@ -118,24 +109,33 @@ export function TraceTree({
     const timer = setTimeout(
       () => {
         const loaded = nodesRef.current;
-        // When every row is already on screen the refresh only has to append the
-        // rows that arrived after the last one; reloading the first block would
-        // throw the user back to the top of a long trace.
-        const appendOnly =
+        // When every row is already on screen the refresh only has to reload the
+        // tail: rows keep arriving with a start time earlier than the newest node
+        // (a parent span lands after its child), so an append-only cursor would
+        // drop them and break the indentation. Reloading from an anchor keeps the
+        // first N rows untouched, so the scroll position survives.
+        const refresh =
           !firstLoad && !hasMoreRef.current && !!loaded && loaded.length > 0;
-        const tail = loaded?.[loaded.length - 1];
-        const appendCursor =
-          appendOnly && tail ? `${tail.startTimeMs}:${tail.id}` : null;
+        const keep = refresh
+          ? Math.max(0, (loaded?.length ?? 0) - REFRESH_TAIL_NODES)
+          : 0;
+        const anchor = refresh && keep > 0 ? loaded?.[keep - 1] : undefined;
+        const refreshCursor = anchor
+          ? `${anchor.startTimeMs}:${anchor.id}`
+          : null;
 
-        fetch(traceUrl(appendCursor))
+        fetch(traceUrl(refreshCursor))
           .then((response) => (response.ok ? response.json() : null))
           .then((payload: TracePayload | null) => {
             if (cancelled || !payload) {
               return;
             }
 
-            if (appendOnly) {
-              appendNodes(payload.nodes);
+            if (refresh) {
+              // The prefix was loaded earlier and is unaffected by new rows; the
+              // server recomputed depth for the tail (including context ancestors
+              // that the client had dropped as duplicates).
+              applyNodes(mergeNodes((loaded ?? []).slice(0, keep), payload.nodes));
               cursor.current = payload.nextCursor;
               applyHasMore(payload.hasMore);
               setTotal(payload.total);
@@ -170,7 +170,7 @@ export function TraceTree({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [loadKey, version, traceUrl, applyHasMore, applyNodes, appendNodes]);
+  }, [loadKey, version, traceUrl, applyHasMore, applyNodes]);
 
   const loadMore = useCallback(async () => {
     const next = cursor.current;
@@ -310,6 +310,36 @@ function findScroller(host: HTMLElement | null): HTMLElement | null {
   return host.querySelector(
     '.ant-tree-list-holder, .rc-virtual-list-holder',
   ) as HTMLElement | null;
+}
+
+// Keeps one row per id. The reloaded tail wins on depth (the server recomputed it
+// with the ancestors that are now in range), but a real row must never be replaced
+// by a context duplicate: the tail response repeats earlier ancestors as
+// `isContext` rows with their counts cleared, and those ids already exist as real
+// rows in the prefix that was kept.
+function mergeNodes(existing: TraceNode[], incoming: TraceNode[]): TraceNode[] {
+  if (incoming.length === 0) {
+    return existing;
+  }
+
+  const merged = new Map<string, TraceNode>();
+  for (const node of existing) {
+    merged.set(node.id, node);
+  }
+
+  for (const node of incoming) {
+    const current = merged.get(node.id);
+    if (current && !current.isContext && node.isContext) {
+      continue;
+    }
+
+    merged.set(node.id, node);
+  }
+
+  return [...merged.values()].sort(
+    (left, right) =>
+      left.startTimeMs - right.startTimeMs || left.id.localeCompare(right.id),
+  );
 }
 
 // Multi-day ranges need the date; without it a row from 11-04 looks like it ran

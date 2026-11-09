@@ -9,7 +9,7 @@
 | Core 逻辑（解析、存储、定价、元数据） | `dotnet test tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release` | 94 项 |
 | 看板 `web/` | `cd web && npm run build`（内含 `tsc --noEmit`） | 构建通过 |
 | 扩展 `vscode-extension/` | `npm run compile` + `npm test` | 18 项 |
-| 服务端 / 路由 / 序列化 | `npm run sync-server`（AOT 成功）+ `npm run smoke` | 53 项 |
+| 服务端 / 路由 / 序列化 | `npm run sync-server`（AOT 成功）+ `npm run smoke` | 63 项 |
 | 文档（本目录） | 检查链接与路径是否仍然存在 | — |
 
 **路由/序列化层只能由冒烟覆盖**：单测跑不到 `MapPost` 绑定与 AOT 序列化问题。冒烟已覆盖 OTLP 入口返回码、`/api` 与 `/otlp` 未命中 404、`from`/`to` 半参数 400、trace 分块契约、审批节点、`turns` 为空、metric 入库后结果指标立即可见。

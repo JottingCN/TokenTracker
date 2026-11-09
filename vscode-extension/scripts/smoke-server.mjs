@@ -170,6 +170,101 @@ function turnPayload(sessionId) {
   });
 }
 
+function turnsPayload(sessionId) {
+  const now = Date.now();
+  const root = 'cccccccccccccccccccccccccccccccc';
+  const chat = (traceId, spanId, start) => ({
+    traceId,
+    spanId,
+    name: 'chat smoke-turn',
+    kind: 1,
+    startTimeUnixNano: `${start}000000`,
+    endTimeUnixNano: `${start + 100}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+      { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+      { key: 'gen_ai.usage.input_tokens', value: { stringValue: '100' } },
+      { key: 'gen_ai.usage.output_tokens', value: { stringValue: '10' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  });
+  const turn = (spanId, start) => ({
+    traceId: root,
+    spanId,
+    // Parent is the host session span, which is not ingested: that is what marks
+    // a root invoke_agent (a subagent's invoke_agent hangs below execute_tool).
+    parentSpanId: 'host-session-00000',
+    name: 'invoke_agent',
+    kind: 1,
+    startTimeUnixNano: `${start}000000`,
+    endTimeUnixNano: `${start + 500}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  });
+
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              turn('turn-a-000000001', now),
+              chat('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1', 'chat-a1-000000001', now + 10),
+              chat('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2', 'chat-a2-000000001', now + 20),
+              turn('turn-b-000000001', now + 1_000),
+              chat('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1', 'chat-b1-000000001', now + 1_010),
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
+// Only a trailing chat call: the root invoke_agent of that turn has not been
+// exported yet, which is what a running turn looks like.
+function trailingCallPayload(sessionId, atMs) {
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId: 'dddddddddddddddddddddddddddddddd',
+                spanId: 'chat-live-0000001',
+                name: 'chat smoke-model',
+                kind: 1,
+                startTimeUnixNano: `${atMs}000000`,
+                endTimeUnixNano: `${atMs + 100}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+                  { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+                  { key: 'gen_ai.usage.input_tokens', value: { stringValue: '100' } },
+                  { key: 'gen_ai.usage.output_tokens', value: { stringValue: '10' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
 function metricsPayload(count) {
   const now = `${Date.now()}000000`;
   return JSON.stringify({
@@ -519,6 +614,56 @@ try {
   );
   check('turns skip empty turns', turnOnly.turns.length, 0);
   check('events still count the approval', turnOnly.events.some((row) => row.operation === 'permission'), true);
+
+  // Regression: the call list is newest-first, so a naive forward walk assigns
+  // every call to the last turn. Each turn must only own the calls that start
+  // before the next turn.
+  const turnSession = 'smoke-turns';
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: turnsPayload(turnSession),
+  });
+  const withTurns = JSON.parse(
+    (await request(`${base}/api/session/${turnSession}`)).body,
+  );
+  check('turns are detected from root invoke_agent', withTurns.turns.length, 2);
+  check('first turn owns its own calls', withTurns.turns[0]?.calls, 2);
+  check('second turn owns its own calls', withTurns.turns[1]?.calls, 1);
+  check(
+    'turn calls add up to the session total',
+    withTurns.turns.reduce((total, row) => total + row.calls, 0),
+    withTurns.summary.calls,
+  );
+  check(
+    'turn cost adds up to the session total',
+    Math.round(
+      withTurns.turns.reduce((total, row) => total + row.costCny, 0) * 1e6,
+    ),
+    Math.round(withTurns.summary.costCny * 1e6),
+  );
+  check('turns are not marked live', withTurns.turns.some((row) => row.inProgress), false);
+
+  // A running turn has calls but no root invoke_agent yet (that span is exported
+  // when the turn ends), so it must show up as an extra in-progress row instead of
+  // being folded into the previous turn.
+  const now = Date.now();
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: trailingCallPayload(turnSession, now + 60_000),
+  });
+  const withLive = JSON.parse(
+    (await request(`${base}/api/session/${turnSession}`)).body,
+  );
+  check('a running turn is reported before it ends', withLive.turns.length, 3);
+  check('the running turn is flagged', withLive.turns[2]?.inProgress, true);
+  check('the running turn owns its call', withLive.turns[2]?.calls, 1);
+  check(
+    'the finished turn keeps only its own calls',
+    withLive.turns[1]?.calls,
+    1,
+  );
 
   const spa = await request(`${base}/`);
   check('GET /', spa.status, 200);

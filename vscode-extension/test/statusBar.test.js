@@ -360,6 +360,29 @@ test('status bar reports the newest main-agent model but can scope cost', () => 
     ),
     '$(pulse) 25.00%',
   );
+
+  // A running turn has no root invoke_agent yet (it is exported when the turn
+  // ends), so the server flags the trailing bucket instead of folding it into the
+  // previous turn.
+  const live = {
+    ...details,
+    turns: [
+      { index: 1, startTimeMs: 10, endTimeMs: 60, calls: 2, toolCalls: 1, costCny: 0.1 },
+      {
+        index: 2,
+        startTimeMs: 200,
+        endTimeMs: 260,
+        calls: 3,
+        toolCalls: 4,
+        costCny: 0.2,
+        inProgress: true,
+      },
+    ],
+  };
+  assert.equal(
+    renderStatusTemplate('{turn}', summary, '全部', money, live, 'session'),
+    '第2轮 4步（进行中）',
+  );
 });
 
 test('changing the stats range re-subscribes with the new window', () => {

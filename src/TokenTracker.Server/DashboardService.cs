@@ -1,4 +1,4 @@
-﻿using TokenTracker.Core;
+using TokenTracker.Core;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Pricing;
 using TokenTracker.Core.Session;
@@ -426,7 +426,7 @@ public sealed class DashboardService
             .GetSessionTools(sessionId, detailSource, fromMs, toMs)
             .ToList();
         var turns = BuildTurns(
-            _store.GetSessionTurnStarts(sessionId, detailSource, fromMs, toMs),
+            _store.GetSessionTurns(sessionId, detailSource, fromMs, toMs),
             _store.GetSessionToolRuns(sessionId, detailSource, fromMs, toMs),
             samples);
         _workspaces.Flush();
@@ -476,96 +476,179 @@ public sealed class DashboardService
         call.StartTimeMs);
 
     /// <summary>
-    /// Buckets the calls and tool runs of a session into turns. Both inputs are
-    /// ordered by start time, so a single forward walk per list is enough. Calls
-    /// before the first turn (a period without Agent Host data) are left out: they
-    /// have no turn boundary and would otherwise be attributed to the wrong one.
-    /// Turns without any call or tool run are dropped (they only represent a user
-    /// message the host never turned into work) and the rest are renumbered so the
-    /// list and the status bar agree on "turn N".
+    /// Buckets the calls and tool runs of a session into turns. Turns are ordered by
+    /// start time; the call list may arrive either ascending (the sample projection)
+    /// or descending (the newest-first call page), so it is normalized first instead
+    /// of trusting the caller.
+    /// <para>
+    /// A root <c>invoke_agent</c> only arrives when the turn finishes, so the newest
+    /// turn is never in the list while it runs. Activity that starts after the last
+    /// known turn ended therefore becomes an extra in-progress row: without it the
+    /// status bar keeps reporting the previous turn until the run completes.
+    /// </para>
+    /// Calls before the first turn (a period without Agent Host data) are left out
+    /// because they have no boundary. Turns without any call or tool run are dropped
+    /// (a user message the host never turned into work) and the rest are renumbered
+    /// so the list and the status bar agree on "turn N".
     /// </summary>
     private static List<SessionTurnRow> BuildTurns(
-        IReadOnlyList<long> turnStarts,
+        IReadOnlyList<(long StartTimeMs, long? EndTimeMs)> turns,
         IReadOnlyList<ToolRunSample> toolRuns,
         IReadOnlyList<CallSample> calls)
     {
-        if (turnStarts.Count == 0)
+        if (turns.Count == 0)
         {
             return new List<SessionTurnRow>();
         }
 
-        var rows = new List<SessionTurnRow>(turnStarts.Count);
+        var ordered = IsAscending(calls)
+            ? calls
+            : calls.OrderBy(call => call.StartTimeMs).ToList();
+        var rows = new List<SessionTurnRow>(turns.Count + 1);
         var callIndex = 0;
         var toolIndex = 0;
-        for (var index = 0; index < turnStarts.Count; index++)
+        for (var index = 0; index < turns.Count; index++)
         {
-            var start = turnStarts[index];
-            var next = index + 1 < turnStarts.Count
-                ? turnStarts[index + 1]
-                : long.MaxValue;
-            long calls_ = 0, input = 0, cache = 0, output = 0, reasoning = 0;
-            long tools = 0;
-            double cost = 0;
-            long? lastEnd = null;
-            while (callIndex < calls.Count && calls[callIndex].StartTimeMs < start)
-            {
-                callIndex++;
-            }
-
-            while (callIndex < calls.Count && calls[callIndex].StartTimeMs < next)
-            {
-                var call = calls[callIndex++];
-                calls_++;
-                input += call.InputTokens;
-                cache += call.CacheReadTokens;
-                output += call.OutputTokens;
-                reasoning += call.ReasoningTokens;
-                cost += call.CostCny ?? 0;
-                var end = call.StartTimeMs + (call.DurationMs ?? 0);
-                if (lastEnd is null || end > lastEnd)
-                {
-                    lastEnd = end;
-                }
-            }
-
-            while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < start)
-            {
-                toolIndex++;
-            }
-
-            while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < next)
-            {
-                var tool = toolRuns[toolIndex++];
-                tools++;
-                if (lastEnd is null || tool.EndTimeMs > lastEnd)
-                {
-                    lastEnd = tool.EndTimeMs;
-                }
-            }
-
-            if (calls_ == 0 && tools == 0)
+            var start = turns[index].StartTimeMs;
+            // The last known turn is capped by its own end time: anything that
+            // starts later cannot belong to it, it belongs to the running turn.
+            var next = index + 1 < turns.Count
+                ? turns[index + 1].StartTimeMs
+                : turns[index].EndTimeMs ?? long.MaxValue;
+            var bucket = Accumulate(
+                ordered,
+                toolRuns,
+                ref callIndex,
+                ref toolIndex,
+                start,
+                next);
+            if (bucket.Calls == 0 && bucket.Tools == 0)
             {
                 continue;
             }
 
-            rows.Add(new SessionTurnRow
+            rows.Add(bucket.ToRow(rows.Count + 1, start));
+        }
+
+        if (callIndex < ordered.Count || toolIndex < toolRuns.Count)
+        {
+            // Whatever is left starts after the last finished turn: it is the turn
+            // that is running right now, or calls that arrived without a turn.
+            var start = long.MaxValue;
+            if (callIndex < ordered.Count)
             {
-                Index = rows.Count + 1,
-                StartTimeMs = start,
-                // The time the turn actually worked, not the idle gap until the
-                // user sent the next message.
-                EndTimeMs = lastEnd ?? start,
-                Calls = calls_,
-                InputTokens = input,
-                CacheReadTokens = cache,
-                OutputTokens = output,
-                ReasoningTokens = reasoning,
-                CostCny = cost,
-                ToolCalls = tools,
-            });
+                start = Math.Min(start, ordered[callIndex].StartTimeMs);
+            }
+
+            if (toolIndex < toolRuns.Count)
+            {
+                start = Math.Min(start, toolRuns[toolIndex].StartTimeMs);
+            }
+
+            var running = Accumulate(
+                ordered,
+                toolRuns,
+                ref callIndex,
+                ref toolIndex,
+                start,
+                long.MaxValue);
+            if (running.Calls > 0 || running.Tools > 0)
+            {
+                rows.Add(running.ToRow(rows.Count + 1, start, inProgress: true));
+            }
         }
 
         return rows;
+    }
+
+    private static TurnBucket Accumulate(
+        IReadOnlyList<CallSample> calls,
+        IReadOnlyList<ToolRunSample> toolRuns,
+        ref int callIndex,
+        ref int toolIndex,
+        long fromMs,
+        long toMs)
+    {
+        var bucket = new TurnBucket();
+        while (callIndex < calls.Count && calls[callIndex].StartTimeMs < fromMs)
+        {
+            callIndex++;
+        }
+
+        while (callIndex < calls.Count && calls[callIndex].StartTimeMs < toMs)
+        {
+            var call = calls[callIndex++];
+            bucket.Calls++;
+            bucket.Input += call.InputTokens;
+            bucket.Cache += call.CacheReadTokens;
+            bucket.Output += call.OutputTokens;
+            bucket.Reasoning += call.ReasoningTokens;
+            bucket.Cost += call.CostCny ?? 0;
+            bucket.Extend(call.StartTimeMs + (call.DurationMs ?? 0));
+        }
+
+        while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < fromMs)
+        {
+            toolIndex++;
+        }
+
+        while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < toMs)
+        {
+            var tool = toolRuns[toolIndex++];
+            bucket.Tools++;
+            bucket.Extend(tool.EndTimeMs);
+        }
+
+        return bucket;
+    }
+
+    private sealed class TurnBucket
+    {
+        public long Calls;
+        public long Tools;
+        public long Input;
+        public long Cache;
+        public long Output;
+        public long Reasoning;
+        public double Cost;
+        private long? _lastEnd;
+
+        public void Extend(long endMs)
+        {
+            if (_lastEnd is null || endMs > _lastEnd)
+            {
+                _lastEnd = endMs;
+            }
+        }
+
+        public SessionTurnRow ToRow(int index, long startMs, bool inProgress = false) => new()
+        {
+            Index = index,
+            StartTimeMs = startMs,
+            // The time the turn actually worked, not the idle gap until the user
+            // sent the next message.
+            EndTimeMs = _lastEnd ?? startMs,
+            Calls = Calls,
+            InputTokens = Input,
+            CacheReadTokens = Cache,
+            OutputTokens = Output,
+            ReasoningTokens = Reasoning,
+            CostCny = Cost,
+            ToolCalls = Tools,
+            InProgress = inProgress,
+        };
+    }
+    private static bool IsAscending(IReadOnlyList<CallSample> calls)
+    {
+        for (var index = 1; index < calls.Count; index++)
+        {
+            if (calls[index].StartTimeMs < calls[index - 1].StartTimeMs)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static List<SessionEventRow> BuildChatEvents(

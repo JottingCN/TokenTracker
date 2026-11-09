@@ -305,9 +305,17 @@ export function SessionPage({
     {
       title: t('turns'),
       key: 'index',
-      width: 70,
+      width: 90,
       align: 'right',
-      render: (_, row) => row.indexText,
+      render: (_, row) =>
+        row.inProgress ? (
+          <Space size={4}>
+            <span>{row.indexText}</span>
+            <Tag color="processing">{t('in.progress')}</Tag>
+          </Space>
+        ) : (
+          row.indexText
+        ),
     },
     {
       title: t('start'),

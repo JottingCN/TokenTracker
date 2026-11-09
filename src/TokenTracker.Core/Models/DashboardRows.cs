@@ -382,6 +382,13 @@ public sealed class SessionTurnRow
     public double CostCny { get; init; }
     public long ToolCalls { get; init; }
 
+    /// <summary>
+    /// True for the trailing bucket that has activity but no root invoke_agent yet:
+    /// that span only arrives when the turn ends, so without this flag a running
+    /// turn would be reported as the previous one.
+    /// </summary>
+    public bool InProgress { get; init; }
+
     public string IndexText => DisplayFormat.Number(Index);
     public string StartText => DisplayFormat.LocalTime(StartTimeMs);
     public string DurationText => DisplayFormat.Duration(
@@ -442,6 +449,12 @@ public sealed record TraceNodeRow
     public required string Operation { get; init; }
     public string? Name { get; init; }
     public string? Tool { get; init; }
+    /// <summary>
+    /// Normalized model of a chat node. The OTel span name keeps the provider
+    /// prefix from Agent Host (<c>chat DeepSeek/deepseek-flash</c>) and repeats the
+    /// operation, so the label is built from this instead.
+    /// </summary>
+    public string? Model { get; init; }
     public string? Source { get; init; }
     public long StartTimeMs { get; init; }
     public long? DurationMs { get; init; }
@@ -458,9 +471,16 @@ public sealed record TraceNodeRow
     /// </summary>
     public bool IsContext { get; init; }
 
-    public string Label => string.IsNullOrWhiteSpace(Tool)
-        ? Name ?? Operation
-        : $"{Operation} {Otlp.ToolNameResolver.Display(Tool)}";
+    /// <summary>
+    /// One-line label for the tree. The tree renders the operation as its own tag,
+    /// so a chat row shows only the model instead of repeating "chat" from the span
+    /// name.
+    /// </summary>
+    public string Label => Kind == "chat"
+        ? Model ?? Name ?? Operation
+        : string.IsNullOrWhiteSpace(Tool)
+            ? Name ?? Operation
+            : $"{Operation} {Otlp.ToolNameResolver.Display(Tool)}";
     public string SourceText => DisplayFormat.Source(Source);
     public string DurationText => DisplayFormat.Duration(DurationMs);
 }

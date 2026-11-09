@@ -5,7 +5,7 @@
 扩展与服务端独立发布：
 
 ```bash
-git tag v0.1.9 && git push origin v0.1.9                 # 扩展（与 vscode-extension/package.json 版本一致）
+git tag v0.1.10 && git push origin v0.1.10                 # 扩展（与 vscode-extension/package.json 版本一致）
 git tag server-v1.0.0 && git push origin server-v1.0.0   # 服务端
 ```
 

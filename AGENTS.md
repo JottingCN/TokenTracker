@@ -38,10 +38,10 @@ Token Tracker 是本地 Copilot Token 用量与费用看板。Copilot Chat / Age
 2. **数据库只能附加式迁移**：禁止 `DROP TABLE` / `DROP COLUMN` / 清库重建；`PRAGMA user_version` 是版本标记，读到更高版本只告警不改库 → [存储](docs/agents/storage.md)
 3. **时间窗必须在 SQL 聚合之前下推**，不能按聚合后的 `lastSeenMs` 过滤（否则「今天」显示全部历史）→ [存储](docs/agents/storage.md)
 4. **Trace 拓扑按 FIFO 时间游标分块**：首块最早、`cursor` 向后追加；不要页码分页器，也不要按整条 trace 切块 → [拓扑](docs/agents/trace-topology.md)
-5. **拓扑窗口外的祖先用 `isContext` 行补齐**，不计数；追加时按节点 id 去重；加载完只追加不重排 → [拓扑](docs/agents/trace-topology.md)
+5. **拓扑窗口外的祖先用 `isContext` 行补齐**，不计数；实时刷新用**尾部窗口重载**（晚到的父 span 追不上递增游标），合并时真实行不得被 context 行覆盖 → [拓扑](docs/agents/trace-topology.md)
 6. **AOT**：JSON 只走 `AppJsonContext`；`MapPost/MapGet` lambda 带 `HttpContext` 时必须再带 `CancellationToken`；错误用 `ErrorPayload` 不用 `Results.Problem` → [工程约束](docs/agents/engineering.md)
 7. **审批没有“自动/人工”标记**：`permission.result` 只有 `approved` / `denied-interactively-by-user`，只能按有无 span 与耗时读现象；解析必须按 span 名优先判 `permission` → [OTel 解析](docs/agents/otel-parsing.md)
-8. **轮次来自根 `invoke_agent`**，`EndTimeMs` 取工具结束时间，0 次数的轮次丢弃并重编号，`summary.calls` 必须等于 `turns` 之和 → [会话与轮次](docs/agents/sessions.md)
+8. **轮次来自根 `invoke_agent`**（运行中的轮次没有边界，必须输出 `InProgress` 行，否则一直显示上一轮）；`EndTimeMs` 取工具结束时间，0 次数的轮次丢弃并重编号，`summary.calls` 必须等于 `turns` 之和 → [会话与轮次](docs/agents/sessions.md)
 9. **跨请求缓存必须有上界**；WS 快照聚合不能靠客户端过滤（Tip 也传 `range`）→ [存储](docs/agents/storage.md)
 10. **界面文案全部走 i18n**（`en` / `zh-CN` / `zh-TW` 三文件齐平；扩展另有三份 `package.nls`）→ [扩展 UI](docs/agents/extension-ui.md)
 
@@ -72,7 +72,7 @@ npm run package       # 生成 tokentracker-*.vsix（排除 server/）
 
 - `scripts/sync-server.mjs` 会先删 `server/` 再发布；**服务端进程正在运行时删除会 EPERM**，先停自己起的实例。
 - 跨平台构建用 `TOKENTRACKER_TARGET_RID=<rid> node vscode-extension/scripts/sync-server.mjs`，AOT 必须在目标平台执行。
-- 验证基线：Core 94 项、扩展 18 项、冒烟 53 项（见[验证](docs/agents/verification.md)）。
+- 验证基线：Core 94 项、扩展 18 项、冒烟 63 项（见[验证](docs/agents/verification.md)）。
 
 ## 目录
 

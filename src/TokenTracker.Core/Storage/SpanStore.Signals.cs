@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Models;
 using TokenTracker.Core.Pricing;
 
@@ -565,12 +565,14 @@ public sealed partial class SpanStore
     }
 
     /// <summary>
-    /// Start times of the session's turns. Agent Host opens exactly one root
-    /// <c>invoke_agent</c> span per user message; a subagent's invoke_agent hangs
+    /// Start and end of the session's turns. Agent Host opens exactly one root
+    /// <c>invoke_agent</c> span per user message and it only arrives once the turn
+    /// finished, so the end time is also the only way to tell that newer activity
+    /// belongs to a turn that is still running. A subagent's invoke_agent hangs
     /// below a stored tool span, so requiring the parent to be unknown keeps the
     /// list to real turns.
     /// </summary>
-    public IReadOnlyList<long> GetSessionTurnStarts(
+    public IReadOnlyList<(long StartTimeMs, long? EndTimeMs)> GetSessionTurns(
         string sessionId,
         string? source = null,
         long fromMs = 0,
@@ -582,7 +584,7 @@ public sealed partial class SpanStore
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT start_time_ms
+            SELECT start_time_ms, end_time_ms
             FROM session_events e
             WHERE e.session_id = @session_id
               AND e.operation = 'invoke_agent'
@@ -602,11 +604,13 @@ public sealed partial class SpanStore
             command.Parameters.AddWithValue("@source", source);
         }
 
-        var rows = new List<long>();
+        var rows = new List<(long StartTimeMs, long? EndTimeMs)>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            rows.Add(reader.GetInt64(0));
+            rows.Add((
+                reader.GetInt64(0),
+                reader.IsDBNull(1) ? null : reader.GetInt64(1)));
         }
 
         return rows;
@@ -965,6 +969,10 @@ public sealed partial class SpanStore
                 Kind = "chat",
                 Operation = "chat",
                 Name = span.Name,
+                // The span name ("chat DeepSeek/deepseek-flash") carries the raw
+                // provider prefix and repeats the operation; the normalized model
+                // column is what the rest of the UI shows.
+                Model = span.Model,
                 Source = span.Source,
                 StartTimeMs = span.StartTimeMs,
                 DurationMs = span.EndTimeMs is long spanEnd
