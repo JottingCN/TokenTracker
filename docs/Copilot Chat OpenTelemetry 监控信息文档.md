@@ -395,7 +395,7 @@ OTel 未启用、指标不在本项目的 allowlist 内、**指标已入库但�
 
 1. **结果指标不带会话 ID，也不带模型/provider。** 第 6 节写的筛选属性（`gen_ai.request.model`、`gen_ai.provider.name`、`error.type`）
    只有 `gen_ai.client.*` 与 `tool.call.*` 系列才有，**outcome 指标一个都没有**。因此结果指标无法按模型/provider/错误维度拆分。
-2. **每会话的结果卡片只剩一条归属路径。** AGENTS.md 的三级阶梯里，「自带 `gen_ai.conversation.id`/`copilot_chat.session_id`」和
+2. **每会话的结果卡片只剩一条归属路径。** [结果指标](agents/outcome-metrics.md) 的三级阶梯里，「自带 `gen_ai.conversation.id`/`copilot_chat.session_id`」和
    「按 `gen_ai.tool.call.id` 反查」对 outcome 指标**永远不会命中**；唯一可用的是 resource 上的**窗口级** `session.id`，
    且要求该窗口在 `window_session_links` 里**只对应一个** chat 会话（置信度 0.6）。
    同一 VS Code 窗口开出第二个会话后，这个窗口的编辑指标只会进 Dashboard，**永不进会话卡片**——这是数据源限制，不是 bug。

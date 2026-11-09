@@ -310,6 +310,13 @@ Agent Host 把每次工具审批写成独立 span `permission`（**`operation_na
 这是**唯一能算“人审等待时长”和“拒绝率”的来源**，也是端到端延迟里最大的可归因项（最长一条 ≈ 14.3 小时的挂起审批）。
 `denied` 同时会以 `error.type=denied` 出现在对应 `execute_tool` 上（实测 2 条），两者可对齐校验。
 
+> **关于“人工还是自动审批”**：`permission.result` 没有自动/人工标记，只有 `approved` 与 `denied-interactively-by-user`。
+> 因此只能从现象判断：**没有 permission span** = 该工具未请求审批（策略放行）；**有 span 且耗时极短** = 瞬时通过；
+> **耗时达到秒级/更长** = 在等人确认；只有 `denied-interactively-by-user` 是显式的人工拒绝。
+> 本项目把 permission span 存成 `operation='permission'` 的事件（`permission_kind` / `permission_result` 两列），
+> 在 Trace 拓扑里显示为 `permission` 节点，label 形如 `shell · approved · powershell`，耗时即审批等待时长；
+> 「事件统计」里独立成一行「审批」。不要试图从 `approved` 反推是谁点的通过。
+
 
 ## 13. 缓存命中统计
 
