@@ -175,5 +175,5 @@
     "sync-server": "node scripts/sync-server.mjs",
     "test": "node --test"
   },
-  "version": "0.1.11"
+  "version": "0.1.12"
 }

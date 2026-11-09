@@ -316,7 +316,7 @@ function orphanToolPayload(sessionId) {
   });
 }
 
-function trailingToolPayload(sessionId, atMs) {
+function trailingToolPayload(sessionId, atMs, parentSpanId, spanId) {
   return JSON.stringify({
     resourceSpans: [
       {
@@ -330,7 +330,8 @@ function trailingToolPayload(sessionId, atMs) {
             spans: [
               {
                 traceId: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                spanId: 'tool-live-0000001',
+                spanId: spanId || 'tool-live-0000001',
+                ...(parentSpanId ? { parentSpanId } : {}),
                 name: 'execute_tool grep',
                 kind: 1,
                 startTimeUnixNano: `${atMs}000000`,
@@ -355,12 +356,13 @@ function chainByOperationParent(payload, byId, operation) {
   return parent ? parent.operation : undefined;
 }
 
-function turnsPayload(sessionId) {
+function turnsPayload(sessionId, idSuffix = '') {
   const now = Date.now();
   const root = 'cccccccccccccccccccccccccccccccc';
+  const id = (value) => `${value}${idSuffix}`;
   const chat = (traceId, spanId, start) => ({
     traceId,
-    spanId,
+    spanId: id(spanId),
     name: 'chat smoke-turn',
     kind: 1,
     startTimeUnixNano: `${start}000000`,
@@ -375,7 +377,7 @@ function turnsPayload(sessionId) {
   });
   const turn = (spanId, start) => ({
     traceId: root,
-    spanId,
+    spanId: id(spanId),
     // Parent is the host session span, which is not ingested: that is what marks
     // a root invoke_agent (a subagent's invoke_agent hangs below execute_tool).
     parentSpanId: 'host-session-00000',
@@ -883,6 +885,53 @@ try {
     'the tool-only tail joins the running turn',
     withTail.turns[withTail.turns.length - 1]?.toolCalls,
     1,
+  );
+
+  // A tool that names a turn no stored span matches belongs to a turn whose root
+  // invoke_agent has not been exported yet — the running turn. Folding it into the
+  // previous turn made the step count differ from the chat client, which opens the
+  // new turn on the first tool call.
+  const nextSession = 'smoke-next';
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: turnsPayload(nextSession, '-n'),
+  });
+  const beforeNext = JSON.parse(
+    (await request(`${base}/api/session/${nextSession}`)).body,
+  );
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: trailingToolPayload(
+      nextSession,
+      Date.now() + 120_000,
+      'future-turn-0001',
+      'tool-next-000001',
+    ),
+  });
+  const withNextTurn = JSON.parse(
+    (await request(`${base}/api/session/${nextSession}`)).body,
+  );
+  check(
+    'a tool from a not-yet-exported turn opens a new turn',
+    withNextTurn.turns.length,
+    beforeNext.turns.length + 1,
+  );
+  check(
+    'the new turn is reported as running',
+    withNextTurn.turns[withNextTurn.turns.length - 1]?.inProgress,
+    true,
+  );
+  check(
+    'the new turn owns only its own steps',
+    withNextTurn.turns[withNextTurn.turns.length - 1]?.toolCalls,
+    1,
+  );
+  check(
+    'the previous turn keeps its own steps',
+    withNextTurn.turns[withNextTurn.turns.length - 2]?.toolCalls,
+    0,
   );
 
   // The tool hangs below the model call that requested it, and the approval below

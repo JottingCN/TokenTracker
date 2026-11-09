@@ -1661,7 +1661,9 @@ public sealed partial class SpanStore
 
     /// <summary>
     /// Start and end of each tool run, used to attribute tool calls to a turn and
-    /// to measure how long the turn kept working.
+    /// to measure how long the turn kept working. The parent span id comes along
+    /// because it names the turn that owns the tool (<c>invoke_agent</c>), even
+    /// while that turn's own span has not been exported yet.
     /// </summary>
     public IReadOnlyList<ToolRunSample> GetSessionToolRuns(
         string sessionId,
@@ -1675,7 +1677,7 @@ public sealed partial class SpanStore
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT start_time_ms, end_time_ms
+            SELECT start_time_ms, end_time_ms, parent_span_id
             FROM session_events
             WHERE session_id = @session_id
               AND operation = 'execute_tool'
@@ -1697,7 +1699,10 @@ public sealed partial class SpanStore
         {
             var startMs = reader.GetInt64(0);
             var endMs = reader.IsDBNull(1) ? startMs : reader.GetInt64(1);
-            rows.Add(new ToolRunSample(startMs, Math.Max(startMs, endMs)));
+            rows.Add(new ToolRunSample(
+                startMs,
+                Math.Max(startMs, endMs),
+                reader.IsDBNull(2) ? null : reader.GetString(2)));
         }
 
         return rows;

@@ -1610,21 +1610,21 @@ public sealed class SpanStoreTests
             });
 
             Assert.Equal(
-                new (long, long?)[]
+                new (long, long?, string)[]
                 {
-                    (1_000L, 2_000L),
-                    (10_000L, 11_000L),
+                    (1_000L, 2_000L, "a1"),
+                    (10_000L, 11_000L, "a2"),
                 },
                 store.GetSessionTurns("session-1"));
             Assert.Equal(
-                new (long, long?)[] { (10_000L, 11_000L) },
+                new (long, long?, string)[] { (10_000L, 11_000L, "a2") },
                 store.GetSessionTurns("session-1", null, 5_000, 20_000));
             Assert.Empty(store.GetSessionTurns("session-1", "copilot-chat"));
             Assert.Equal(
-                new[] { new ToolRunSample(1_100, 1_200) },
+                new[] { new ToolRunSample(1_100, 1_200, "a1") },
                 store.GetSessionToolRuns("session-1"));
             Assert.Equal(
-                new (long, long?)[] { (10_000L, 11_000L) },
+                new (long, long?, string)[] { (10_000L, 11_000L, "a2") },
                 store.GetSessionTurns("session-1", null, 9_000, 20_000));
         }
         finally

@@ -28,13 +28,14 @@
 
 ## 4. 对话轮次（turns）
 
-- 轮次边界是 Agent Host 的**根 `invoke_agent`**：每条用户消息发一个根 invoke_agent；子代理的 invoke_agent 挂在 `execute_tool` 下，`GetSessionTurns` 用「父 span 不在本地 `session_events` 中」把它们排除。
+- 轮次边界是 Agent Host 的**根 `invoke_agent`**：每条用户消息发一个根 invoke_agent；子代理的 invoke_agent 挂在 `execute_tool` 下，`GetSessionTurns` 用「父 span 不在本地 `session_events` 中」把它们排除。它同时返回每轮的 `span_id`，因为工具的 `parent_span_id` 指向它就是「这一轮」的唯一标识。
 - 调用与工具事件按开始时间落桶；`EndTimeMs` 取该轮**最后一次调用结束或工具结束**的时间（`GetSessionToolRuns` 返回 start+end），**不是**下一轮开始时间，否则会把用户读消息的空闲算进耗时。
 - `calls == 0 && toolCalls == 0` 的轮次会被丢弃并**重新编号**（只有用户消息、宿主没产生工作）。
 - 纯 Copilot Chat 数据没有轮次标记，`turns` 为空是预期；首个轮次之前的调用不计入任何轮次。
 - **进行中的轮次**：根 `invoke_agent` 只有在整轮结束时才导出，所以运行中的那一轮永远不会出现在边界列表里。`GetSessionTurns` 同时返回每轮的 `end_time_ms`，最后一个已知轮次用**自己的结束时间**封口；它之后的活动（有调用/工具但还没有边界）生成一条额外的 `InProgress=true` 行并排在最后。否则运行期间状态栏会一直显示上一轮，且本轮的调用被算进上一轮。会话页用「进行中」标签、Tip 用 `live` 标记、状态栏显示 `第N轮 M步（进行中）`。
 - 汇总一致性：`summary.calls` 必须等于 `turns` 的 calls 之和（同一 `CallSample` 投影），`InProgress` 行也计入。
-- **只有模型调用能开启新轮次**：宿主会先关闭 `invoke_agent`（该轮的 agent 循环结束）再导出最后几个工具 span，所以最后一轮之后只剩工具时，那些工具属于**该轮自己的尾巴**，必须并回上一轮（同时延长 `EndTimeMs`），不能拆成新轮次——实测把一轮拆成 52 + 6，而客户端显示 59 步。尾部若出现新的 chat 调用，才生成 `InProgress` 行。
+- **轮次尾巴按归属拆，不按时间猜**：每个 `execute_tool` 的 `parent_span_id` 就是它所属轮的根 `invoke_agent`。最后已知轮之后剩下的活动分两种：父 id 属于某个已知轮（或为空）→ 是该轮**自己的尾巴**（宿主先关 `invoke_agent` 再导出最后几个工具 span），必须并回该轮并延长 `EndTimeMs`，否则会把一轮拆成 52 + 6；父 id **不属于任何已知轮** → 是一轮还没导出的根（正在运行的那一轮），要在它第一个工具时就开 `InProgress` 行。旧实现只看「有没有新模型调用」，于是运行中的轮次要等首个 chat span 落地才出现，期间它的步数全算到上一轮——客户端在第一个工具调用时就开新一轮，所以两边的步数对不上。
+- **steering 消息无法拆成独立轮**：运行中插话（客户端日志里 `delivery: "steering"`）不会产生新的根 `invoke_agent`，宿主把它并进当前轮继续跑。客户端按「每条用户消息」分气泡、各算步数，而 OTel 里它们同属一轮（实测 4 次插话，26 个工具并入前一轮）。同理，子代理的 `user.message` 在客户端也是一个气泡，但它下面挂的是子代理的 `invoke_agent`（父存在，被排除出轮次列表），所以 `turns` 条数会比客户端的气泡少。
 - **入参顺序不可信**：调用明细走 `GetCalls` 的 `ORDER BY start_time_ms DESC`（分页需要最新在前），而样本投影是升序。`BuildTurns` 必须先归一化为升序再单向前进，否则所有调用会被塞进最后一轮——实测最后一个轮次显示 2690 次调用与整会话费用（回归用例在 `scripts/smoke-server.mjs` 的两轮场景）。
 - 消费方：`SessionPayload.turns`（会话页「按对话」卡片）与状态栏 `{turn}` / `{step}` / `{turns}`（见[扩展 UI](extension-ui.md)）。
 - **轮次不落库、全部实时算**：没有 `turns` 表，也没有快照缓存，每次 `/api/session` 都重跑 `GetSessionTurns` + `GetSessionToolRuns` 并在内存里分桶。因此改算法对**全部历史会话立即生效**，不需要迁移或回填（实测功能上线前的 11-03 会话也能算出轮次）。代价随数据量线性增长：3100 次调用 / 3128 次工具 / 62 轮时，聚合路径 `includeCalls=false` 约 210 ms，带调用列表约 880 ms（瓶颈是序列化，不是分桶）。

@@ -570,9 +570,10 @@ public sealed partial class SpanStore
     /// finished, so the end time is also the only way to tell that newer activity
     /// belongs to a turn that is still running. A subagent's invoke_agent hangs
     /// below a stored tool span, so requiring the parent to be unknown keeps the
-    /// list to real turns.
+    /// list to real turns. The span id is returned because it is what a tool's
+    /// parent points at, so the turn builder can recognise a not-yet-exported turn.
     /// </summary>
-    public IReadOnlyList<(long StartTimeMs, long? EndTimeMs)> GetSessionTurns(
+    public IReadOnlyList<(long StartTimeMs, long? EndTimeMs, string SpanId)> GetSessionTurns(
         string sessionId,
         string? source = null,
         long fromMs = 0,
@@ -584,7 +585,7 @@ public sealed partial class SpanStore
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT start_time_ms, end_time_ms
+            SELECT start_time_ms, end_time_ms, span_id
             FROM session_events e
             WHERE e.session_id = @session_id
               AND e.operation = 'invoke_agent'
@@ -604,13 +605,14 @@ public sealed partial class SpanStore
             command.Parameters.AddWithValue("@source", source);
         }
 
-        var rows = new List<(long StartTimeMs, long? EndTimeMs)>();
+        var rows = new List<(long StartTimeMs, long? EndTimeMs, string SpanId)>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
             rows.Add((
                 reader.GetInt64(0),
-                reader.IsDBNull(1) ? null : reader.GetInt64(1)));
+                reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                reader.GetString(2)));
         }
 
         return rows;

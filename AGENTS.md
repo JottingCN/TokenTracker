@@ -72,7 +72,7 @@ npm run package       # 生成 tokentracker-*.vsix（排除 server/）
 
 - `scripts/sync-server.mjs` 会先删 `server/` 再发布；**服务端进程正在运行时删除会 EPERM**，先停自己起的实例。
 - 跨平台构建用 `TOKENTRACKER_TARGET_RID=<rid> node vscode-extension/scripts/sync-server.mjs`，AOT 必须在目标平台执行。
-- 验证基线：Core 96 项、扩展 18 项、冒烟 70 项（见[验证](docs/agents/verification.md)）。
+- 验证基线：Core 96 项、扩展 18 项、冒烟 74 项（见[验证](docs/agents/verification.md)）。
 
 ## 目录
 

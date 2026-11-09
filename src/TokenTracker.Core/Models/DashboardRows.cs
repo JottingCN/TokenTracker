@@ -362,8 +362,18 @@ public sealed class AgentRunRow
 /// <summary>
 /// One tool execution as seen by the turn builder: the start decides which turn
 /// owns it, the end decides how long the turn was still working.
+/// <para>
+/// <c>ParentSpanId</c> is the tool's own parent inside the Agent Host trace, which
+/// is the turn's root <c>invoke_agent</c>. A tool whose parent is not one of the
+/// known turns therefore belongs to a turn that has not been exported yet — the
+/// only way to tell a running turn's first steps from the previous turn's tail
+/// before that turn's first model call completes.
+/// </para>
 /// </summary>
-public readonly record struct ToolRunSample(long StartTimeMs, long EndTimeMs);
+public readonly record struct ToolRunSample(
+    long StartTimeMs,
+    long EndTimeMs,
+    string? ParentSpanId = null);
 
 /// <summary>
 /// One Agent Host turn. A turn starts at a root <c>invoke_agent</c> span (one per
