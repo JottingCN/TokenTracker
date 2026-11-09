@@ -651,6 +651,9 @@ public sealed partial class SpanStore
                    a.agent_name, a.agent_type, a.provider_name,
                    COALESCE(
                        a.request_model,
+                       -- The model of this run: the dominant chat model inside the
+                       -- run's own time window, else the trace's dominant model (a
+                       -- subagent's chats can start before its span does).
                        (SELECT s.model FROM spans s
                         WHERE s.trace_id = a.trace_id AND s.model IS NOT NULL
                           AND s.start_time_ms >= a.start_time_ms
@@ -658,17 +661,27 @@ public sealed partial class SpanStore
                                OR s.start_time_ms < a.end_time_ms)
                         GROUP BY s.model
                         ORDER BY COUNT(*) DESC, s.model
+                        LIMIT 1),
+                       (SELECT s.model FROM spans s
+                        WHERE s.trace_id = a.trace_id AND s.model IS NOT NULL
+                        GROUP BY s.model
+                        ORDER BY COUNT(*) DESC, s.model
                         LIMIT 1)) AS request_model,
                    a.response_model, a.otel_source, a.git_repository, a.git_branch,
                    a.git_commit, a.github_org,
-                   COALESCE(
-                       a.turn_count,
-                       (SELECT COUNT(*) FROM spans s
-                        WHERE s.trace_id = a.trace_id
-                          AND s.model IS NOT NULL
-                          AND s.start_time_ms >= a.start_time_ms
-                          AND (a.end_time_ms IS NULL
-                               OR s.start_time_ms < a.end_time_ms))) AS turn_count,
+                   -- A run with no chat inside its window has an unknown turn count,
+                   -- not zero, so the column stays "-" instead of claiming 0 turns.
+                   CASE WHEN a.turn_count IS NOT NULL AND a.turn_count > 0
+                        THEN a.turn_count
+                        ELSE NULLIF(
+                            (SELECT COUNT(*) FROM spans s
+                             WHERE s.trace_id = a.trace_id
+                               AND s.model IS NOT NULL
+                               AND s.start_time_ms >= a.start_time_ms
+                               AND (a.end_time_ms IS NULL
+                                    OR s.start_time_ms < a.end_time_ms)),
+                            0)
+                   END AS turn_count,
                    a.input_tokens,
                    a.output_tokens, a.cache_read_tokens, a.cache_creation_tokens,
                    a.reasoning_tokens, a.start_time_ms, a.end_time_ms, a.is_error,
