@@ -184,7 +184,7 @@ export const en = {
   'needs.input': 'Needs input',
   'no.agent.runs.yet': 'No agent runs yet',
   'no.data': 'No data',
-  'no.hook.data.yet': 'No hook data yet',
+  'no.hook.data.yet': 'No hook data yet — hooks are only recorded in the host local trace database, so enable chat.agentHost.otel.dbSpanExporter and import local traces to count them',
   'no.outcome.metrics.received.yet': 'No outcome metrics received yet',
   'no.revert.survival': 'No-revert survival',
   'no.tool.call.data.yet.requires.execute.tool.spans': 'No tool call data yet (requires execute_tool spans)',

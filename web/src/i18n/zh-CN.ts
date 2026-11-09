@@ -186,7 +186,7 @@ export const zhCN: Record<MessageKey, string> = {
   'needs.input': '等待输入',
   'no.agent.runs.yet': '暂无 Agent 运行数据',
   'no.data': '暂无数据',
-  'no.hook.data.yet': '暂无 Hook 数据',
+  'no.hook.data.yet': '暂无 Hook 数据：Hook 只写在宿主的本地 trace 库，需要开启 chat.agentHost.otel.dbSpanExporter 后导入本地 Trace 才能统计',
   'no.outcome.metrics.received.yet': '尚未收到结果类指标',
   'no.revert.survival': '无回退存活率',
   'no.tool.call.data.yet.requires.execute.tool.spans': '暂无工具调用数据（需接收 execute_tool span）',

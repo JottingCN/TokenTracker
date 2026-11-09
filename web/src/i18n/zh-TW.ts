@@ -187,7 +187,7 @@ export const zhTW: Record<MessageKey, string> = {
   'needs.input': '等待輸入',
   'no.agent.runs.yet': '暫無 Agent 執行資料',
   'no.data': '暫無資料',
-  'no.hook.data.yet': '暫無 Hook 資料',
+  'no.hook.data.yet': '暫無 Hook 資料：Hook 只寫在宿主的本地 trace 庫，需要開啟 chat.agentHost.otel.dbSpanExporter 後匯入本地 Trace 才能統計',
   'no.outcome.metrics.received.yet': '尚未收到結果類指標',
   'no.revert.survival': '無回退存活率',
   'no.tool.call.data.yet.requires.execute.tool.spans': '暫無工具呼叫資料（需接收 execute_tool span）',
