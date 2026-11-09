@@ -46,7 +46,7 @@ writeFileSync(
     {
       buildId,
       rid,
-      serverVersion: '1.0.11',
+      serverVersion: '1.0.12',
       createdAt: new Date().toISOString(),
     },
     null,
