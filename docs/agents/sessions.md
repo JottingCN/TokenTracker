@@ -41,7 +41,7 @@
 - **`turns` 与 `agentRuns` 不是一个东西，共用同一个边界 span**：一条用户消息对应一个根 `invoke_agent`，它既是轮次边界，也是「主代理运行」那一行。差别在三点：
   1. `agentRuns` 还包含**子代理**（`invoke_agent explore` 等，挂在 `execute_tool` 下），轮次明确排除它们；
   2. 轮次会丢弃 `calls == 0 && toolCalls == 0` 的零活动轮并重编号，`agentRuns` 保留（实测 64 轮 vs 68 行：65 主 + 3 子，另有 2 条零 token 的主代理行被轮次丢弃）；
-  3. 轮次聚合调用/工具/token/费用，`agentRuns` 报的是 `invoke_agent` span 自身的 token（多为 0）、耗时、provider 与模型。
-  所以会话页两个计数**不应该相等**；Agent 运行卡片会显示「主代理 N · 子代理 M」说明差额来源。
+  3. 轮次聚合调用/工具/token/费用，`agentRuns` 报的是这个 run 自己发出的调用（根 run 取轮内全部调用、子代理只取自己的），缓存来自 combined 视图。
+  所以会话页两个计数**不应该相等**；轮次行上直接显示「主代理 N · 子代理 M」说明差额来源，Agent 运行卡片保留 per-run 明细。
 - **轮次不落库、全部实时算**：没有 `turns` 表，也没有快照缓存，每次 `/api/session` 都重跑 `GetSessionTurns` + `GetSessionToolRuns` 并在内存里分桶。因此改算法对**全部历史会话立即生效**，不需要迁移或回填（实测功能上线前的 11-03 会话也能算出轮次）。代价随数据量线性增长：3100 次调用 / 3128 次工具 / 62 轮时，聚合路径 `includeCalls=false` 约 210 ms，带调用列表约 880 ms（瓶颈是序列化，不是分桶）。
 - 反过来，**入库时就算好的字段改代码不会修历史行**：`spans` / `session_events` 是投影，OTLP 原始 attributes 不存（`metric_points.attrs` 除外），`permission_kind`、`tool_name` 归属、模型规范化、`call_id` 都是解析时写入的，历史行只能靠重新导入原始报文才能纠正。

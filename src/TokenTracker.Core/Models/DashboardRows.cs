@@ -399,6 +399,19 @@ public sealed class SessionTurnRow
     /// </summary>
     public bool InProgress { get; init; }
 
+    /// <summary>
+    /// Name of the main-agent run that owns the turn (null when the host did not
+    /// name it). A turn and a root <c>invoke_agent</c> are the same event, so the
+    /// run is shown on the turn instead of in a separate table.
+    /// </summary>
+    public string? AgentName { get; init; }
+
+    /// <summary>
+    /// Subagent runs that started inside this turn. Their calls and tools are part
+    /// of the turn's totals, so the count is the only thing the turn row needs.
+    /// </summary>
+    public int SubagentCount { get; init; }
+
     public string IndexText => DisplayFormat.Number(Index);
     public string StartText => DisplayFormat.LocalTime(StartTimeMs);
     public string DurationText => DisplayFormat.Duration(

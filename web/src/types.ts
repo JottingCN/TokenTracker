@@ -395,6 +395,8 @@ export interface SessionTurnRow {
   costCny: number;
   toolCalls: number;
   inProgress: boolean;
+  agentName: string | null;
+  subagentCount: number;
   indexText: string;
   startText: string;
   durationText: string;

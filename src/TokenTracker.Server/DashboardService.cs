@@ -425,10 +425,16 @@ public sealed class DashboardService
         var tools = _store
             .GetSessionTools(sessionId, detailSource, fromMs, toMs)
             .ToList();
-        var turns = BuildTurns(
-            _store.GetSessionTurns(sessionId, detailSource, fromMs, toMs),
-            _store.GetSessionToolRuns(sessionId, detailSource, fromMs, toMs),
-            samples);
+        var agentRuns = _store
+            .GetAgentRuns(sessionId, detailSource)
+            .Where(row => row.StartTimeMs >= fromMs && row.StartTimeMs < toMs)
+            .ToList();
+        var turns = AttachAgentRuns(
+            BuildTurns(
+                _store.GetSessionTurns(sessionId, detailSource, fromMs, toMs),
+                _store.GetSessionToolRuns(sessionId, detailSource, fromMs, toMs),
+                samples),
+            agentRuns);
         _workspaces.Flush();
 
         return new SessionPayload(
@@ -440,10 +446,7 @@ public sealed class DashboardService
             events,
             tools,
             turns,
-            _store
-                .GetAgentRuns(sessionId, detailSource)
-                .Where(row => row.StartTimeMs >= fromMs && row.StartTimeMs < toMs)
-                .ToList(),
+            agentRuns,
             _store
                 .GetHookSummaries(sessionId, detailSource, fromMs, toMs)
                 .ToList(),
@@ -456,6 +459,73 @@ public sealed class DashboardService
             sessionId,
             metadata?.Title,
             metadata?.WorkspacePath);
+    }
+
+    /// <summary>
+    /// A turn and its root <c>invoke_agent</c> are the same event, so the run's name
+    /// and its subagent runs belong on the turn row rather than in a second table.
+    /// The root run is matched by start time (both come from the same span); a
+    /// subagent is counted for the turn whose window contains its start.
+    /// </summary>
+    private static List<SessionTurnRow> AttachAgentRuns(
+        List<SessionTurnRow> turns,
+        IReadOnlyList<AgentRunRow> runs)
+    {
+        if (turns.Count == 0 || runs.Count == 0)
+        {
+            return turns;
+        }
+
+        const long matchToleranceMs = 2_000;
+        for (var index = 0; index < turns.Count; index++)
+        {
+            var turn = turns[index];
+            var nextStart = index + 1 < turns.Count
+                ? turns[index + 1].StartTimeMs
+                : turn.EndTimeMs ?? long.MaxValue;
+            string? agentName = null;
+            foreach (var run in runs)
+            {
+                if (run.IsRoot &&
+                    Math.Abs(run.StartTimeMs - turn.StartTimeMs) <= matchToleranceMs)
+                {
+                    agentName = run.AgentName;
+                    break;
+                }
+            }
+
+            var subagents = 0;
+            foreach (var run in runs)
+            {
+                if (!run.IsRoot &&
+                    run.StartTimeMs >= turn.StartTimeMs &&
+                    run.StartTimeMs < nextStart)
+                {
+                    subagents++;
+                }
+            }
+
+            turns[index] = new SessionTurnRow
+            {
+                Index = turn.Index,
+                StartTimeMs = turn.StartTimeMs,
+                EndTimeMs = turn.EndTimeMs,
+                Calls = turn.Calls,
+                InputTokens = turn.InputTokens,
+                CacheReadTokens = turn.CacheReadTokens,
+                OutputTokens = turn.OutputTokens,
+                ReasoningTokens = turn.ReasoningTokens,
+                CostCny = turn.CostCny,
+                ToolCalls = turn.ToolCalls,
+                InProgress = turn.InProgress,
+                AgentName = string.IsNullOrWhiteSpace(agentName)
+                    ? null
+                    : agentName,
+                SubagentCount = subagents,
+            };
+        }
+
+        return turns;
     }
 
     private static CallSample ToSample(CallRow call) => new(

@@ -4,6 +4,7 @@ import type { CallRow, ModelRow, SessionRow } from '../types';
 import { ModelIcon } from './ModelIcon';
 import { t } from '../i18n';
 import {
+  agentLabel,
   formatLatency,
   formatSpeed,
 } from '../utils/labels';
@@ -394,7 +395,7 @@ export function callColumns(
       key: 'agent',
       width: 150,
       ellipsis: true,
-      render: (_, row) => row.agentText,
+      render: (_, row) => agentLabel(row.agentName) ?? '-',
     },
     {
       title: t('subagent'),

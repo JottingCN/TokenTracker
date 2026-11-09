@@ -36,6 +36,11 @@
 - **`agent_runs.is_root` 不能按“父 id 为空”判断**：根轮次的 `invoke_agent` 有父（宿主 session span，从不入库），实测 91 行里 85 行被判成子代理，会话页把每一轮都标成 subagent。`GetAgentRuns` 改为读取时按「父 span 是否在本地 `session_events` 中」重算，与轮次边界同一口径（历史行自动纠正）。
 - **agent 名称回退到 span 名**：Agent Host 只对部分 run 设置 `gen_ai.agent.name`，其余靠 span 名 `invoke_agent <name>`（如 `invoke_agent explore`）。解析时写入，读取时再从 `session_events.name` 兜底一次，历史行也能显示。
 - **模型回退到同 trace 的主模型**：`invoke_agent` 本身不带 model，`GetAgentRuns` 用同 `trace_id` 下 chat span 的众数模型填充，否则整列显示 `-`。
+- **token/cache 来自这个 run 自己的调用**：`invoke_agent` span 的 token 永远没有 cache（Agent Host 不发 cache token），所以直接用会把缓存列显示成 0。现在的规则是：
+  - **根 run**：取时间窗内 `otel_source='combined'` 的 chat 汇总（combined 才有 cache，且它的行不带 parent、trace 也是另一条管线的，只能按「会话 + 时间窗」关联）。结果与该轮 `turns` 行完全一致；
+  - **子代理 run**：只取 `parent_span_id = 自己的 chat`，否则子代理那个极短的窗口会吞掉父轮尾部的调用；
+  - 窗口内没有 combined（本地导入、单管线）时回退到「自己的直接子 span」。
+- **agent 运行与轮次是同一批 span**：根 `invoke_agent` = 轮次边界 = 「主代理运行」。会话页把主代理名与轮内子代理数直接挂在轮次行上，`agentRuns` 只作为明细表保留；两者计数**不应该相等**（子代理、零活动轮、运行中的最后一轮，见[会话与轮次](sessions.md)）。
 - 只有 `gen_ai.operation.name=chat`（或 `name` 以 `chat ` 开头）且有 `gen_ai.usage.input_tokens` 的 span 才成为调用行；缺 token 的 chat span 会被丢弃。
 
 ## 4. 工具、审批、Hook

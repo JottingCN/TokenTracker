@@ -690,7 +690,125 @@ public sealed partial class SpanStore
                     WHERE e.session_id = a.session_id
                       AND e.span_id = a.span_id
                       AND e.operation = 'invoke_agent'
-                    LIMIT 1) AS span_name
+                    LIMIT 1) AS span_name,
+                   -- Usage of the model calls this run made. The invoke_agent span
+                   -- itself carries no token attributes in the Agent Host pipeline,
+                   -- so the runs used to show 0/0/0 while the session totals and the
+                   -- turn rows had real numbers. A chat's parent is the run's own
+                   -- span, so summing direct children cannot double count a
+                   -- subagent's calls into its parent turn either.
+                   COALESCE(
+                       -- A subagent's window is tiny and can overlap the tail
+                       -- of its parent's calls, so a nested run only reports
+                       -- the calls that are its own children. A root run
+                       -- reports its whole window: that is the turn total,
+                       -- and only the merged view carries cache tokens.
+                       CASE WHEN EXISTS (
+                                SELECT 1 FROM session_events p
+                                WHERE p.session_id = a.session_id
+                                  AND p.span_id = a.parent_span_id
+                                  AND p.operation = 'execute_tool')
+                            THEN NULL
+                            ELSE (SELECT SUM(s.input_tokens) FROM spans s
+                                  WHERE s.session_id = a.session_id
+                                    AND s.model IS NOT NULL
+                                    AND s.otel_source = 'combined'
+                                    AND s.start_time_ms >= a.start_time_ms
+                                    AND (a.end_time_ms IS NULL
+                                         OR s.start_time_ms < a.end_time_ms))
+                       END,
+                       -- Fallback: runs recorded without the other pipeline
+                       -- (local imports, single-source exports) still have
+                       -- their calls as direct children of the run span.
+                       (SELECT SUM(s.input_tokens) FROM spans s
+                        WHERE s.session_id = a.session_id
+                          AND s.parent_span_id = a.span_id
+                          AND s.model IS NOT NULL),
+                       0) AS run_input,
+                   COALESCE(
+                       -- A subagent's window is tiny and can overlap the tail
+                       -- of its parent's calls, so a nested run only reports
+                       -- the calls that are its own children. A root run
+                       -- reports its whole window: that is the turn total,
+                       -- and only the merged view carries cache tokens.
+                       CASE WHEN EXISTS (
+                                SELECT 1 FROM session_events p
+                                WHERE p.session_id = a.session_id
+                                  AND p.span_id = a.parent_span_id
+                                  AND p.operation = 'execute_tool')
+                            THEN NULL
+                            ELSE (SELECT SUM(s.cache_read_tokens) FROM spans s
+                                  WHERE s.session_id = a.session_id
+                                    AND s.model IS NOT NULL
+                                    AND s.otel_source = 'combined'
+                                    AND s.start_time_ms >= a.start_time_ms
+                                    AND (a.end_time_ms IS NULL
+                                         OR s.start_time_ms < a.end_time_ms))
+                       END,
+                       -- Fallback: runs recorded without the other pipeline
+                       -- (local imports, single-source exports) still have
+                       -- their calls as direct children of the run span.
+                       (SELECT SUM(s.cache_read_tokens) FROM spans s
+                        WHERE s.session_id = a.session_id
+                          AND s.parent_span_id = a.span_id
+                          AND s.model IS NOT NULL),
+                       0) AS run_cache,
+                   COALESCE(
+                       -- A subagent's window is tiny and can overlap the tail
+                       -- of its parent's calls, so a nested run only reports
+                       -- the calls that are its own children. A root run
+                       -- reports its whole window: that is the turn total,
+                       -- and only the merged view carries cache tokens.
+                       CASE WHEN EXISTS (
+                                SELECT 1 FROM session_events p
+                                WHERE p.session_id = a.session_id
+                                  AND p.span_id = a.parent_span_id
+                                  AND p.operation = 'execute_tool')
+                            THEN NULL
+                            ELSE (SELECT SUM(s.output_tokens) FROM spans s
+                                  WHERE s.session_id = a.session_id
+                                    AND s.model IS NOT NULL
+                                    AND s.otel_source = 'combined'
+                                    AND s.start_time_ms >= a.start_time_ms
+                                    AND (a.end_time_ms IS NULL
+                                         OR s.start_time_ms < a.end_time_ms))
+                       END,
+                       -- Fallback: runs recorded without the other pipeline
+                       -- (local imports, single-source exports) still have
+                       -- their calls as direct children of the run span.
+                       (SELECT SUM(s.output_tokens) FROM spans s
+                        WHERE s.session_id = a.session_id
+                          AND s.parent_span_id = a.span_id
+                          AND s.model IS NOT NULL),
+                       0) AS run_output,
+                   COALESCE(
+                       -- A subagent's window is tiny and can overlap the tail
+                       -- of its parent's calls, so a nested run only reports
+                       -- the calls that are its own children. A root run
+                       -- reports its whole window: that is the turn total,
+                       -- and only the merged view carries cache tokens.
+                       CASE WHEN EXISTS (
+                                SELECT 1 FROM session_events p
+                                WHERE p.session_id = a.session_id
+                                  AND p.span_id = a.parent_span_id
+                                  AND p.operation = 'execute_tool')
+                            THEN NULL
+                            ELSE (SELECT SUM(s.reasoning_tokens) FROM spans s
+                                  WHERE s.session_id = a.session_id
+                                    AND s.model IS NOT NULL
+                                    AND s.otel_source = 'combined'
+                                    AND s.start_time_ms >= a.start_time_ms
+                                    AND (a.end_time_ms IS NULL
+                                         OR s.start_time_ms < a.end_time_ms))
+                       END,
+                       -- Fallback: runs recorded without the other pipeline
+                       -- (local imports, single-source exports) still have
+                       -- their calls as direct children of the run span.
+                       (SELECT SUM(s.reasoning_tokens) FROM spans s
+                        WHERE s.session_id = a.session_id
+                          AND s.parent_span_id = a.span_id
+                          AND s.model IS NOT NULL),
+                       0) AS run_reasoning
             FROM agent_runs a
             WHERE a.session_id = @session_id{sourceFilter}
             ORDER BY a.start_time_ms, a.trace_id, a.span_id;
@@ -712,6 +830,39 @@ public sealed partial class SpanStore
                     reader.IsDBNull(25) ? null : reader.GetString(25));
             }
 
+            var inputTokens = reader.GetInt64(16);
+            var outputTokens = reader.GetInt64(17);
+            var cacheReadTokens = reader.GetInt64(18);
+            var cacheCreationTokens = reader.GetInt64(19);
+            var reasoningTokens = reader.GetInt64(20);
+            // Prefer the calls the run made over its own invoke_agent span: the
+            // Agent Host run keeps input/output but never cache, so mixing the two
+            // would compare a cached total against an uncached input and report a
+            // hit rate above 100%.
+            var runInput = reader.GetInt64(26);
+            var runCache = reader.GetInt64(27);
+            var runOutput = reader.GetInt64(28);
+            var runReasoning = reader.GetInt64(29);
+            if (runInput > 0)
+            {
+                inputTokens = runInput;
+            }
+
+            if (runCache > 0)
+            {
+                cacheReadTokens = runCache;
+            }
+
+            if (runOutput > 0)
+            {
+                outputTokens = runOutput;
+            }
+
+            if (runReasoning > 0)
+            {
+                reasoningTokens = runReasoning;
+            }
+
             rows.Add(new AgentRunRow
             {
                 TraceId = reader.GetString(0),
@@ -730,11 +881,11 @@ public sealed partial class SpanStore
                 GitCommit = reader.IsDBNull(13) ? null : reader.GetString(13),
                 GithubOrg = reader.IsDBNull(14) ? null : reader.GetString(14),
                 TurnCount = reader.IsDBNull(15) ? null : reader.GetInt64(15),
-                InputTokens = reader.GetInt64(16),
-                OutputTokens = reader.GetInt64(17),
-                CacheReadTokens = reader.GetInt64(18),
-                CacheCreationTokens = reader.GetInt64(19),
-                ReasoningTokens = reader.GetInt64(20),
+                InputTokens = inputTokens,
+                OutputTokens = outputTokens,
+                CacheReadTokens = cacheReadTokens,
+                CacheCreationTokens = cacheCreationTokens,
+                ReasoningTokens = reasoningTokens,
                 StartTimeMs = reader.GetInt64(21),
                 EndTimeMs = reader.IsDBNull(22) ? null : reader.GetInt64(22),
                 IsError = reader.GetInt64(23) != 0,

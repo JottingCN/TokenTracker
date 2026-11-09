@@ -39,6 +39,7 @@ import {
   formatLatency,
   formatTime,
   operationLabel,
+  agentLabel,
 } from '../utils/labels';
 import { formatMoney, useMoney } from '../utils/money';
 import { useViewportHeight } from '../utils/useViewportHeight';
@@ -337,6 +338,23 @@ export function SessionPage({
       key: 'start',
       width: 130,
       render: (_, row) => row.startText,
+    },
+    {
+      // A turn and its root invoke_agent are the same event, so the agent identity
+      // belongs here instead of in a second table; subagents are counted because
+      // their calls are already part of the turn's totals.
+      title: t('agent'),
+      key: 'agent',
+      width: 170,
+      ellipsis: true,
+      render: (_, row) => (
+        <Space size={4}>
+          <span>{agentLabel(row.agentName, t) ?? t('main.agent')}</span>
+          {row.subagentCount > 0 && (
+            <Tag color="purple">{`+${number.format(row.subagentCount)}`}</Tag>
+          )}
+        </Space>
+      ),
     },
     {
       title: t('duration'),

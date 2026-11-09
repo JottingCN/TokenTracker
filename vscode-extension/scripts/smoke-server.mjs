@@ -169,6 +169,103 @@ function hookPayload(sessionId) {
   });
 }
 
+// A turn with a named main agent, one model call and a subagent run below an
+// execute_tool span. The invoke_agent spans carry no usage, like the real host.
+function agentTurnPayload(sessionId) {
+  const now = Date.now();
+  const traceId = 'acacacacacacacacacacacacacacac01';
+  const resource = {
+    attributes: [
+      { key: 'service.name', value: { stringValue: 'github-copilot' } },
+      { key: 'service.namespace', value: { stringValue: 'vscode.agent-host' } },
+    ],
+  };
+  const turn = {
+    traceId,
+    spanId: 'agent-turn-0001',
+    parentSpanId: 'host-session-00000',
+    name: 'invoke_agent main-agent',
+    kind: 1,
+    startTimeUnixNano: `${now + 1000}000000`,
+    endTimeUnixNano: `${now + 9000}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  };
+  const chat = {
+    traceId,
+    spanId: 'agent-chat-0001',
+    parentSpanId: 'agent-turn-0001',
+    name: 'chat smoke-model',
+    kind: 1,
+    startTimeUnixNano: `${now + 1100}000000`,
+    endTimeUnixNano: `${now + 2100}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+      { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+      { key: 'gen_ai.usage.input_tokens', value: { intValue: '100' } },
+      { key: 'gen_ai.usage.cache_read.input_tokens', value: { intValue: '80' } },
+      { key: 'gen_ai.usage.output_tokens', value: { intValue: '10' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  };
+  const task = {
+    traceId,
+    spanId: 'agent-task-0001',
+    parentSpanId: 'agent-turn-0001',
+    name: 'execute_tool task',
+    kind: 1,
+    startTimeUnixNano: `${now + 3000}000000`,
+    endTimeUnixNano: `${now + 8000}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'execute_tool' } },
+      { key: 'gen_ai.tool.name', value: { stringValue: 'task' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  };
+  const sub = {
+    traceId,
+    spanId: 'agent-sub-0001',
+    parentSpanId: 'agent-task-0001',
+    name: 'invoke_agent explore',
+    kind: 1,
+    startTimeUnixNano: `${now + 4000}000000`,
+    endTimeUnixNano: `${now + 7000}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  };
+  const subChat = {
+    traceId,
+    spanId: 'agent-subchat-001',
+    parentSpanId: 'agent-sub-0001',
+    name: 'chat smoke-model',
+    kind: 1,
+    startTimeUnixNano: `${now + 4500}000000`,
+    endTimeUnixNano: `${now + 5500}000000`,
+    attributes: [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+      { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
+      { key: 'gen_ai.usage.input_tokens', value: { intValue: '200' } },
+      { key: 'gen_ai.usage.cache_read.input_tokens', value: { intValue: '120' } },
+      { key: 'gen_ai.usage.output_tokens', value: { intValue: '20' } },
+      { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+    ],
+  };
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource,
+        scopeSpans: [
+          { spans: [turn, chat, task, sub, subChat] },
+        ],
+      },
+    ],
+  });
+}
+
 function turnPayload(sessionId) {
   const now = Date.now();
   const traceId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -1080,6 +1177,53 @@ try {
     'the run name comes from the span name',
     hookPayloadJson.agentRuns[0]?.agentName,
     'explore',
+  );
+
+  // A turn row carries its main agent and counts the subagent runs started inside
+  // it, so the two tables no longer need to be read side by side.
+  const agentSession = 'smoke-agent-turn';
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: agentTurnPayload(agentSession),
+  });
+  const agentTurn = JSON.parse(
+    (await request(`${base}/api/session/${agentSession}`)).body,
+  );
+  check('the turn carries its agent', agentTurn.turns[0]?.agentName, 'main-agent');
+  check(
+    'the turn counts its subagent runs',
+    agentTurn.turns[0]?.subagentCount,
+    1,
+  );
+  check(
+    'a subagent run is not a turn of its own',
+    agentTurn.agentRuns.filter((row) => !row.isRoot).length,
+    1,
+  );
+  // invoke_agent spans carry no usage in the Agent Host pipeline, so the run has
+  // to report the calls it made; without this the run row showed 0/0/0 while the
+  // session totals had real numbers. A root run reports its whole window (the same
+  // numbers as the turn), while a nested run reports only its own children.
+  check(
+    'the run reports the usage of its own calls',
+    agentTurn.agentRuns.find((row) => row.isRoot)?.inputTokens,
+    300,
+  );
+  check(
+    'the run reports cached tokens',
+    agentTurn.agentRuns.find((row) => row.isRoot)?.cacheReadTokens,
+    200,
+  );
+  check(
+    'a subagent run reports only its own calls',
+    agentTurn.agentRuns.find((row) => !row.isRoot)?.inputTokens,
+    200,
+  );
+  check(
+    'a subagent run reports its own cached tokens',
+    agentTurn.agentRuns.find((row) => !row.isRoot)?.cacheReadTokens,
+    120,
   );
 
   const spa = await request(`${base}/`);

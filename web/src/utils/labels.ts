@@ -86,6 +86,35 @@ const AHP_STATE_LABELS: Record<string, MessageKey> = {
   disabled: 'unavailable',
 };
 
+// Copilot Chat reports the model wrapper as the agent name. Showing
+// "copilotLanguageModelWrapper/thinkingTitle" in the call list means nothing to a
+// user, so the known internal names are mapped to what they actually did.
+const INTERNAL_AGENT_LABELS: Array<[string, MessageKey]> = [
+  ['/thinkingTitle', 'title.generation'],
+  ['/toolRiskAssessment', 'tool.risk.assessment'],
+];
+
+export function agentLabel(
+  name: string | null | undefined,
+  translate: (key: MessageKey) => string = t,
+): string | null {
+  if (!name) {
+    return null;
+  }
+
+  if (name === 'copilotLanguageModelWrapper') {
+    return translate('main.agent');
+  }
+
+  for (const [suffix, key] of INTERNAL_AGENT_LABELS) {
+    if (name.endsWith(suffix)) {
+      return translate(key);
+    }
+  }
+
+  return name;
+}
+
 function localize(table: Record<string, MessageKey>, key: string): string {
   const messageKey = table[key];
   return messageKey ? t(messageKey) : key;
