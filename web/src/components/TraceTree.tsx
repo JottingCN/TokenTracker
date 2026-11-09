@@ -14,6 +14,11 @@ interface TraceTreeProps {
   // Changes whenever the session snapshot changes, so newly ingested spans show
   // up without a manual reload.
   version?: string;
+  // The topology follows the page range like the other cards; ancestors that
+  // started outside it come back as context rows.
+  range: number;
+  fromMs?: number;
+  toMs?: number;
 }
 
 const TRACE_ROW_HEIGHT = 30;
@@ -21,93 +26,180 @@ const TRACE_ROW_HEIGHT = 30;
 const TRACE_BLOCK_BUDGET = 400;
 const LOAD_MORE_THRESHOLD_PX = 160;
 
-export function TraceTree({ sessionId, expanded = false, version }: TraceTreeProps) {
+export function TraceTree({
+  sessionId,
+  expanded = false,
+  version,
+  range,
+  fromMs,
+  toMs,
+}: TraceTreeProps) {
   const { locale, t } = useUi();
   const [nodes, setNodes] = useState<TraceNode[] | null>(null);
   const [loadedFor, setLoadedFor] = useState<string>();
   const [hasMore, setHasMore] = useState(false);
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
-  const loadedSession = useRef<string>();
+  const loadedKey = useRef<string>();
   const cursor = useRef<string | null>(null);
+  const hasMoreRef = useRef(false);
+  const nodesRef = useRef<TraceNode[] | null>(null);
+  const loadingRef = useRef(false);
   const scrollerRef = useRef<HTMLElement | null>(null);
-  const loading = loadedFor !== sessionId;
+  const windowKey = fromMs && toMs ? `${fromMs}-${toMs}` : `range-${range}`;
+  const loadKey = `${sessionId}|${windowKey}`;
+  const loading = loadedFor !== loadKey;
+  // Multi-day windows show the date; a single day stays compact. Formatting the
+  // whole list the same way avoids a jarring mix of widths per row.
+  const showDates =
+    fromMs && toMs ? toMs - fromMs > 86_400_000 : range >= 2;
   const [hostRef, hostHeight] = useAutoTableHeight(0);
   const fillHeight = useViewportHeight(0.82, 400, 2000);
+
+  const applyNodes = useCallback((next: TraceNode[] | null) => {
+    nodesRef.current = next;
+    setNodes(next);
+  }, []);
+
+  const applyHasMore = useCallback((next: boolean) => {
+    hasMoreRef.current = next;
+    setHasMore(next);
+  }, []);
+
+  // A block can repeat ancestors from the previous block as context rows; the
+  // Tree needs unique keys, and the depth is already computed server-side, so a
+  // duplicate row is simply dropped.
+  const appendNodes = useCallback((incoming: TraceNode[]) => {
+    if (incoming.length === 0) {
+      return;
+    }
+
+    const current = nodesRef.current ?? [];
+    const seen = new Set(current.map((node) => node.id));
+    const merged = [...current];
+    for (const node of incoming) {
+      if (seen.has(node.id)) {
+        continue;
+      }
+
+      seen.add(node.id);
+      merged.push(node);
+    }
+
+    nodesRef.current = merged;
+    setNodes(merged);
+  }, []);
+
+  const traceUrl = useCallback(
+    (nextCursor?: string | null) => {
+      const params = new URLSearchParams({
+        budget: String(TRACE_BLOCK_BUDGET),
+      });
+      if (fromMs && toMs) {
+        params.set('from', String(fromMs));
+        params.set('to', String(toMs));
+      } else {
+        params.set('range', String(range));
+      }
+      if (nextCursor) {
+        params.set('cursor', nextCursor);
+      }
+      return `/api/session/${encodeURIComponent(sessionId)}/trace?${params}`;
+    },
+    [sessionId, range, fromMs, toMs],
+  );
 
   useEffect(() => {
     let cancelled = false;
     // The version changes on every new span or event, so a live agent turn would
-    // refetch continuously; coalesce bursts and load a new session immediately.
-    const firstLoad = loadedSession.current !== sessionId;
+    // refetch continuously; coalesce bursts and load a new session or window
+    // immediately.
+    const firstLoad = loadedKey.current !== loadKey;
     const timer = setTimeout(
       () => {
-        fetch(
-          `/api/session/${encodeURIComponent(sessionId)}/trace?budget=${TRACE_BLOCK_BUDGET}`,
-        )
+        const loaded = nodesRef.current;
+        // When every row is already on screen the refresh only has to append the
+        // rows that arrived after the last one; reloading the first block would
+        // throw the user back to the top of a long trace.
+        const appendOnly =
+          !firstLoad && !hasMoreRef.current && !!loaded && loaded.length > 0;
+        const tail = loaded?.[loaded.length - 1];
+        const appendCursor =
+          appendOnly && tail ? `${tail.startTimeMs}:${tail.id}` : null;
+
+        fetch(traceUrl(appendCursor))
           .then((response) => (response.ok ? response.json() : null))
           .then((payload: TracePayload | null) => {
-            if (cancelled) {
+            if (cancelled || !payload) {
               return;
             }
 
-            // FIFO: the first block is the oldest rows, so a refresh restarts from
-            // the beginning instead of leaving a gap in the middle.
-            cursor.current = payload?.nextCursor ?? null;
-            setHasMore(payload?.hasMore ?? false);
-            setTotal(payload?.total ?? 0);
-            setNodes(payload?.nodes ?? []);
+            if (appendOnly) {
+              appendNodes(payload.nodes);
+              cursor.current = payload.nextCursor;
+              applyHasMore(payload.hasMore);
+              setTotal(payload.total);
+              return;
+            }
+
+            // FIFO: the first block is the oldest rows, so a full reload restarts
+            // from the beginning instead of leaving a gap in the middle.
+            cursor.current = payload.nextCursor;
+            applyHasMore(payload.hasMore);
+            setTotal(payload.total);
+            applyNodes(payload.nodes);
           })
           .catch(() => {
             if (!cancelled && firstLoad) {
-              setNodes([]);
+              applyNodes([]);
             }
           })
           .finally(() => {
             if (!cancelled) {
-              loadedSession.current = sessionId;
-              setLoadedFor(sessionId);
+              loadedKey.current = loadKey;
+              setLoadedFor(loadKey);
             }
           });
       },
-      firstLoad ? 0 : 1500,
+      // A whole block is ~170 KB, so a short debounce still coalesces the burst of
+      // versions one agent turn produces without lagging behind the dialog.
+      firstLoad ? 0 : 500,
     );
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [sessionId, version]);
+  }, [loadKey, version, traceUrl, applyHasMore, applyNodes, appendNodes]);
 
   const loadMore = useCallback(async () => {
     const next = cursor.current;
-    if (!next || loadingMore) {
+    // A ref guard stops two scroll events from requesting the same block twice.
+    if (!next || loadingRef.current) {
       return;
     }
 
+    loadingRef.current = true;
     setLoadingMore(true);
     try {
-      const response = await fetch(
-        `/api/session/${encodeURIComponent(sessionId)}/trace` +
-          `?budget=${TRACE_BLOCK_BUDGET}&cursor=${encodeURIComponent(next)}`,
-      );
+      const response = await fetch(traceUrl(next));
       if (!response.ok) {
         return;
       }
 
       const payload = (await response.json()) as TracePayload;
       cursor.current = payload.nextCursor;
-      setHasMore(payload.hasMore);
-      if (payload.nodes.length > 0) {
-        // Appending at the bottom never moves what the user is looking at.
-        setNodes((current) => [...(current ?? []), ...payload.nodes]);
-      }
+      applyHasMore(payload.hasMore);
+      setTotal(payload.total);
+      // Appending at the bottom never moves what the user is looking at.
+      appendNodes(payload.nodes);
     } catch {
       // Leave the cursor untouched so the next scroll retries.
     } finally {
+      loadingRef.current = false;
       setLoadingMore(false);
     }
-  }, [loadingMore, sessionId]);
+  }, [appendNodes, applyHasMore, traceUrl]);
 
   useEffect(() => {
     const scroller = findScroller(hostRef.current);
@@ -149,10 +241,11 @@ export function TraceTree({ sessionId, expanded = false, version }: TraceTreePro
             node={node}
             locale={locale}
             hint={t('context.row.hint')}
+            showDates={showDates}
           />
         ),
       })),
-    [nodes, locale, t],
+    [nodes, locale, t, showDates],
   );
 
   if (loading) {
@@ -219,6 +312,19 @@ function findScroller(host: HTMLElement | null): HTMLElement | null {
   ) as HTMLElement | null;
 }
 
+// Multi-day ranges need the date; without it a row from 11-04 looks like it ran
+// today. The year only appears when the row is not from the current year.
+function formatNodeTime(startTimeMs: number, showDates: boolean): string {
+  const value = dayjs(startTimeMs);
+  if (!showDates) {
+    return value.format('HH:mm:ss.SSS');
+  }
+
+  return value.format(
+    value.year() === dayjs().year() ? 'MM-DD HH:mm:ss' : 'YYYY-MM-DD HH:mm:ss',
+  );
+}
+
 const compactFormatters = {
   'zh-CN': new Intl.NumberFormat('zh-CN', {
     notation: 'compact',
@@ -238,10 +344,12 @@ function TraceNodeTitle({
   node,
   locale,
   hint,
+  showDates,
 }: {
   node: TraceNode;
   locale: Locale;
   hint: string;
+  showDates: boolean;
 }) {
   const tokenFormatter = compactFormatters[intlLocale(locale)];
   return (
@@ -263,7 +371,15 @@ function TraceNodeTitle({
       )}
       <Tag
         color={
-          node.isContext ? 'default' : node.kind === 'chat' ? 'blue' : 'geekblue'
+          node.isContext
+            ? 'default'
+            : node.kind === 'chat'
+              ? 'blue'
+              : node.kind === 'permission'
+                ? node.isError
+                  ? 'red'
+                  : 'gold'
+                : 'geekblue'
         }
       >
         {node.operation}
@@ -272,7 +388,7 @@ function TraceNodeTitle({
         {node.label}
       </Typography.Text>
       <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-        {dayjs(node.startTimeMs).format('HH:mm:ss.SSS')}
+        {formatNodeTime(node.startTimeMs, showDates)}
       </Typography.Text>
       <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
         {node.durationText}

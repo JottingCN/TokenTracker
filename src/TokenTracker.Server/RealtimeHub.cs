@@ -8,9 +8,10 @@ public sealed class RealtimeHub
 
     // Metrics arrive in batches every few seconds, and each notification rebuilds
     // every subscriber's full payload. A short coalescing window keeps a burst of
-    // ingests from triggering one rebuild per batch while staying imperceptible.
+    // ingests from triggering one rebuild per batch; 200 ms still merges a batch
+    // burst while a snapshot stays visually immediate.
     private static readonly TimeSpan NotifyCoalesceInterval =
-        TimeSpan.FromMilliseconds(500);
+        TimeSpan.FromMilliseconds(200);
 
     private readonly ConcurrentDictionary<long, RealtimeConnection> _connections = new();
     private long _nextId;

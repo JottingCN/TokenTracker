@@ -18,6 +18,8 @@ public sealed class OtlpEventRecord
     public string? HookToolNames { get; init; }
     public string? HookType { get; init; }
     public string? HookResultKind { get; init; }
+    public string? PermissionKind { get; init; }
+    public string? PermissionResult { get; init; }
     public string? CallId { get; init; }
     public string? SessionId { get; init; }
     public string? ServiceName { get; init; }

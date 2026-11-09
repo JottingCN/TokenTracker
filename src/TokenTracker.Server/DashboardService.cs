@@ -385,24 +385,14 @@ public sealed class DashboardService
         var calls = includeCalls
             ? _store.GetCallsForSession(sessionId, fromMs, toMs, source: source)
             : (IReadOnlyList<CallRow>)Array.Empty<CallRow>();
+        // Both paths converge on the projection so totals, model rows and turns
+        // share one arithmetic implementation.
         var samples = includeCalls
-            ? Array.Empty<CallSample>()
+            ? calls.Select(ToSample).ToList()
             : _store.GetSessionCallSamples(sessionId, fromMs, toMs, source);
         var totals = new SummaryAccumulator();
         var byModel = new Dictionary<string, SummaryAccumulator>(
             StringComparer.Ordinal);
-        foreach (var call in calls)
-        {
-            totals.Add(call);
-            if (!byModel.TryGetValue(call.Model, out var accumulator))
-            {
-                accumulator = new SummaryAccumulator();
-                byModel[call.Model] = accumulator;
-            }
-
-            accumulator.Add(call);
-        }
-
         foreach (var sample in samples)
         {
             totals.Add(sample);
@@ -424,8 +414,7 @@ public sealed class DashboardService
             .ToList();
 
         var events = _store
-            .GetSessionEvents(sessionId, detailSource)
-            .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
+            .GetSessionEvents(sessionId, detailSource, fromMs, toMs)
             .ToList();
         var chatEvents = includeCalls
             ? BuildChatEvents(calls)
@@ -434,9 +423,12 @@ public sealed class DashboardService
 
         var metadata = _metadata.Get(sessionId);
         var tools = _store
-            .GetSessionTools(sessionId, detailSource)
-            .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
+            .GetSessionTools(sessionId, detailSource, fromMs, toMs)
             .ToList();
+        var turns = BuildTurns(
+            _store.GetSessionTurnStarts(sessionId, detailSource, fromMs, toMs),
+            _store.GetSessionToolRuns(sessionId, detailSource, fromMs, toMs),
+            samples);
         _workspaces.Flush();
 
         return new SessionPayload(
@@ -447,13 +439,13 @@ public sealed class DashboardService
             includeCalls ? calls.ToList() : new List<CallRow>(),
             events,
             tools,
+            turns,
             _store
                 .GetAgentRuns(sessionId, detailSource)
                 .Where(row => row.StartTimeMs >= fromMs && row.StartTimeMs < toMs)
                 .ToList(),
             _store
-                .GetHookSummaries(sessionId, detailSource)
-                .Where(row => row.LastSeenMs >= fromMs && row.LastSeenMs < toMs)
+                .GetHookSummaries(sessionId, detailSource, fromMs, toMs)
                 .ToList(),
             _store.GetSignalHealth(sessionId, detailSource, fromMs, toMs),
             _store.GetOutcomeSummary(
@@ -464,6 +456,116 @@ public sealed class DashboardService
             sessionId,
             metadata?.Title,
             metadata?.WorkspacePath);
+    }
+
+    private static CallSample ToSample(CallRow call) => new(
+        call.Model,
+        call.Source,
+        call.InputTokens,
+        call.CacheReadTokens,
+        call.OutputTokens,
+        call.ReasoningTokens,
+        call.CostCny,
+        call.CacheCostCny,
+        call.UncachedCostCny,
+        call.OutputCostCny,
+        call.ReasoningCostCny,
+        call.TtftMs,
+        call.DurationMs,
+        call.ErrorType,
+        call.StartTimeMs);
+
+    /// <summary>
+    /// Buckets the calls and tool runs of a session into turns. Both inputs are
+    /// ordered by start time, so a single forward walk per list is enough. Calls
+    /// before the first turn (a period without Agent Host data) are left out: they
+    /// have no turn boundary and would otherwise be attributed to the wrong one.
+    /// Turns without any call or tool run are dropped (they only represent a user
+    /// message the host never turned into work) and the rest are renumbered so the
+    /// list and the status bar agree on "turn N".
+    /// </summary>
+    private static List<SessionTurnRow> BuildTurns(
+        IReadOnlyList<long> turnStarts,
+        IReadOnlyList<ToolRunSample> toolRuns,
+        IReadOnlyList<CallSample> calls)
+    {
+        if (turnStarts.Count == 0)
+        {
+            return new List<SessionTurnRow>();
+        }
+
+        var rows = new List<SessionTurnRow>(turnStarts.Count);
+        var callIndex = 0;
+        var toolIndex = 0;
+        for (var index = 0; index < turnStarts.Count; index++)
+        {
+            var start = turnStarts[index];
+            var next = index + 1 < turnStarts.Count
+                ? turnStarts[index + 1]
+                : long.MaxValue;
+            long calls_ = 0, input = 0, cache = 0, output = 0, reasoning = 0;
+            long tools = 0;
+            double cost = 0;
+            long? lastEnd = null;
+            while (callIndex < calls.Count && calls[callIndex].StartTimeMs < start)
+            {
+                callIndex++;
+            }
+
+            while (callIndex < calls.Count && calls[callIndex].StartTimeMs < next)
+            {
+                var call = calls[callIndex++];
+                calls_++;
+                input += call.InputTokens;
+                cache += call.CacheReadTokens;
+                output += call.OutputTokens;
+                reasoning += call.ReasoningTokens;
+                cost += call.CostCny ?? 0;
+                var end = call.StartTimeMs + (call.DurationMs ?? 0);
+                if (lastEnd is null || end > lastEnd)
+                {
+                    lastEnd = end;
+                }
+            }
+
+            while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < start)
+            {
+                toolIndex++;
+            }
+
+            while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < next)
+            {
+                var tool = toolRuns[toolIndex++];
+                tools++;
+                if (lastEnd is null || tool.EndTimeMs > lastEnd)
+                {
+                    lastEnd = tool.EndTimeMs;
+                }
+            }
+
+            if (calls_ == 0 && tools == 0)
+            {
+                continue;
+            }
+
+            rows.Add(new SessionTurnRow
+            {
+                Index = rows.Count + 1,
+                StartTimeMs = start,
+                // The time the turn actually worked, not the idle gap until the
+                // user sent the next message.
+                EndTimeMs = lastEnd ?? start,
+                Calls = calls_,
+                InputTokens = input,
+                CacheReadTokens = cache,
+                OutputTokens = output,
+                ReasoningTokens = reasoning,
+                CostCny = cost,
+                ToolCalls = tools,
+            });
+        }
+
+        return rows;
     }
 
     private static List<SessionEventRow> BuildChatEvents(
@@ -678,14 +780,18 @@ public sealed class DashboardService
         string sessionId,
         string? source = null,
         string? cursor = null,
-        int budget = TraceBudget)
+        int budget = TraceBudget,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
     {
         var normalized = NormalizeSource(source);
         var page = _store.GetTracePage(
             sessionId,
             normalized == "combined" ? null : normalized,
             cursor,
-            budget);
+            budget,
+            fromMs,
+            toMs);
         return new TracePayload(
             page.Nodes.ToList(),
             page.HasMore,

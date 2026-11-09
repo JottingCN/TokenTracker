@@ -1538,6 +1538,398 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void TurnStartsOnlyIncludeRootAgentInvocations()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertEvents(new[]
+            {
+                // Root turn: its parent is the host session span, which is not
+                // stored, so the turn has no local ancestor.
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "a1",
+                    ParentSpanId = "host-session",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 2_000,
+                    ReceivedAtMs = 2_000,
+                },
+                // Subagent: hangs below a stored tool span, so it is not a turn.
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "tool-1",
+                    ParentSpanId = "a1",
+                    Operation = "execute_tool",
+                    ToolName = "task",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_100,
+                    EndTimeMs = 1_200,
+                    ReceivedAtMs = 1_200,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "sub-1",
+                    ParentSpanId = "tool-1",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_150,
+                    EndTimeMs = 1_900,
+                    ReceivedAtMs = 1_900,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t2",
+                    SpanId = "a2",
+                    ParentSpanId = "host-session",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 10_000,
+                    EndTimeMs = 11_000,
+                    ReceivedAtMs = 11_000,
+                },
+            });
+
+            Assert.Equal(
+                new[] { 1_000L, 10_000L },
+                store.GetSessionTurnStarts("session-1"));
+            Assert.Equal(
+                new[] { 10_000L },
+                store.GetSessionTurnStarts("session-1", null, 5_000, 20_000));
+            Assert.Empty(store.GetSessionTurnStarts("session-1", "copilot-chat"));
+            Assert.Equal(
+                new[] { new ToolRunSample(1_100, 1_200) },
+                store.GetSessionToolRuns("session-1"));
+            Assert.Equal(
+                new[] { 10_000L },
+                store.GetSessionTurnStarts("session-1", null, 9_000, 20_000));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TraceTopologyShowsApprovalSpansWithKindAndResult()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "tool-1",
+                    Operation = "execute_tool",
+                    ToolName = "powershell",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 2_000,
+                    ReceivedAtMs = 2_000,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "perm-1",
+                    ParentSpanId = "tool-1",
+                    Operation = "permission",
+                    PermissionKind = "shell",
+                    PermissionResult = "approved",
+                    ToolName = "powershell",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_050,
+                    EndTimeMs = 1_150,
+                    ReceivedAtMs = 1_150,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "perm-2",
+                    ParentSpanId = "tool-1",
+                    Operation = "permission",
+                    PermissionKind = "write",
+                    PermissionResult = "denied-interactively-by-user",
+                    ToolName = "edit",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_200,
+                    EndTimeMs = 1_300,
+                    ReceivedAtMs = 1_300,
+                    IsError = true,
+                    ErrorType = "denied",
+                },
+            });
+
+            var nodes = store.GetTraceNodes("session-1");
+            Assert.Equal(3, nodes.Count);
+            var approved = Assert.Single(nodes, node => node.Id == "t1:perm-1");
+            Assert.Equal("permission", approved.Kind);
+            Assert.Equal("permission", approved.Operation);
+            Assert.Equal("shell · approved · powershell", approved.Label);
+            Assert.Equal("t1:tool-1", approved.ParentId);
+            Assert.Equal(1, approved.Depth);
+            Assert.False(approved.IsError);
+
+            var denied = Assert.Single(nodes, node => node.Id == "t1:perm-2");
+            Assert.Equal("write · denied-interactively-by-user · edit", denied.Label);
+            Assert.True(denied.IsError);
+            Assert.Equal("denied", denied.ErrorType);
+
+            // Approvals take part in the range window like any other row.
+            var windowed = store.GetTracePage(
+                "session-1",
+                fromMs: 1_140,
+                toMs: 1_400);
+            Assert.Equal(1, windowed.Total);
+            Assert.Contains(windowed.Nodes, node => node.Id == "t1:perm-2");
+            Assert.DoesNotContain(windowed.Nodes, node => node.Id == "t1:perm-1");
+            // The parent tool started before the window, so it comes back as a
+            // context row instead of disappearing.
+            var parent = Assert.Single(
+                windowed.Nodes,
+                node => node.Id == "t1:tool-1");
+            Assert.True(parent.IsContext);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TracePageFollowsTheSelectedWindow()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t1", "s1", "session-1", "deepseek-flash",
+                    1_000, 10, 0, 5, 0.1,
+                    durationMs: 400),
+                Span(
+                    "t2", "s2", "session-1", "deepseek-flash",
+                    10_000, 10, 0, 5, 0.1,
+                    durationMs: 400),
+            });
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "e1",
+                    ParentSpanId = "s1",
+                    Operation = "execute_tool",
+                    ToolName = "view",
+                    SessionId = "session-1",
+                    ServiceName = "copilot-chat",
+                    StartTimeMs = 1_200,
+                    EndTimeMs = 1_300,
+                    ReceivedAtMs = 1_300,
+                },
+            });
+
+            var all = store.GetTracePage("session-1");
+            Assert.Equal(3, all.Total);
+            Assert.Equal(3, all.Nodes.Count);
+
+            // Only the later span starts inside the window; the earlier trace is
+            // gone completely, so nothing is reported as context.
+            var late = store.GetTracePage(
+                "session-1",
+                fromMs: 9_000,
+                toMs: 12_000);
+            Assert.Equal(1, late.Total);
+            var lateNode = Assert.Single(late.Nodes);
+            Assert.Equal("t2:s2", lateNode.Id);
+            Assert.False(lateNode.IsContext);
+
+            // The tool starts inside the window but its parent does not: the parent
+            // comes back as a context row with no counts.
+            var mid = store.GetTracePage(
+                "session-1",
+                fromMs: 1_150,
+                toMs: 2_000);
+            Assert.Equal(1, mid.Total);
+            Assert.Equal(2, mid.Nodes.Count);
+            var context = mid.Nodes[0];
+            Assert.True(context.IsContext);
+            Assert.Equal("context", context.Kind);
+            Assert.Equal("t1:s1", context.Id);
+            Assert.Equal(0, context.InputTokens);
+            Assert.Null(context.DurationMs);
+            Assert.Equal(0, context.Depth);
+            Assert.Equal(1, mid.Nodes[1].Depth);
+            Assert.Equal("t1:e1", mid.Nodes[1].Id);
+
+            // An empty window reports nothing instead of falling back to all rows.
+            var empty = store.GetTracePage(
+                "session-1",
+                fromMs: 20_000,
+                toMs: 21_000);
+            Assert.Equal(0, empty.Total);
+            Assert.Empty(empty.Nodes);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void SessionAggregatesOnlyCountRowsInsideTheWindow()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = "t1",
+                    SpanId = "s1",
+                    Operation = "execute_tool",
+                    ToolName = "powershell",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 1_500,
+                    ReceivedAtMs = 1_500,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t2",
+                    SpanId = "s2",
+                    Operation = "execute_tool",
+                    ToolName = "powershell",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 10_000,
+                    EndTimeMs = 10_500,
+                    ReceivedAtMs = 10_500,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t3",
+                    SpanId = "s3",
+                    Operation = "execute_hook",
+                    HookType = "preToolUse",
+                    HookResultKind = "applied",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_200,
+                    EndTimeMs = 1_300,
+                    ReceivedAtMs = 1_300,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "t4",
+                    SpanId = "s4",
+                    Operation = "execute_hook",
+                    HookType = "preToolUse",
+                    HookResultKind = "applied",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 10_200,
+                    EndTimeMs = 10_300,
+                    ReceivedAtMs = 10_300,
+                },
+            });
+
+            Assert.Equal(2, Assert.Single(store.GetSessionTools("session-1")).Calls);
+            Assert.Equal(
+                2,
+                Assert.Single(store.GetHookSummaries("session-1")).Count);
+            Assert.All(
+                store.GetSessionEvents("session-1"),
+                row => Assert.Equal(2, row.Count));
+
+            var tools = Assert.Single(
+                store.GetSessionTools("session-1", null, 10_000, 12_000));
+            Assert.Equal(1, tools.Calls);
+            Assert.Equal(10_000, tools.LastSeenMs);
+            Assert.Equal(
+                1,
+                Assert.Single(
+                    store.GetHookSummaries("session-1", null, 10_000, 12_000))
+                    .Count);
+            var events = Assert.Single(
+                store.GetSessionEvents("session-1", null, 10_000, 12_000),
+                row => row.Operation == "execute_tool");
+            Assert.Equal(1, events.Count);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void ResolvesSubagentToolSessionsFromParents()
     {
         var directory = Path.Combine(

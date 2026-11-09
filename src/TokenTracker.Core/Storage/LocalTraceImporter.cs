@@ -220,9 +220,19 @@ public static class LocalTraceImporter
                       AND a.key = 'copilot_chat.hook_type' LIMIT 1),
                    (SELECT a.value FROM span_attributes a
                     WHERE a.span_id = s.span_id
-                      AND a.key = 'copilot_chat.hook_result_kind' LIMIT 1)
+                      AND a.key = 'copilot_chat.hook_result_kind' LIMIT 1),
+                   (SELECT a.value FROM span_attributes a
+                    WHERE a.span_id = s.span_id
+                      AND a.key = 'github.copilot.permission.kind' LIMIT 1),
+                   (SELECT a.value FROM span_attributes a
+                    WHERE a.span_id = s.span_id
+                      AND a.key = 'github.copilot.permission.result' LIMIT 1),
+                   (SELECT a.value FROM span_attributes a
+                    WHERE a.span_id = s.span_id
+                      AND a.key = 'github.copilot.permission.tool_name' LIMIT 1)
             FROM spans s
             WHERE s.operation_name IN ('execute_tool', 'invoke_agent')
+               OR s.name = 'permission'
             ORDER BY s.start_time_ms;
             """;
         using (var reader = eventCommand.ExecuteReader())
@@ -494,6 +504,15 @@ public static class LocalTraceImporter
         var traceId = reader.IsDBNull(0) ? null : reader.GetString(0);
         var spanId = reader.IsDBNull(1) ? null : reader.GetString(1);
         var operation = reader.IsDBNull(2) ? null : reader.GetString(2);
+        var spanName = reader.IsDBNull(3) ? null : reader.GetString(3);
+        // Approval spans carry no operation name in the local store; the span name
+        // is the only marker, so promote it to an operation of its own.
+        if (string.IsNullOrWhiteSpace(operation) &&
+            string.Equals(spanName, "permission", StringComparison.OrdinalIgnoreCase))
+        {
+            operation = "permission";
+        }
+
         if (string.IsNullOrWhiteSpace(traceId) ||
             string.IsNullOrWhiteSpace(spanId) ||
             string.IsNullOrWhiteSpace(operation))
@@ -519,7 +538,6 @@ public static class LocalTraceImporter
             ParentSpanId = reader.IsDBNull(15) ? null : reader.GetString(15),
             Operation = operation.ToLowerInvariant(),
             Name = reader.IsDBNull(3) ? null : reader.GetString(3),
-            ToolName = TrimToNull(reader.IsDBNull(10) ? null : reader.GetString(10)),
             CallId = TrimToNull(reader.IsDBNull(11) ? null : reader.GetString(11)),
             ToolType = reader.IsDBNull(12) ? null : reader.GetString(12),
             EditType = reader.IsDBNull(13) ? null : reader.GetString(13),
@@ -543,6 +561,12 @@ public static class LocalTraceImporter
             HookToolNames = reader.IsDBNull(23) ? null : reader.GetString(23),
             HookType = reader.IsDBNull(24) ? null : reader.GetString(24),
             HookResultKind = reader.IsDBNull(25) ? null : reader.GetString(25),
+            PermissionKind = reader.IsDBNull(26) ? null : reader.GetString(26),
+            PermissionResult = reader.IsDBNull(27) ? null : reader.GetString(27),
+            // permission.tool_name is the only tool name an approval span carries.
+            ToolName = TrimToNull(
+                reader.IsDBNull(10) ? null : reader.GetString(10)) ??
+                TrimToNull(reader.IsDBNull(28) ? null : reader.GetString(28)),
             ReceivedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
     }

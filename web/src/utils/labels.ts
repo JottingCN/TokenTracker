@@ -13,6 +13,8 @@ export function operationLabel(operation: string): string {
       return t('create.agent');
     case 'execute_hook':
       return t('hook.execution');
+    case 'permission':
+      return t('approval');
     default:
       return operation || '-';
   }

@@ -103,6 +103,73 @@ function spanPayload(sessionId, count) {
   });
 }
 
+function turnPayload(sessionId) {
+  const now = Date.now();
+  const traceId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId,
+                spanId: 'turn-root-0000001',
+                name: 'invoke_agent',
+                kind: 1,
+                startTimeUnixNano: `${now}000000`,
+                endTimeUnixNano: `${now + 1000}000000`,
+                attributes: [
+                  {
+                    key: 'gen_ai.operation.name',
+                    value: { stringValue: 'invoke_agent' },
+                  },
+                  {
+                    key: 'gen_ai.conversation.id',
+                    value: { stringValue: sessionId },
+                  },
+                ],
+              },
+              {
+                traceId,
+                spanId: 'perm-span-000001',
+                parentSpanId: 'turn-root-0000001',
+                name: 'permission',
+                kind: 1,
+                startTimeUnixNano: `${now + 10}000000`,
+                endTimeUnixNano: `${now + 1010}000000`,
+                attributes: [
+                  {
+                    key: 'github.copilot.permission.kind',
+                    value: { stringValue: 'shell' },
+                  },
+                  {
+                    key: 'github.copilot.permission.result',
+                    value: { stringValue: 'approved' },
+                  },
+                  {
+                    key: 'github.copilot.permission.tool_name',
+                    value: { stringValue: 'powershell' },
+                  },
+                  {
+                    key: 'gen_ai.conversation.id',
+                    value: { stringValue: sessionId },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
 function metricsPayload(count) {
   const now = `${Date.now()}000000`;
   return JSON.stringify({
@@ -389,6 +456,69 @@ try {
     older.nodes[0].startTimeMs > block.nodes[0].startTimeMs,
     true,
   );
+
+  // The topology follows the session range: a window with no rows must not fall
+  // back to the whole session.
+  const futureFrom = Date.now() + 86_400_000;
+  const outside = JSON.parse(
+    (
+      await request(
+        `${base}/api/session/${sessionId}/trace?budget=10&from=${futureFrom}&to=${futureFrom + 60_000}`,
+      )
+    ).body,
+  );
+  check('trace honours from/to', outside.total, 0);
+  check('trace window returns no nodes', outside.nodes.length, 0);
+  check(
+    'trace rejects a half range',
+    (
+      await request(
+        `${base}/api/session/${sessionId}/trace?from=${futureFrom}`,
+      )
+    ).status,
+    400,
+  );
+
+  // The session snapshot carries per-turn rows; the smoke data has no
+  // invoke_agent span, so the list must be present but empty.
+  const sessionPayload = JSON.parse(
+    (await request(`${base}/api/session/${sessionId}`)).body,
+  );
+  check('GET /api/session exposes turns', Array.isArray(sessionPayload.turns), true);
+  check('turns stay empty without invoke_agent', sessionPayload.turns.length, 0);
+  check(
+    'session payload keeps the aggregate calls',
+    sessionPayload.summary.calls,
+    6,
+  );
+
+  // An approval span carries a tool name but is its own operation; it must show up
+  // in the topology with kind and result folded into the label.
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: turnPayload(sessionId),
+  });
+  const withApproval = JSON.parse(
+    (await request(`${base}/api/session/${sessionId}/trace?budget=100`)).body,
+  );
+  const approval = withApproval.nodes.find(
+    (node) => node.operation === 'permission',
+  );
+  check('trace exposes approval nodes', Boolean(approval), true);
+  check('approval node kind', approval?.kind, 'permission');
+  check(
+    'approval label carries kind, result and tool',
+    approval?.label,
+    'shell · approved · powershell',
+  );
+
+  // A root invoke_agent with no chat call and no tool run is not a usable turn.
+  const turnOnly = JSON.parse(
+    (await request(`${base}/api/session/${sessionId}`)).body,
+  );
+  check('turns skip empty turns', turnOnly.turns.length, 0);
+  check('events still count the approval', turnOnly.events.some((row) => row.operation === 'permission'), true);
 
   const spa = await request(`${base}/`);
   check('GET /', spa.status, 200);

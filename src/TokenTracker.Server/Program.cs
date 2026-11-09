@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using Microsoft.Extensions.Hosting;
+using TokenTracker.Core;
 using TokenTracker.Core.Otlp;
 using TokenTracker.Core.Pricing;
 using TokenTracker.Core.Session;
@@ -361,18 +362,36 @@ app.MapGet("/api/session/{sessionId}", (
 
 // FIFO blocks: `cursor` continues after the last returned row, `budget` caps the
 // rows per response. Traces may span blocks; the server repeats missing ancestors.
+// The topology honours the same range/from-to as the rest of the session view.
 app.MapGet("/api/session/{sessionId}/trace", (
     string sessionId,
     string? source,
     string? cursor,
-    int? budget) =>
-    Results.Json(
+    int? budget,
+    int? range,
+    long? from,
+    long? to) =>
+{
+    if (InvalidRange(from, to) is { } invalid)
+    {
+        return invalid;
+    }
+
+    var (fromMs, toMs) = from is > 0
+        ? (from.Value, to!.Value)
+        : RangeTime.Resolve(
+            range ?? DefaultSessionRange,
+            DateTimeOffset.UtcNow);
+    return Results.Json(
         service.GetTrace(
             sessionId,
             source,
             cursor,
-            budget ?? DashboardService.TraceBudget),
-        AppJsonContext.Default.TracePayload));
+            budget ?? DashboardService.TraceBudget,
+            fromMs,
+            toMs),
+        AppJsonContext.Default.TracePayload);
+});
 
 app.MapGet("/api/calls", (
     int? range,

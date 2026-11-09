@@ -22,7 +22,7 @@
   "config.costUnit.credit": "積分",
   "config.creditRate": "1 積分對應的人民幣金額（CNY）。",
   "config.usdRate": "1 美元對應的人民幣金額（CNY）。",
-  "config.statusBarFormat": "狀態欄模板。可用占位符：{icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turns} {hooks} {range} {model} {session}；冒號後可選格式，如 {hit:0.00%}、{ttft:0.0s}、{speed:0.0}、{cost:0.000000}、{calls:0}。除 {cost} 外的指標取最新主 agent 模型的值。",
+  "config.statusBarFormat": "狀態欄模板。可用佔位符：{icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turn} {turns} {step} {hooks} {range} {model} {session}；{turn} 顯示最新對話輪次與已執行步數（工具呼叫），沒有 Agent Host 輪次標記時自動省略；冒號後可選格式，如 {hit:0.00%}、{ttft:0.0s}、{speed:0.0}、{cost:0.000000}、{calls:0}。除 {cost} 外的指標取最新主 agent 模型的值。",
   "config.statusBarCost": "{cost} 顯示的金額口徑。",
   "config.statusBarCost.session": "整個工作階段合計。",
   "config.statusBarCost.model": "僅最新主 agent 模型。",

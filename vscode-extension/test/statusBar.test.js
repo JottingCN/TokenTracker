@@ -328,6 +328,38 @@ test('status bar reports the newest main-agent model but can scope cost', () => 
     renderStatusTemplate(template, summary, '全部', money, undefined, 'session'),
     'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
   );
+
+  const withTurns = {
+    ...details,
+    turns: [
+      { index: 1, startTimeMs: 10, endTimeMs: 60, calls: 2, toolCalls: 1, costCny: 0.1 },
+      { index: 2, startTimeMs: 200, endTimeMs: 260, calls: 3, toolCalls: 7, costCny: 0.2 },
+    ],
+  };
+  assert.equal(
+    renderStatusTemplate('{turn}', summary, '全部', money, withTurns, 'session'),
+    '第2轮 7步',
+  );
+  assert.equal(
+    renderStatusTemplate('{step}', summary, '全部', money, withTurns, 'session'),
+    '7',
+  );
+  assert.equal(
+    renderStatusTemplate('{turns}', summary, '全部', money, withTurns, 'session'),
+    '2',
+  );
+  // A session without Agent Host turn markers must not render a stray separator.
+  assert.equal(
+    renderStatusTemplate(
+      '$(pulse) {turn} · {hit}',
+      summary,
+      '全部',
+      money,
+      details,
+      'session',
+    ),
+    '$(pulse) 25.00%',
+  );
 });
 
 test('changing the stats range re-subscribes with the new window', () => {
@@ -456,5 +488,67 @@ test('renders the tip tool list with clipped names', () => {
   // Unresolved hashes still respect the 18-column cap.
   assert.ok(tooltip.includes(`- **${'g'.repeat(17)}…**`));
   assert.ok(!tooltip.includes('g'.repeat(18)));
+  controller.dispose();
+});
+
+test('the tip shows the current turn with its step count', () => {
+  const controller = new StatusBarController(
+    0,
+    4,
+    '全部',
+    [root],
+    { unit: 'cny', usdRate: 7.2, creditRate: 0.01 },
+    '$(pulse) {turn}',
+    () => {},
+  );
+
+  const summary = session('session-1', root, 20, {
+    title: '会话标题',
+    firstSeenMs: 20,
+    inputText: '1,000',
+    cacheText: '500',
+    outputText: '10',
+    reasoningText: '0',
+    uncachedCostCny: 0.01,
+    cacheCostCny: 0.001,
+    outputCostCny: 0.002,
+    reasoningCostCny: 0,
+    hitRateText: '50%',
+    avgTtftText: '-',
+    tokensPerSecondText: '-',
+    calls: 1,
+    events: 0,
+  });
+  controller.updateTooltip(summary, {
+    models: [],
+    tools: [],
+    hooks: [],
+    agentRuns: [],
+    events: [],
+    calls: [],
+    turns: [
+      {
+        index: 1,
+        startTimeMs: 10,
+        endTimeMs: 60,
+        calls: 1,
+        toolCalls: 2,
+        costCny: 0.1,
+      },
+      {
+        index: 2,
+        startTimeMs: 200,
+        endTimeMs: 260,
+        calls: 3,
+        toolCalls: 11,
+        costCny: 0.2,
+      },
+    ],
+  });
+
+  const tooltip = statusBarItem.tooltip.value;
+  assert.ok(tooltip.includes('对话轮次'));
+  assert.ok(tooltip.includes('2 / 2'));
+  assert.ok(tooltip.includes('11'));
   controller.dispose();
 });

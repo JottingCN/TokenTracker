@@ -564,6 +564,54 @@ public sealed partial class SpanStore
         }
     }
 
+    /// <summary>
+    /// Start times of the session's turns. Agent Host opens exactly one root
+    /// <c>invoke_agent</c> span per user message; a subagent's invoke_agent hangs
+    /// below a stored tool span, so requiring the parent to be unknown keeps the
+    /// list to real turns.
+    /// </summary>
+    public IReadOnlyList<long> GetSessionTurnStarts(
+        string sessionId,
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT start_time_ms
+            FROM session_events e
+            WHERE e.session_id = @session_id
+              AND e.operation = 'invoke_agent'
+              AND e.start_time_ms >= @from
+              AND e.start_time_ms < @to{sourceFilter}
+              AND NOT EXISTS (
+                  SELECT 1 FROM session_events p
+                  WHERE p.session_id = e.session_id
+                    AND p.span_id = e.parent_span_id)
+            ORDER BY e.start_time_ms;
+            """;
+        command.Parameters.AddWithValue("@session_id", sessionId);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<long>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(reader.GetInt64(0));
+        }
+
+        return rows;
+    }
+
     public IReadOnlyList<AgentRunRow> GetAgentRuns(
         string sessionId,
         string? source = null)
@@ -628,9 +676,16 @@ public sealed partial class SpanStore
         return rows;
     }
 
+    /// <summary>
+    /// Aggregates hook runs per hook inside the given time window. Like tool
+    /// aggregates, the window has to be applied before grouping; filtering the
+    /// completed rows by last-seen time would count runs outside the range.
+    /// </summary>
     public IReadOnlyList<HookSummaryRow> GetHookSummaries(
         string sessionId,
-        string? source = null)
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
@@ -643,10 +698,14 @@ public sealed partial class SpanStore
                    start_time_ms, end_time_ms, is_error, hook_tool_names
             FROM session_events
             WHERE session_id = @session_id
-              AND operation = 'execute_hook'{sourceFilter}
+              AND operation = 'execute_hook'
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
             ORDER BY start_time_ms;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
         if (!string.IsNullOrWhiteSpace(source))
         {
             command.Parameters.AddWithValue("@source", source);
@@ -724,15 +783,21 @@ public sealed partial class SpanStore
         string sessionId,
         string? source = null,
         string? cursor = null,
-        int budget = 400)
+        int budget = 400,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
     {
         var pageSize = Math.Clamp(budget, 1, 2_000);
-        var nodes = BuildTraceNodes(sessionId, source);
-        if (nodes.Count == 0)
+        var all = BuildTraceNodes(sessionId, source);
+        if (all.Count == 0)
         {
             return new TracePage(Array.Empty<TraceNodeRow>(), false, null, 0);
         }
 
+        // The topology follows the selected range like every other session view.
+        // Ancestors that started outside the window stay in as context rows so the
+        // indentation keeps working; they carry no tokens and are not counted.
+        var nodes = WindowTraceNodes(all, fromMs, toMs, out var total);
         var startIndex = 0;
         if (TryParseCursor(cursor, out var cursorMs, out var cursorId))
         {
@@ -749,7 +814,7 @@ public sealed partial class SpanStore
                 Array.Empty<TraceNodeRow>(),
                 false,
                 null,
-                nodes.Count);
+                total);
         }
 
         var take = Math.Min(pageSize, nodes.Count - startIndex);
@@ -764,7 +829,106 @@ public sealed partial class SpanStore
             slice,
             hasMore,
             hasMore ? FormatCursor(last) : null,
-            nodes.Count);
+            total);
+    }
+
+    /// <summary>
+    /// Keeps the rows that started inside the window plus the ancestors needed to
+    /// indent them. Ancestors outside the window become context rows: they carry no
+    /// tokens, errors or duration so range totals never include them.
+    /// </summary>
+    private static List<TraceNodeRow> WindowTraceNodes(
+        List<TraceNodeRow> all,
+        long fromMs,
+        long toMs,
+        out int total)
+    {
+        if (fromMs <= 0 && toMs == long.MaxValue)
+        {
+            total = all.Count;
+            return all;
+        }
+
+        var indexById = new Dictionary<string, int>(
+            all.Count,
+            StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < all.Count; index++)
+        {
+            indexById[all[index].Id] = index;
+        }
+
+        var visible = new HashSet<int>();
+        for (var index = 0; index < all.Count; index++)
+        {
+            if (all[index].StartTimeMs >= fromMs && all[index].StartTimeMs < toMs)
+            {
+                visible.Add(index);
+            }
+        }
+
+        if (visible.Count == 0)
+        {
+            total = 0;
+            return new List<TraceNodeRow>();
+        }
+
+        var keep = new HashSet<int>(visible);
+        var contextRows = 0;
+        foreach (var index in visible)
+        {
+            var parentId = all[index].ParentId;
+            var guard = 0;
+            while (parentId is not null &&
+                   guard++ < 32 &&
+                   indexById.TryGetValue(parentId, out var parentIndex) &&
+                   parentIndex < index)
+            {
+                if (!keep.Contains(parentIndex))
+                {
+                    if (contextRows >= MaxContextAncestors)
+                    {
+                        break;
+                    }
+
+                    keep.Add(parentIndex);
+                    contextRows++;
+                }
+
+                parentId = all[parentIndex].ParentId;
+            }
+
+            if (contextRows >= MaxContextAncestors)
+            {
+                break;
+            }
+        }
+
+        var nodes = new List<TraceNodeRow>(keep.Count);
+        for (var index = 0; index < all.Count; index++)
+        {
+            if (!keep.Contains(index))
+            {
+                continue;
+            }
+
+            var node = all[index];
+            nodes.Add(visible.Contains(index)
+                ? node
+                : node with
+                {
+                    Kind = "context",
+                    IsContext = true,
+                    DurationMs = null,
+                    InputTokens = 0,
+                    OutputTokens = 0,
+                    CacheReadTokens = 0,
+                    IsError = false,
+                    ErrorType = null,
+                });
+        }
+
+        total = visible.Count;
+        return nodes;
     }
 
     private List<TraceNodeRow> BuildTraceNodes(string sessionId, string? source)
@@ -825,10 +989,18 @@ public sealed partial class SpanStore
             {
                 Id = SpanId(item.TraceId, item.SpanId),
                 ParentId = ResolveParentId(item.TraceId, item.ParentSpanId, remap),
-                Kind = "event",
+                Kind = item.Operation == "permission" ? "permission" : "event",
                 Operation = item.Operation,
-                Name = item.Name,
-                Tool = item.Tool,
+                // A permission span has no tool-name attribute of its own beyond
+                // permission.tool_name, and its kind/result explain why the tool
+                // waited; fold both into the label because the tree renders one
+                // label per row.
+                Name = item.Operation == "permission"
+                    ? PermissionLabel(item)
+                    : item.Name,
+                // Permission labels already carry the tool name, so keeping Tool
+                // would repeat it through TraceNodeRow.Label.
+                Tool = item.Operation == "permission" ? null : item.Tool,
                 Source = item.Source,
                 StartTimeMs = item.StartTimeMs,
                 DurationMs = Math.Max(0, item.EndTimeMs - item.StartTimeMs),
@@ -848,6 +1020,34 @@ public sealed partial class SpanStore
     }
 
     private const int MaxContextAncestors = 64;
+
+    /// <summary>
+    /// Describes an approval span, e.g. <c>shell · approved · powershell</c>. The
+    /// runtime only emits <c>approved</c> and <c>denied-interactively-by-user</c>,
+    /// so there is no explicit "auto" marker: a missing span means the tool needed
+    /// no approval, a short span means the policy let it through immediately, and a
+    /// long span is time spent waiting for a person.
+    /// </summary>
+    private static string PermissionLabel(TraceEvent item)
+    {
+        var parts = new List<string>(3);
+        if (!string.IsNullOrWhiteSpace(item.PermissionKind))
+        {
+            parts.Add(item.PermissionKind);
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.PermissionResult))
+        {
+            parts.Add(item.PermissionResult);
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.Tool))
+        {
+            parts.Add(Otlp.ToolNameResolver.Display(item.Tool));
+        }
+
+        return parts.Count == 0 ? "permission" : string.Join(" · ", parts);
+    }
 
     // A block can start in the middle of a trace; repeating the missing ancestors as
     // context rows keeps the indentation readable without counting them twice.
@@ -1067,7 +1267,9 @@ public sealed partial class SpanStore
         long StartTimeMs,
         long EndTimeMs,
         string? ErrorType,
-        bool IsError);
+        bool IsError,
+        string? PermissionKind,
+        string? PermissionResult);
 
     private static List<TraceSpan> ReadTraceSpans(
         SqliteConnection connection,
@@ -1124,7 +1326,7 @@ public sealed partial class SpanStore
         command.CommandText = $"""
             SELECT trace_id, span_id, parent_span_id, operation, name, tool_name,
                    {SourceSql} AS source, start_time_ms, end_time_ms, error_type,
-                   is_error
+                   is_error, permission_kind, permission_result
             FROM session_events
             WHERE session_id = @session_id{sourceFilter}
             ORDER BY start_time_ms, trace_id, span_id;
@@ -1151,7 +1353,9 @@ public sealed partial class SpanStore
                 startMs,
                 reader.IsDBNull(8) ? startMs : reader.GetInt64(8),
                 reader.IsDBNull(9) ? null : reader.GetString(9),
-                reader.GetInt64(10) != 0));
+                reader.GetInt64(10) != 0,
+                reader.IsDBNull(11) ? null : reader.GetString(11),
+                reader.IsDBNull(12) ? null : reader.GetString(12)));
         }
 
         return events;

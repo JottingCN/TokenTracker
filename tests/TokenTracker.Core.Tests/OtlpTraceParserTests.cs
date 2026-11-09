@@ -313,6 +313,79 @@ public sealed class OtlpTraceParserTests
     }
 
     [Fact]
+    public void ParsesPermissionSpansAsTheirOwnOperation()
+    {
+        var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
+        var json = $$"""
+        {
+          "resourceSpans": [
+            {
+              "resource": {
+                "attributes": [
+                  { "key": "service.name", "value": { "stringValue": "github-copilot" } }
+                ]
+              },
+              "scopeSpans": [
+                {
+                  "spans": [
+                    {
+                      "traceId": "perm-trace",
+                      "spanId": "perm-span",
+                      "parentSpanId": "tool-span",
+                      "name": "permission",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "endTimeUnixNano": "{{startNanos + 12_000_000_000}}",
+                      "attributes": [
+                        { "key": "github.copilot.permission.kind", "value": { "stringValue": "shell" } },
+                        { "key": "github.copilot.permission.result", "value": { "stringValue": "approved" } },
+                        { "key": "github.copilot.permission.tool_name", "value": { "stringValue": "powershell" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-perm" } }
+                      ]
+                    },
+                    {
+                      "traceId": "perm-trace",
+                      "spanId": "denied-span",
+                      "parentSpanId": "tool-span-2",
+                      "name": "permission",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "endTimeUnixNano": "{{startNanos + 1_000_000_000}}",
+                      "attributes": [
+                        { "key": "github.copilot.permission.kind", "value": { "stringValue": "write" } },
+                        { "key": "github.copilot.permission.result", "value": { "stringValue": "denied-interactively-by-user" } },
+                        { "key": "github.copilot.permission.tool_name", "value": { "stringValue": "edit" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-perm" } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var document = JsonDocument.Parse(json);
+        var events = OtlpTraceParser.ParseEvents(
+            document,
+            PeakUtc.ToUnixTimeMilliseconds());
+        Assert.Equal(2, events.Count);
+        var approved = Assert.Single(events, row => row.SpanId == "perm-span");
+        Assert.Equal("permission", approved.Operation);
+        Assert.Equal("shell", approved.PermissionKind);
+        Assert.Equal("approved", approved.PermissionResult);
+        Assert.Equal("powershell", approved.ToolName);
+        Assert.Equal("session-perm", approved.SessionId);
+        Assert.False(approved.IsError);
+        Assert.Equal(12_000, approved.EndTimeMs - approved.StartTimeMs);
+
+        var denied = Assert.Single(events, row => row.SpanId == "denied-span");
+        Assert.Equal("write", denied.PermissionKind);
+        Assert.Equal("denied-interactively-by-user", denied.PermissionResult);
+        Assert.True(denied.IsError);
+        Assert.Equal("denied", denied.ErrorType);
+    }
+
+    [Fact]
     public void MergesAnthropicCacheTokensIntoTotalInput()
     {
         var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;

@@ -62,7 +62,7 @@ public sealed partial class SpanStore
     /// <see cref="Initialize"/> using only additive statements: an older build must
     /// still be able to open and read the same file.
     /// </summary>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -269,6 +269,8 @@ public sealed partial class SpanStore
                 hook_tool_names TEXT,
                 hook_type TEXT,
                 hook_result_kind TEXT,
+                permission_kind TEXT,
+                permission_result TEXT,
                 call_id TEXT,
                 session_id TEXT,
                 service_name TEXT,
@@ -445,6 +447,8 @@ public sealed partial class SpanStore
         EnsureColumn(connection, "session_events", "hook_tool_names", "TEXT");
         EnsureColumn(connection, "session_events", "hook_type", "TEXT");
         EnsureColumn(connection, "session_events", "hook_result_kind", "TEXT");
+        EnsureColumn(connection, "session_events", "permission_kind", "TEXT");
+        EnsureColumn(connection, "session_events", "permission_result", "TEXT");
 
         EnsureColumn(connection, "model_prices", "long_threshold_tokens", "INTEGER");
         EnsureColumn(connection, "model_prices", "long_cached_input", "REAL");
@@ -821,7 +825,8 @@ public sealed partial class SpanStore
                     trace_id, span_id, parent_span_id, name, operation, tool_name,
                     tool_type, edit_type, skill_name, mcp_server_hash, mcp_tool_name,
                     hook_decision, hook_duration_ms, hook_tool_names, hook_type,
-                    hook_result_kind, call_id, session_id, service_name,
+                    hook_result_kind, permission_kind, permission_result,
+                    call_id, session_id, service_name,
                     service_namespace, scope_name, otel_source, error_type,
                     agent_name, agent_type, provider_name, window_session_id,
                     start_time_ms, end_time_ms, is_error, received_at_ms
@@ -830,7 +835,8 @@ public sealed partial class SpanStore
                     @tool_name, @tool_type, @edit_type, @skill_name,
                     @mcp_server_hash, @mcp_tool_name, @hook_decision,
                     @hook_duration_ms, @hook_tool_names, @hook_type,
-                    @hook_result_kind, @call_id, @session_id, @service_name,
+                    @hook_result_kind, @permission_kind, @permission_result,
+                    @call_id, @session_id, @service_name,
                     @service_namespace, @scope_name, @otel_source, @error_type,
                     @agent_name, @agent_type, @provider_name,
                     @window_session_id, @start_time_ms, @end_time_ms,
@@ -854,6 +860,8 @@ public sealed partial class SpanStore
             AddParameter(command, "@hook_tool_names", SqliteType.Text);
             AddParameter(command, "@hook_type", SqliteType.Text);
             AddParameter(command, "@hook_result_kind", SqliteType.Text);
+            AddParameter(command, "@permission_kind", SqliteType.Text);
+            AddParameter(command, "@permission_result", SqliteType.Text);
             AddParameter(command, "@call_id", SqliteType.Text);
             AddParameter(command, "@session_id", SqliteType.Text);
             AddParameter(command, "@service_name", SqliteType.Text);
@@ -911,6 +919,10 @@ public sealed partial class SpanStore
                     (object?)item.HookType ?? DBNull.Value;
                 command.Parameters["@hook_result_kind"].Value =
                     (object?)item.HookResultKind ?? DBNull.Value;
+                command.Parameters["@permission_kind"].Value =
+                    (object?)item.PermissionKind ?? DBNull.Value;
+                command.Parameters["@permission_result"].Value =
+                    (object?)item.PermissionResult ?? DBNull.Value;
                 command.Parameters["@call_id"].Value =
                     (object?)item.CallId ?? DBNull.Value;
                 command.Parameters["@session_id"].Value =
@@ -1589,9 +1601,16 @@ public sealed partial class SpanStore
         return rows;
     }
 
+    /// <summary>
+    /// Aggregates session events per operation inside the given time window.
+    /// The window must be applied before grouping, otherwise operations used
+    /// once inside the range report their lifetime totals.
+    /// </summary>
     public IReadOnlyList<SessionEventRow> GetSessionEvents(
         string sessionId,
-        string? source = null)
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
@@ -1608,11 +1627,15 @@ public sealed partial class SpanStore
                 COALESCE(SUM(is_error), 0),
                 MAX(start_time_ms)
             FROM session_events
-            WHERE session_id = @session_id{sourceFilter}
+            WHERE session_id = @session_id
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
             GROUP BY operation, {SourceSql}
             ORDER BY COUNT(*) DESC;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
         if (!string.IsNullOrWhiteSpace(source))
         {
             command.Parameters.AddWithValue("@source", source);
@@ -1636,9 +1659,61 @@ public sealed partial class SpanStore
         return rows;
     }
 
+    /// <summary>
+    /// Start and end of each tool run, used to attribute tool calls to a turn and
+    /// to measure how long the turn kept working.
+    /// </summary>
+    public IReadOnlyList<ToolRunSample> GetSessionToolRuns(
+        string sessionId,
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT start_time_ms, end_time_ms
+            FROM session_events
+            WHERE session_id = @session_id
+              AND operation = 'execute_tool'
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
+            ORDER BY start_time_ms;
+            """;
+        command.Parameters.AddWithValue("@session_id", sessionId);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<ToolRunSample>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var startMs = reader.GetInt64(0);
+            var endMs = reader.IsDBNull(1) ? startMs : reader.GetInt64(1);
+            rows.Add(new ToolRunSample(startMs, Math.Max(startMs, endMs)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Aggregates tool calls per tool inside the given time window. The window
+    /// must be applied before grouping: filtering the finished aggregates by
+    /// their last-seen timestamp would report lifetime counts for any tool that
+    /// happens to be used once inside the range.
+    /// </summary>
     public IReadOnlyList<ToolCallRow> GetSessionTools(
         string sessionId,
-        string? source = null)
+        string? source = null,
+        long fromMs = 0,
+        long toMs = long.MaxValue)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
@@ -1667,10 +1742,14 @@ public sealed partial class SpanStore
                 is_error
             FROM session_events
             WHERE session_id = @session_id
-              AND operation = 'execute_tool'{sourceFilter}
+              AND operation = 'execute_tool'
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}
             ORDER BY start_time_ms;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
         if (!string.IsNullOrWhiteSpace(source))
         {
             command.Parameters.AddWithValue("@source", source);

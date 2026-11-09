@@ -30,6 +30,7 @@ import type {
   HookSummaryRow,
   SessionEventRow,
   SessionPayload,
+  SessionTurnRow,
   ToolCallRow,
 } from '../types';
 import { useUi } from '../ui';
@@ -39,12 +40,14 @@ import {
   formatTime,
   operationLabel,
 } from '../utils/labels';
-import { useMoney } from '../utils/money';
+import { formatMoney, useMoney } from '../utils/money';
 import { useViewportHeight } from '../utils/useViewportHeight';
 
 interface SessionPageProps {
   sessionId: string;
   range: number;
+  fromMs?: number;
+  toMs?: number;
   onMeta?: (meta: { title: string; subtitle?: string }) => void;
   onOpenCalls?: (sessionId: string) => void;
 }
@@ -52,6 +55,8 @@ interface SessionPageProps {
 export function SessionPage({
   sessionId,
   range,
+  fromMs,
+  toMs,
   onMeta,
   onOpenCalls,
 }: SessionPageProps) {
@@ -68,6 +73,8 @@ export function SessionPage({
     view: 'session',
     id: sessionId,
     range,
+    fromMs,
+    toMs,
     utility: false,
     // The page renders aggregates only; the raw call list would add ~800 KB
     // per snapshot, so it is requested by the VS Code tip instead.
@@ -291,6 +298,78 @@ export function SessionPage({
       width: 120,
       align: 'right',
       render: (_, row) => formatTime(row.lastSeenMs),
+    },
+  ];
+
+  const turnColumns: ColumnsType<SessionTurnRow> = [
+    {
+      title: t('turns'),
+      key: 'index',
+      width: 70,
+      align: 'right',
+      render: (_, row) => row.indexText,
+    },
+    {
+      title: t('start'),
+      key: 'start',
+      width: 130,
+      render: (_, row) => row.startText,
+    },
+    {
+      title: t('duration'),
+      key: 'duration',
+      width: 100,
+      align: 'right',
+      render: (_, row) => row.durationText,
+    },
+    {
+      title: t('calls'),
+      key: 'calls',
+      width: 80,
+      align: 'right',
+      render: (_, row) => number.format(row.calls),
+    },
+    {
+      title: t('input.tokens'),
+      key: 'input',
+      width: 110,
+      align: 'right',
+      render: (_, row) => number.format(row.inputTokens),
+    },
+    {
+      title: t('cached.tokens'),
+      key: 'cache',
+      width: 110,
+      align: 'right',
+      render: (_, row) => number.format(row.cacheReadTokens),
+    },
+    {
+      title: t('output.tokens'),
+      key: 'output',
+      width: 110,
+      align: 'right',
+      render: (_, row) => number.format(row.outputTokens),
+    },
+    {
+      title: t('reasoning.tokens'),
+      key: 'reasoning',
+      width: 110,
+      align: 'right',
+      render: (_, row) => number.format(row.reasoningTokens),
+    },
+    {
+      title: t('tool.calls'),
+      key: 'toolCalls',
+      width: 100,
+      align: 'right',
+      render: (_, row) => number.format(row.toolCalls),
+    },
+    {
+      title: t('estimated.cost'),
+      key: 'cost',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatMoney(row.costCny),
     },
   ];
 
@@ -573,6 +652,54 @@ export function SessionPage({
 
       <Card
         size="small"
+        styles={collapsedBodyStyle(openPanels.includes('turns'))}
+        title={
+          <Tooltip title={t('turns.hint')}>
+            <span style={{ cursor: 'help' }}>{`${t('turns.by.turn')}(${data?.turns?.length ?? 0})`}</span>
+          </Tooltip>
+        }
+        extra={
+          <Space size={8}>
+            {data && (data.turns?.length ?? 0) > 0 && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {`${t('total.duration')}: ${formatLatency(
+                  (data.turns ?? []).reduce(
+                    (total, row) =>
+                      total + Math.max(0, (row.endTimeMs ?? row.startTimeMs) - row.startTimeMs),
+                    0,
+                  ),
+                )}`}
+              </Typography.Text>
+            )}
+            <CollapseToggle
+              panel="turns"
+              open={openPanels.includes('turns')}
+              onToggle={togglePanel}
+            />
+          </Space>
+        }
+      >
+        {openPanels.includes('turns') &&
+          (data && (data.turns?.length ?? 0) === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t('turns.none')}
+            />
+          ) : (
+            <Table
+              size="small"
+              rowKey={(row) => String(row.index)}
+              columns={turnColumns}
+              dataSource={data?.turns ?? []}
+              loading={!data}
+              pagination={false}
+              scroll={{ x: 1040, y: listHeight }}
+            />
+          ))}
+      </Card>
+
+      <Card
+        size="small"
         styles={collapsedBodyStyle(openPanels.includes('agents'))}
         title={`${t('agent.runs')}(${data?.agentRuns.length ?? 0})`}
         extra={
@@ -665,7 +792,13 @@ export function SessionPage({
         }
       >
         {openPanels.includes('trace') && (
-          <TraceTree sessionId={sessionId} version={traceVersion} />
+          <TraceTree
+            sessionId={sessionId}
+            version={traceVersion}
+            range={range}
+            fromMs={fromMs}
+            toMs={toMs}
+          />
         )}
       </Card>
 
@@ -678,7 +811,14 @@ export function SessionPage({
         style={{ top: 0, maxWidth: '100vw', padding: 0 }}
         styles={{ body: { height: 'calc(100vh - 55px)', padding: 20 } }}
       >
-        <TraceTree sessionId={sessionId} version={traceVersion} expanded />
+        <TraceTree
+          sessionId={sessionId}
+          version={traceVersion}
+          range={range}
+          fromMs={fromMs}
+          toMs={toMs}
+          expanded
+        />
       </Modal>
 
       <Card

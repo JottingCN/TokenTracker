@@ -743,6 +743,8 @@ export default function App() {
                   key={route.id}
                   sessionId={route.id}
                   range={numericRange}
+                  fromMs={customFrom}
+                  toMs={customTo}
                   onMeta={setSessionMeta}
                   onOpenCalls={openCallsForSession}
                 />

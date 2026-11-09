@@ -359,6 +359,41 @@ public sealed class AgentRunRow
         : ErrorType;
 }
 
+/// <summary>
+/// One tool execution as seen by the turn builder: the start decides which turn
+/// owns it, the end decides how long the turn was still working.
+/// </summary>
+public readonly record struct ToolRunSample(long StartTimeMs, long EndTimeMs);
+
+/// <summary>
+/// One Agent Host turn. A turn starts at a root <c>invoke_agent</c> span (one per
+/// user message) and owns every call and tool run until the next turn starts.
+/// </summary>
+public sealed class SessionTurnRow
+{
+    public int Index { get; init; }
+    public long StartTimeMs { get; init; }
+    public long? EndTimeMs { get; init; }
+    public long Calls { get; init; }
+    public long InputTokens { get; init; }
+    public long CacheReadTokens { get; init; }
+    public long OutputTokens { get; init; }
+    public long ReasoningTokens { get; init; }
+    public double CostCny { get; init; }
+    public long ToolCalls { get; init; }
+
+    public string IndexText => DisplayFormat.Number(Index);
+    public string StartText => DisplayFormat.LocalTime(StartTimeMs);
+    public string DurationText => DisplayFormat.Duration(
+        EndTimeMs is null ? null : EndTimeMs - StartTimeMs);
+    public string CallsText => DisplayFormat.Number(Calls);
+    public string InputText => DisplayFormat.Number(InputTokens);
+    public string CacheText => DisplayFormat.Number(CacheReadTokens);
+    public string OutputText => DisplayFormat.Number(OutputTokens);
+    public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
+    public string ToolCallsText => DisplayFormat.Number(ToolCalls);
+}
+
 public sealed class HookSummaryRow
 {
     public string? HookType { get; init; }

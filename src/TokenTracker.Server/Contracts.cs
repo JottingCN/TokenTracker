@@ -58,6 +58,7 @@ public sealed record SessionPayload(
     List<CallRow> Calls,
     List<SessionEventRow> Events,
     List<ToolCallRow> Tools,
+    List<SessionTurnRow> Turns,
     List<AgentRunRow> AgentRuns,
     List<HookSummaryRow> Hooks,
     SignalHealthRow SignalHealth,

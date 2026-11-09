@@ -78,9 +78,10 @@ code --install-extension tokentracker-*.vsix --force
 
 ## 自定义状态栏
 
-`tokentracker.statusBarFormat` 默认 `$(pulse) {hit} · {ttft} · {speed} · {cost}`。
+`tokentracker.statusBarFormat` 默认 `$(pulse) {turn} · {hit} · {ttft} · {speed} · {cost}`。
 
-- 可用占位符：`{icon}`、`{hit}`、`{ttft}`、`{speed}`、`{cost}`、`{calls}`、`{duration}`、`{input}`、`{cache}`、`{output}`、`{reasoning}`、`{events}`、`{tools}`、`{toolerrors}`、`{agents}`、`{turns}`、`{hooks}`、`{range}`、`{model}`、`{session}`。
+- 可用占位符：`{icon}`、`{turn}`、`{step}`、`{hit}`、`{ttft}`、`{speed}`、`{cost}`、`{calls}`、`{duration}`、`{input}`、`{cache}`、`{output}`、`{reasoning}`、`{events}`、`{tools}`、`{toolerrors}`、`{agents}`、`{turns}`、`{hooks}`、`{range}`、`{model}`、`{session}`。
+- `{turn}` 显示最新对话轮次与已执行步数（如 `第3轮 12步`），`{step}` 只显示步数；轮次来自 Agent Host 的根 `invoke_agent`，纯 Copilot Chat 数据或当前范围没有轮次时该占位符自动省略。`{turns}` 是本范围内的轮次总数。
 - 冒号后指定格式，例如 `{hit:0.00%}`、`{ttft:0.0s}`、`{ttft:ms}`、`{speed:0.0}`、`{cost:0.000000}`、`{calls:0}`。
 - 缺失的可选指标（如无有效 TTFT）会自动省略，不会留下重复的分隔符。
 
@@ -92,7 +93,7 @@ code --install-extension tokentracker-*.vsix --force
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `tokentracker.statusBarFormat` | `$(pulse) {hit} · {ttft} · {speed} · {cost}` | 状态栏模板 |
+| `tokentracker.statusBarFormat` | `$(pulse) {turn} · {hit} · {ttft} · {speed} · {cost}` | 状态栏模板 |
 | `tokentracker.statsRange` | `7d` | 统计范围：`today` / `7d` / `30d` / `all` |
 | `tokentracker.costUnit` | `cny` | 费用单位：`cny` / `usd` / `credit` |
 | `tokentracker.creditRate` | `0.01` | 1 积分对应的人民币金额 |
@@ -114,6 +115,38 @@ code --install-extension tokentracker-*.vsix --force
 - 更新检查在后台进行，无论成功或失败都不影响使用；发现新版本时会提示一次，由你决定何时执行“重启服务”，失败时只在日志中记录。
 - 服务由所有窗口共享，关闭某个窗口不会影响其他窗口正在使用的服务；全部客户端断开后按 `idleExitSeconds` 退出。
 - 数据保存在 `<VS Code globalStorage>/jottingcn.tokentracker/data/tokentracker.db`，默认保留 90 天，可在看板“设置 → 数据”调整。
+
+## 刷新延迟
+
+聊天结束后状态栏和看板通常还要等 **5 秒左右**才更新，这个延迟来自 Copilot 的遥测导出节奏，不是 WebSocket 的问题：
+
+| 阶段 | 典型耗时 | 由谁决定 |
+| --- | --- | --- |
+| span 结束 → 服务端收到 | **中位 5.0 秒**（Agent Host 4–9 秒） | Copilot 的 OTLP **Batch Span Processor** 默认每 5 秒导出一次（OpenTelemetry 规范 `OTEL_BSP_SCHEDULE_DELAY` 默认 `5000` 毫秒，Copilot 没有覆盖它） |
+| 入库 → 推送快照 | 约 0.2 秒 | 本服务：200 毫秒合并窗口 + 20–70 毫秒快照查询 |
+| 结果指标（编辑接受率、代码行数等） | 10 秒以上 | metrics 走独立的周期导出，而且 Copilot Chat **在代码里写死 10 秒**，环境变量改不动 |
+
+想让它接近实时，在**启动 VS Code 的环境**里设置 OpenTelemetry 标准变量，然后**完整退出并重新打开 VS Code**（仅重载窗口不会重建 OTel SDK）：
+
+```bash
+# 把 span 导出间隔从 5000ms 降到 1000ms（Copilot 用的是默认值，该变量生效）
+OTEL_BSP_SCHEDULE_DELAY=1000
+```
+
+Windows 可以在“系统属性 → 环境变量”里新建用户变量，或直接设置：
+
+```powershell
+setx OTEL_BSP_SCHEDULE_DELAY 1000
+```
+
+设置后**重启 VS Code** 即可。按 export 间隔 5.0 秒 → 1.0 秒推算，span 结束到看板更新会从约 5.2 秒降到 1.2 秒左右（导出间隔取决于上游，实际值以你的环境为准）。
+
+注意：
+
+- 代价是导出频次提高（CPU 与日志开销略增，本机无感），且只影响**设置之后**新产生的数据。
+- 该变量是 OpenTelemetry SDK 的标准配置，Copilot Chat 的 span 处理器没有覆盖默认值；Agent Host 内的 CLI / 第三方 agent 由各自的 SDK 决定是否读取。
+- **metrics（编辑接受率、代码行数、反馈、PR 等）无法加速**：Copilot Chat 硬编码了 10 秒导出周期，`OTEL_METRIC_EXPORT_INTERVAL` 对它无效。
+- 状态栏与看板都是 WebSocket 推送驱动（只有运行环境没有 `WebSocket` 时状态栏才退回 5 秒兜底轮询），所以这 5 秒是“上游还没发出来”，不是本插件在等待。
 
 ## 排查
 

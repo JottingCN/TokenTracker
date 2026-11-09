@@ -17,6 +17,7 @@ public static partial class OtlpTraceParser
             "invoke_agent",
             "create_agent",
             "execute_hook",
+            "permission",
         };
 
     public static IReadOnlyList<OtlpSpanRecord> ParseTraces(
@@ -325,6 +326,18 @@ public static partial class OtlpTraceParser
             : (long?)null;
 
         var errorType = ParseErrorType(span, attributes);
+        var permissionResult = GetString(
+            attributes,
+            "github.copilot.permission.result");
+        if (errorType is null &&
+            permissionResult is not null &&
+            permissionResult.Contains("denied", StringComparison.OrdinalIgnoreCase))
+        {
+            // A denied approval never surfaces as an error status, but it is the
+            // reason the matching execute_tool fails, so surface it as an error.
+            errorType = "denied";
+        }
+
         return new OtlpEventRecord
         {
             TraceId = traceId!,
@@ -365,6 +378,10 @@ public static partial class OtlpTraceParser
             HookResultKind = GetString(
                 attributes,
                 "copilot_chat.hook_result_kind"),
+            PermissionKind = GetString(
+                attributes,
+                "github.copilot.permission.kind"),
+            PermissionResult = permissionResult,
             CallId = ParseToolCallId(attributes),
             SessionId = ParseSessionId(attributes),
             ServiceName = serviceName,
@@ -450,6 +467,13 @@ public static partial class OtlpTraceParser
 
     private static string? InferOperation(string name, string? toolName)
     {
+        // An approval span carries a tool name but is not a tool execution; check
+        // the span name first so it is not folded into execute_tool.
+        if (name.StartsWith("permission", StringComparison.OrdinalIgnoreCase))
+        {
+            return "permission";
+        }
+
         if (!string.IsNullOrWhiteSpace(toolName))
         {
             return "execute_tool";
@@ -474,7 +498,10 @@ public static partial class OtlpTraceParser
         var toolName =
             GetString(attributes, "gen_ai.tool.name") ??
             GetString(attributes, "copilot_chat.tool.name") ??
-            GetString(attributes, "github.copilot.tool.name");
+            GetString(attributes, "github.copilot.tool.name") ??
+            // A permission span names the tool it asks for; the value is the same
+            // identifier (hashed for external tools) the execute_tool span uses.
+            GetString(attributes, "github.copilot.permission.tool_name");
         if (!string.IsNullOrWhiteSpace(toolName))
         {
             return toolName;

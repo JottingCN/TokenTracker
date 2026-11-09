@@ -382,12 +382,35 @@ export interface SessionModelPayload {
   summary: Summary;
 }
 
+export interface SessionTurnRow {
+  index: number;
+  startTimeMs: number;
+  endTimeMs: number | null;
+  calls: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  costCny: number;
+  toolCalls: number;
+  indexText: string;
+  startText: string;
+  durationText: string;
+  callsText: string;
+  inputText: string;
+  cacheText: string;
+  outputText: string;
+  reasoningText: string;
+  toolCallsText: string;
+}
+
 export interface SessionPayload {
   summary: Summary;
   models: SessionModelPayload[];
   calls: CallRow[];
   events: SessionEventRow[];
   tools: ToolCallRow[];
+  turns: SessionTurnRow[];
   agentRuns: AgentRunRow[];
   hooks: HookSummaryRow[];
   signalHealth: SignalHealth;
