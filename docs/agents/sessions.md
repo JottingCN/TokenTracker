@@ -37,3 +37,5 @@
 - **只有模型调用能开启新轮次**：宿主会先关闭 `invoke_agent`（该轮的 agent 循环结束）再导出最后几个工具 span，所以最后一轮之后只剩工具时，那些工具属于**该轮自己的尾巴**，必须并回上一轮（同时延长 `EndTimeMs`），不能拆成新轮次——实测把一轮拆成 52 + 6，而客户端显示 59 步。尾部若出现新的 chat 调用，才生成 `InProgress` 行。
 - **入参顺序不可信**：调用明细走 `GetCalls` 的 `ORDER BY start_time_ms DESC`（分页需要最新在前），而样本投影是升序。`BuildTurns` 必须先归一化为升序再单向前进，否则所有调用会被塞进最后一轮——实测最后一个轮次显示 2690 次调用与整会话费用（回归用例在 `scripts/smoke-server.mjs` 的两轮场景）。
 - 消费方：`SessionPayload.turns`（会话页「按对话」卡片）与状态栏 `{turn}` / `{step}` / `{turns}`（见[扩展 UI](extension-ui.md)）。
+- **轮次不落库、全部实时算**：没有 `turns` 表，也没有快照缓存，每次 `/api/session` 都重跑 `GetSessionTurns` + `GetSessionToolRuns` 并在内存里分桶。因此改算法对**全部历史会话立即生效**，不需要迁移或回填（实测功能上线前的 11-03 会话也能算出轮次）。代价随数据量线性增长：3100 次调用 / 3128 次工具 / 62 轮时，聚合路径 `includeCalls=false` 约 210 ms，带调用列表约 880 ms（瓶颈是序列化，不是分桶）。
+- 反过来，**入库时就算好的字段改代码不会修历史行**：`spans` / `session_events` 是投影，OTLP 原始 attributes 不存（`metric_points.attrs` 除外），`permission_kind`、`tool_name` 归属、模型规范化、`call_id` 都是解析时写入的，历史行只能靠重新导入原始报文才能纠正。
