@@ -80,7 +80,7 @@ public static partial class OtlpTraceParser
                 var scopeName = GetScopeName(scopeSpan);
                 foreach (var span in spansElement.EnumerateArray())
                 {
-                    var (spanRecord, eventRecord, agentRunRecord) = ParseSpan(
+                    var (spanRecord, spanEvents, agentRunRecord) = ParseSpan(
                         span,
                         serviceName,
                         serviceNamespace,
@@ -93,9 +93,9 @@ public static partial class OtlpTraceParser
                         spanRecords.Add(spanRecord);
                     }
 
-                    if (eventRecord is not null)
+                    if (spanEvents is not null)
                     {
-                        eventRecords.Add(eventRecord);
+                        eventRecords.AddRange(spanEvents);
                     }
 
                     if (agentRunRecord is not null)
@@ -114,7 +114,7 @@ public static partial class OtlpTraceParser
 
     private static (
         OtlpSpanRecord? Span,
-        OtlpEventRecord? Event,
+        List<OtlpEventRecord>? Events,
         AgentRunRecord? AgentRun) ParseSpan(
         JsonElement span,
         string? serviceName,
@@ -150,6 +150,22 @@ public static partial class OtlpTraceParser
         var attributes = ParseAttributes(span, "attributes");
         var operation = GetString(attributes, "gen_ai.operation.name");
         var toolName = ParseToolName(attributes, name, operation);
+        var sessionId = ParseSessionId(attributes);
+
+        // OTel span events carry the hook signal: neither pipeline exports an
+        // execute_hook span, so dropping the event array is what made the hook
+        // panel read 0 while the client ran thousands of hooks.
+        var spanEvents = ParseSpanEvents(
+            span,
+            traceId,
+            spanId,
+            source,
+            sessionId,
+            serviceName,
+            serviceNamespace,
+            scopeName,
+            windowSessionId,
+            receivedAtMs);
 
         if (!string.Equals(operation, "chat", StringComparison.OrdinalIgnoreCase) &&
             !name.StartsWith("chat ", StringComparison.Ordinal))
@@ -169,19 +185,26 @@ public static partial class OtlpTraceParser
                 source,
                 windowSessionId,
                 receivedAtMs);
+            if (eventRecord is not null)
+            {
+                spanEvents ??= new List<OtlpEventRecord>(1);
+                spanEvents.Add(eventRecord);
+            }
+
             var agentRunRecord = eventRecord is { Operation: "invoke_agent" }
                 ? BuildAgentRun(
                     span,
                     traceId,
                     spanId,
                     parentSpanId,
+                    name,
                     attributes,
                     serviceName,
                     serviceNamespace,
                     source,
                     receivedAtMs)
                 : null;
-            return (null, eventRecord, agentRunRecord);
+            return (null, spanEvents, agentRunRecord);
         }
 
         var model =
@@ -219,8 +242,6 @@ public static partial class OtlpTraceParser
             inputTokens.Value,
             cacheReadTokens,
             cacheCreationTokens);
-
-        var sessionId = ParseSessionId(attributes);
 
         var startMs = ParseUnixNanoMilliseconds(
             span,
@@ -292,7 +313,7 @@ public static partial class OtlpTraceParser
                 "gen_ai.response.finish_reasons"),
             WindowSessionId = windowSessionId,
             ReceivedAtMs = receivedAtMs,
-        }, null, null);
+        }, spanEvents, null);
     }
 
     private static OtlpEventRecord? ParseEvent(
@@ -403,6 +424,108 @@ public static partial class OtlpTraceParser
             IsError = errorType is not null,
             ReceivedAtMs = receivedAtMs,
         };
+    }
+
+    /// <summary>
+    /// Turns the span's OTel <c>events</c> array into hook rows. Both Copilot
+    /// pipelines emit the hook signal as span events (<c>github.copilot.hook.start</c>
+    /// / <c>.end</c>) instead of an <c>execute_hook</c> span, so without this the
+    /// hook panel always reads zero. Only <c>end</c> becomes a row: start and end
+    /// describe the same run (measured 1988 start vs 1976 end), and the duration
+    /// lives on <c>end</c>.
+    /// </summary>
+    private static List<OtlpEventRecord>? ParseSpanEvents(
+        JsonElement span,
+        string traceId,
+        string spanId,
+        string source,
+        string? sessionId,
+        string? serviceName,
+        string? serviceNamespace,
+        string? scopeName,
+        string? windowSessionId,
+        long receivedAtMs)
+    {
+        if (!TryGet(span, "events", out var events) ||
+            events.ValueKind != JsonValueKind.Array ||
+            events.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        List<OtlpEventRecord>? rows = null;
+        var spanStartMs = ParseUnixNanoMilliseconds(
+            span,
+            "startTimeUnixNano",
+            receivedAtMs);
+        var index = 0;
+        foreach (var item in events.EnumerateArray())
+        {
+            index++;
+            var eventName = TryGet(item, "name", out var nameElement) &&
+                            nameElement.ValueKind == JsonValueKind.String
+                ? nameElement.GetString()
+                : null;
+            if (eventName is null ||
+                !eventName.EndsWith("hook.end", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var attributes = ParseAttributes(item, "attributes");
+            var hookType =
+                GetString(attributes, "github.copilot.hook.type") ??
+                GetString(attributes, "copilot_chat.hook.type");
+            var durationMs = ParseHookDurationMs(attributes);
+            var startMs = TryGet(item, "timeUnixNano", out _)
+                ? ParseUnixNanoMilliseconds(item, "timeUnixNano", spanStartMs)
+                : spanStartMs;
+            var invocationId =
+                GetString(attributes, "github.copilot.hook.invocation_id") ??
+                GetString(attributes, "copilot_chat.hook.invocation_id");
+            // session_events is keyed by (trace_id, span_id) and one host span can
+            // carry every hook of a run, so the id must be synthesized or
+            // INSERT OR IGNORE would keep only the first hook.
+            var key = string.IsNullOrWhiteSpace(invocationId)
+                ? index.ToString(CultureInfo.InvariantCulture)
+                : invocationId;
+
+            rows ??= new List<OtlpEventRecord>(4);
+            rows.Add(new OtlpEventRecord
+            {
+                TraceId = traceId,
+                SpanId = $"{spanId}#hook#{key}",
+                ParentSpanId = spanId,
+                Operation = "execute_hook",
+                Name = hookType is null ? "execute_hook" : $"execute_hook {hookType}",
+                HookType = hookType,
+                HookDurationMs = durationMs,
+                HookDecision =
+                    GetString(attributes, "github.copilot.hook.decision"),
+                HookToolNames =
+                    GetString(attributes, "github.copilot.hook.tool_names"),
+                HookResultKind =
+                    GetString(attributes, "github.copilot.hook.result_kind") ??
+                    GetString(attributes, "copilot_chat.hook_result_kind"),
+                SessionId = sessionId,
+                ServiceName = serviceName,
+                ServiceNamespace = serviceNamespace,
+                ScopeName = scopeName,
+                Source = source,
+                WindowSessionId = windowSessionId,
+                StartTimeMs = startMs,
+                EndTimeMs = durationMs is null
+                    ? null
+                    : startMs + (long)Math.Round(durationMs.Value),
+                IsError = string.Equals(
+                    GetString(attributes, "github.copilot.hook.result_kind"),
+                    "error",
+                    StringComparison.OrdinalIgnoreCase),
+                ReceivedAtMs = receivedAtMs,
+            });
+        }
+
+        return rows;
     }
 
     private static readonly HashSet<string> AgentHostServiceNames =

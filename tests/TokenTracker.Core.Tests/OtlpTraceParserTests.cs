@@ -386,6 +386,170 @@ public sealed class OtlpTraceParserTests
     }
 
     [Fact]
+    public void ParsesHookSpanEventsIntoExecuteHookRows()
+    {
+        // Both pipelines report hooks as span events, never as an execute_hook
+        // span. Dropping the event array made the hook panel read 0 while the
+        // client ran thousands of hooks, so the parser has to materialize them.
+        var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
+        var json = $$"""
+        {
+          "resourceSpans": [
+            {
+              "resource": {
+                "attributes": [
+                  { "key": "service.name", "value": { "stringValue": "github-copilot" } },
+                  { "key": "service.namespace", "value": { "stringValue": "vscode.agent-host" } }
+                ]
+              },
+              "scopeSpans": [
+                {
+                  "spans": [
+                    {
+                      "traceId": "hook-trace",
+                      "spanId": "turn-span",
+                      "parentSpanId": "host-span",
+                      "name": "invoke_agent",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "endTimeUnixNano": "{{startNanos + 60_000_000_000}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-hook" } }
+                      ],
+                      "events": [
+                        {
+                          "name": "github.copilot.hook.start",
+                          "timeUnixNano": "{{startNanos + 1_000_000_000}}",
+                          "attributes": [
+                            { "key": "github.copilot.hook.type", "value": { "stringValue": "preToolUse" } },
+                            { "key": "github.copilot.hook.invocation_id", "value": { "stringValue": "inv-1" } }
+                          ]
+                        },
+                        {
+                          "name": "github.copilot.hook.end",
+                          "timeUnixNano": "{{startNanos + 1_500_000_000}}",
+                          "attributes": [
+                            { "key": "github.copilot.hook.type", "value": { "stringValue": "preToolUse" } },
+                            { "key": "github.copilot.hook.invocation_id", "value": { "stringValue": "inv-1" } },
+                            { "key": "github.copilot.hook.duration", "value": { "doubleValue": 0.25 } }
+                          ]
+                        },
+                        {
+                          "name": "github.copilot.hook.end",
+                          "timeUnixNano": "{{startNanos + 2_000_000_000}}",
+                          "attributes": [
+                            { "key": "github.copilot.hook.type", "value": { "stringValue": "postToolUse" } },
+                            { "key": "github.copilot.hook.duration", "value": { "doubleValue": 0.0005381 } }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var document = JsonDocument.Parse(json);
+        var result = OtlpTraceParser.Parse(
+            document,
+            PeakUtc.ToUnixTimeMilliseconds());
+
+        // Only hook.end becomes a row: start and end describe the same run. The
+        // span's own invoke_agent row rides along in the same result.
+        var hooks = result.Events
+            .Where(row => row.Operation == "execute_hook")
+            .ToList();
+        Assert.Equal(2, hooks.Count);
+        Assert.Single(result.Events, row => row.Operation == "invoke_agent");
+
+        var preTool = Assert.Single(
+            hooks,
+            row => row.HookType == "preToolUse");
+        Assert.Equal("turn-span#hook#inv-1", preTool.SpanId);
+        Assert.Equal("turn-span", preTool.ParentSpanId);
+        Assert.Equal("session-hook", preTool.SessionId);
+        Assert.Equal(250d, preTool.HookDurationMs!.Value, 6);
+        Assert.Equal(
+            preTool.StartTimeMs + 250,
+            preTool.EndTimeMs!.Value);
+
+        // No invocation id: the index keeps the synthetic id unique, otherwise
+        // every hook of the span would collapse into one row.
+        var postTool = Assert.Single(
+            hooks,
+            row => row.HookType == "postToolUse");
+        Assert.Equal("turn-span#hook#3", postTool.SpanId);
+        Assert.NotEqual(preTool.SpanId, postTool.SpanId);
+    }
+
+    [Fact]
+    public void NamesAgentRunsFromTheSpanNameWhenTheAttributeIsMissing()
+    {
+        // Agent Host only sets gen_ai.agent.name for some runs; the span name
+        // ("invoke_agent explore") is the reliable source.
+        var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;
+        var json = $$"""
+        {
+          "resourceSpans": [
+            {
+              "resource": {
+                "attributes": [
+                  { "key": "service.name", "value": { "stringValue": "github-copilot" } },
+                  { "key": "service.namespace", "value": { "stringValue": "vscode.agent-host" } }
+                ]
+              },
+              "scopeSpans": [
+                {
+                  "spans": [
+                    {
+                      "traceId": "agent-trace",
+                      "spanId": "root-turn",
+                      "parentSpanId": "host-span",
+                      "name": "invoke_agent",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "endTimeUnixNano": "{{startNanos + 1_000_000_000}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-agent" } }
+                      ]
+                    },
+                    {
+                      "traceId": "agent-trace",
+                      "spanId": "sub-turn",
+                      "parentSpanId": "tool-span",
+                      "name": "invoke_agent explore",
+                      "startTimeUnixNano": "{{startNanos + 2_000_000_000}}",
+                      "endTimeUnixNano": "{{startNanos + 3_000_000_000}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-agent" } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var document = JsonDocument.Parse(json);
+        var runs = OtlpTraceParser.Parse(
+            document,
+            PeakUtc.ToUnixTimeMilliseconds()).AgentRuns;
+
+        Assert.Equal(2, runs.Count);
+        Assert.Null(
+            Assert.Single(runs, run => run.SpanId == "root-turn").AgentName);
+        Assert.Equal(
+            "explore",
+            Assert.Single(runs, run => run.SpanId == "sub-turn").AgentName);
+    }
+
+    [Fact]
     public void MergesAnthropicCacheTokensIntoTotalInput()
     {
         var startNanos = PeakUtc.ToUnixTimeMilliseconds() * 1_000_000;

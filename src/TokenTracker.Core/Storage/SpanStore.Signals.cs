@@ -618,26 +618,69 @@ public sealed partial class SpanStore
         return rows;
     }
 
+    /// <summary>
+    /// Agent runs of a session. The stored <c>is_root</c> flag cannot be trusted for
+    /// the Agent Host pipeline: a turn's root <c>invoke_agent</c> does have a parent
+    /// (the host session span, which is never ingested), so every turn used to be
+    /// reported as a subagent. Root therefore means "the parent span is not stored",
+    /// the same rule the turn list uses. The run name falls back to the span name
+    /// because Agent Host only sets <c>gen_ai.agent.name</c> for some runs, the model
+    /// falls back to the dominant chat model of the same trace (the
+    /// <c>invoke_agent</c> span carries none), and the turn count falls back to the
+    /// chat spans that started inside the run.
+    /// </summary>
     public IReadOnlyList<AgentRunRow> GetAgentRuns(
         string sessionId,
         string? source = null)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
-            : " AND otel_source = @source";
+            : " AND a.otel_source = @source";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT trace_id, span_id, parent_span_id, is_root, session_id,
-                   agent_name, agent_type, provider_name, request_model,
-                   response_model, otel_source, git_repository, git_branch,
-                   git_commit, github_org, turn_count, input_tokens,
-                   output_tokens, cache_read_tokens, cache_creation_tokens,
-                   reasoning_tokens, start_time_ms, end_time_ms, is_error,
-                   error_type
-            FROM agent_runs
-            WHERE session_id = @session_id{sourceFilter}
-            ORDER BY start_time_ms, trace_id, span_id;
+            SELECT a.trace_id, a.span_id, a.parent_span_id,
+                   CASE WHEN a.is_root <> 0
+                             OR a.parent_span_id IS NULL
+                             OR NOT EXISTS (
+                                 SELECT 1 FROM session_events p
+                                 WHERE p.session_id = a.session_id
+                                   AND p.span_id = a.parent_span_id)
+                        THEN 1 ELSE 0 END AS is_root,
+                   a.session_id,
+                   a.agent_name, a.agent_type, a.provider_name,
+                   COALESCE(
+                       a.request_model,
+                       (SELECT s.model FROM spans s
+                        WHERE s.trace_id = a.trace_id AND s.model IS NOT NULL
+                          AND s.start_time_ms >= a.start_time_ms
+                          AND (a.end_time_ms IS NULL
+                               OR s.start_time_ms < a.end_time_ms)
+                        GROUP BY s.model
+                        ORDER BY COUNT(*) DESC, s.model
+                        LIMIT 1)) AS request_model,
+                   a.response_model, a.otel_source, a.git_repository, a.git_branch,
+                   a.git_commit, a.github_org,
+                   COALESCE(
+                       a.turn_count,
+                       (SELECT COUNT(*) FROM spans s
+                        WHERE s.trace_id = a.trace_id
+                          AND s.model IS NOT NULL
+                          AND s.start_time_ms >= a.start_time_ms
+                          AND (a.end_time_ms IS NULL
+                               OR s.start_time_ms < a.end_time_ms))) AS turn_count,
+                   a.input_tokens,
+                   a.output_tokens, a.cache_read_tokens, a.cache_creation_tokens,
+                   a.reasoning_tokens, a.start_time_ms, a.end_time_ms, a.is_error,
+                   a.error_type,
+                   (SELECT e.name FROM session_events e
+                    WHERE e.session_id = a.session_id
+                      AND e.span_id = a.span_id
+                      AND e.operation = 'invoke_agent'
+                    LIMIT 1) AS span_name
+            FROM agent_runs a
+            WHERE a.session_id = @session_id{sourceFilter}
+            ORDER BY a.start_time_ms, a.trace_id, a.span_id;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
         if (!string.IsNullOrWhiteSpace(source))
@@ -649,6 +692,13 @@ public sealed partial class SpanStore
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
+            var agentName = reader.IsDBNull(5) ? null : reader.GetString(5);
+            if (string.IsNullOrWhiteSpace(agentName))
+            {
+                agentName = Otlp.OtlpTraceParser.AgentNameFromSpanName(
+                    reader.IsDBNull(25) ? null : reader.GetString(25));
+            }
+
             rows.Add(new AgentRunRow
             {
                 TraceId = reader.GetString(0),
@@ -656,7 +706,7 @@ public sealed partial class SpanStore
                 ParentSpanId = reader.IsDBNull(2) ? null : reader.GetString(2),
                 IsRoot = reader.GetInt64(3) != 0,
                 SessionId = reader.IsDBNull(4) ? null : reader.GetString(4),
-                AgentName = reader.IsDBNull(5) ? null : reader.GetString(5),
+                AgentName = agentName,
                 AgentType = reader.IsDBNull(6) ? null : reader.GetString(6),
                 ProviderName = reader.IsDBNull(7) ? null : reader.GetString(7),
                 RequestModel = reader.IsDBNull(8) ? null : reader.GetString(8),
@@ -701,7 +751,8 @@ public sealed partial class SpanStore
         command.CommandText = $"""
             SELECT COALESCE(hook_type, ''), COALESCE(hook_decision, ''),
                    COALESCE(hook_result_kind, ''), {SourceSql} AS source,
-                   start_time_ms, end_time_ms, is_error, hook_tool_names
+                   start_time_ms, end_time_ms, is_error, hook_tool_names,
+                   hook_duration_ms
             FROM session_events
             WHERE session_id = @session_id
               AND operation = 'execute_hook'
@@ -741,7 +792,8 @@ public sealed partial class SpanStore
                 reader.GetInt64(4),
                 reader.IsDBNull(5) ? null : reader.GetInt64(5),
                 reader.GetInt64(6) != 0,
-                reader.IsDBNull(7) ? null : reader.GetString(7));
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetDouble(8));
         }
 
         return rows.Values
@@ -2200,11 +2252,20 @@ public sealed partial class SpanStore
             long startMs,
             long? endMs,
             bool isError,
-            string? toolNames)
+            string? toolNames,
+            double? durationMs = null)
         {
             Count++;
             LastSeenMs = Math.Max(LastSeenMs, startMs);
-            if (endMs is > 0 && endMs.Value > startMs)
+            if (durationMs is > 0)
+            {
+                // The stored duration is authoritative: hooks routinely take less
+                // than a millisecond (measured 0.0004 s), so end - start rounds to
+                // zero and the row would read "-" despite being measured.
+                _totalDurationMs += durationMs.Value;
+                _durationSamples++;
+            }
+            else if (endMs is > 0 && endMs.Value > startMs)
             {
                 _totalDurationMs += endMs.Value - startMs;
                 _durationSamples++;

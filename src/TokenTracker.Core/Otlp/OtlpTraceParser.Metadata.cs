@@ -68,6 +68,7 @@ public static partial class OtlpTraceParser
         string traceId,
         string spanId,
         string? parentSpanId,
+        string spanName,
         Dictionary<string, string> attributes,
         string? serviceName,
         string? serviceNamespace,
@@ -94,7 +95,12 @@ public static partial class OtlpTraceParser
             ParentSpanId = parentSpanId,
             IsRoot = string.IsNullOrWhiteSpace(parentSpanId),
             SessionId = ParseSessionId(attributes),
-            AgentName = GetString(attributes, "gen_ai.agent.name"),
+            // Agent Host names the run in the span name ("invoke_agent explore")
+            // and leaves gen_ai.agent.name unset for most turns, which is why the
+            // agent column used to be blank.
+            AgentName =
+                GetString(attributes, "gen_ai.agent.name") ??
+                AgentNameFromSpanName(spanName),
             AgentType = GetString(attributes, "github.copilot.agent.type"),
             ProviderName = provider,
             RequestModel = NormalizeModel(requestModel, source),
@@ -141,6 +147,24 @@ public static partial class OtlpTraceParser
         string.IsNullOrWhiteSpace(model)
             ? null
             : ModelPricing.NormalizeModel(model, source);
+
+    /// <summary>
+    /// Agent Host puts the run's name in the span name ("invoke_agent explore",
+    /// "invoke_agent GitHub Copilot Chat") and does not always set
+    /// <c>gen_ai.agent.name</c>, so the name has to come from the label too.
+    /// </summary>
+    internal static string? AgentNameFromSpanName(string? spanName)
+    {
+        const string prefix = "invoke_agent";
+        if (string.IsNullOrWhiteSpace(spanName) ||
+            !spanName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var rest = spanName[prefix.Length..].Trim();
+        return rest.Length == 0 ? null : rest;
+    }
 
     private static string? ParseErrorType(
         JsonElement span,

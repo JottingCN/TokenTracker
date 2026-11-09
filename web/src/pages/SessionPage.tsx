@@ -84,6 +84,21 @@ export function SessionPage({
     data?.events.reduce((total, row) => total + row.count, 0) ?? 0;
   const toolTotal =
     data?.tools.reduce((total, row) => total + row.calls, 0) ?? 0;
+  // The hook card lists groups, but the header has to show the runs: the tools
+  // card shows total calls, so a group count here reads as a wrong statistic.
+  const hookTotal =
+    data?.hooks.reduce((total, row) => total + row.count, 0) ?? 0;
+  const agentRunScopes = (data?.agentRuns ?? []).reduce(
+    (totals, row) => {
+      if (row.isRoot) {
+        totals.root += 1;
+      } else {
+        totals.sub += 1;
+      }
+      return totals;
+    },
+    { root: 0, sub: 0 },
+  );
   const modelScopes = data?.models ?? [];
   const scopeSummary =
     activeScope === 'all'
@@ -398,7 +413,10 @@ export function SessionPage({
       key: 'agent',
       width: 160,
       ellipsis: true,
-      render: (_, row) => row.agentText,
+      render: (_, row) =>
+        // Agent Host leaves gen_ai.agent.name unset on most root turns; the run is
+        // still the main agent, not an unnamed subagent.
+        row.agentText === '-' && row.isRoot ? t('main.agent') : row.agentText,
     },
     {
       title: t('type'),
@@ -713,9 +731,15 @@ export function SessionPage({
         extra={
           <Space size={8}>
             {data && data.agentRuns.length > 0 && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('root.tokens.excluded.from.totals')}
-              </Typography.Text>
+              // One root run per turn, plus the subagent runs below their tools:
+              // the counts differ from 「对话轮次」 by exactly these subagents and
+              // by turns that did no work. The tooltip keeps the old caveat about
+              // root tokens not being part of the totals.
+              <Tooltip title={t('root.tokens.excluded.from.totals')}>
+                <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
+                  {`${t('main.agent')} ${number.format(agentRunScopes.root)} · ${t('subagent')} ${number.format(agentRunScopes.sub)}`}
+                </Typography.Text>
+              </Tooltip>
             )}
             <CollapseToggle
               panel="agents"
@@ -747,7 +771,7 @@ export function SessionPage({
       <Card
         size="small"
         styles={collapsedBodyStyle(openPanels.includes('hooks'))}
-        title={`${t('hook.executions')}(${data?.hooks.length ?? 0})`}
+        title={`${t('hook.executions')}(${hookTotal})`}
         extra={
           <CollapseToggle
             panel="hooks"

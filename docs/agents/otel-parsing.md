@@ -16,7 +16,7 @@
 - 两份库的 `spans` / `span_attributes` / `span_events` DDL 逐字相同，主键是 `span_id` 单列；`turn_index` 恒 NULL。
 - 扩展库不保存 resource attributes：`service.name` / `service.namespace` / `session.id` 都取不到，管线归因只能靠文件路径。
 - `gen_ai.usage.cache_creation.input_tokens` 两条管线都不发；`cache_read` 只有扩展管线有（实测命中 99.03%）。Agent Host 库 `cached_tokens` 全 NULL，所以只用 Agent Host 的会话命中率必然为空——这是数据源缺失，不能渲染成 0%。
-- `execute_hook` span 两条管线都是 0 条；hook 信号只在 `span_events`（`github.copilot.hook.start/end` + `hook.type`/`duration`）。
+- `execute_hook` span 两条管线都是 0 条；hook 信号只在 span 的 **`events` 数组**（`github.copilot.hook.start/end` + `hook.type`/`duration`），本地库对应 `span_events` 表。
 - Agent Host 库 `gen_ai.usage.reasoning.output_tokens` 属性存在但 `spans.reasoning_tokens` 列全 NULL，导入时列值为 0 必须回退到该属性（新旧键都试），否则推理 token 静默变 0。
 - `github.copilot.tool.parameters.*` 一族（`edit_type` / `skill_name` / `mcp_server_name_hash` / `mcp_tool_name`）**实测均不存在**；实际键是 `github.copilot.external_tool.name`、`github.copilot.context.mcp_server_names`（哈希数组）、`github.copilot.context.skills`（明文清单）。按 `tool.parameters.*` 写查询一定查不到。
 - 扩展管线 `input_tokens` **已含** cache_read（逐条 `cached ≤ input`），`TokenSemantics.UsesExclusiveInputTokens` 只认 anthropic/claude 是对的。
@@ -33,6 +33,9 @@
 - 跨管线没有共享唯一 ID（`gen_ai.response.id`、`trace_id`、`span_id` 互不相通），combined 只能用「会话 + 规范化模型 + 输入/输出 token + 主/辅助 + span 时间区间重叠」匹配，派生行写 `otel_source='combined'`，原始记录保持不变并懒重建。费用不继承任一来源估算值，按合并后 token 与配置价格重算。
 - 只统计 `gen_ai.operation.name=chat` 的 span 作为调用，避免与 `invoke_agent` / `execute_tool` 重复计数。
 - 子代理 `invoke_agent` 写 `agent_runs`（父 span 为对应 `execute_tool`），其工具调用计入根会话工具统计；子代理 chat span 是真实 LLM 调用，计入会话调用与费用，但 `agent_runs` 汇总 token 不重复计入 chat 汇总。
+- **`agent_runs.is_root` 不能按“父 id 为空”判断**：根轮次的 `invoke_agent` 有父（宿主 session span，从不入库），实测 91 行里 85 行被判成子代理，会话页把每一轮都标成 subagent。`GetAgentRuns` 改为读取时按「父 span 是否在本地 `session_events` 中」重算，与轮次边界同一口径（历史行自动纠正）。
+- **agent 名称回退到 span 名**：Agent Host 只对部分 run 设置 `gen_ai.agent.name`，其余靠 span 名 `invoke_agent <name>`（如 `invoke_agent explore`）。解析时写入，读取时再从 `session_events.name` 兜底一次，历史行也能显示。
+- **模型回退到同 trace 的主模型**：`invoke_agent` 本身不带 model，`GetAgentRuns` 用同 `trace_id` 下 chat span 的众数模型填充，否则整列显示 `-`。
 - 只有 `gen_ai.operation.name=chat`（或 `name` 以 `chat ` 开头）且有 `gen_ai.usage.input_tokens` 的 span 才成为调用行；缺 token 的 chat span 会被丢弃。
 
 ## 4. 工具、审批、Hook
@@ -73,9 +76,12 @@
 
 ### 4.2 Hook
 
-- Hook 事件来自 `span_events` 的 `github.copilot.hook.end`（带 `hook.duration`，单位秒浮点），**只取 `end`**，`start` 不入库否则次数翻倍。
-- `session_events` 主键是 `(trace_id, span_id)`，一条 span 只能占一行，所以 hook 行 `span_id` 用 `{spanId}#hook#{invocation_id}` 合成（缺 id 用 `span_events.rowid`），**不要用真实 span_id**，否则同一条 invoke_agent 上多个 hook 会被 `INSERT OR IGNORE` 吃掉。
-- 耗时只认 `end` 上的 `hook.duration`，不要用 start/end 时间差配对（实测只差 0~1 ms）。
+- Hook 事件是对外 span 的 **OTel `events` 数组**（`github.copilot.hook.start/end`，父 span 是 `invoke_agent`），两条管线都没有 `execute_hook` span。旧实现只解析 span 本身、忽略 `events`，所以在线数据的 Hook 面板恒为 0——**必须读 `span.events`**（`ParseSpanEvents`）。
+- 本地导入另有一条路径：Copilot Chat 库的 `span_events` 表里同样是这两类事件，`LocalTraceImporter` 读取它们。
+- **只取 `end`**（`start` 不入库否则次数翻倍，实测 1988 start vs 1976 end）。
+- `session_events` 主键是 `(trace_id, span_id)`，一条 span 只能占一行，所以 hook 行 `span_id` 用 `{spanId}#hook#{hook.invocation_id}` 合成（缺 id 用事件序号），**不要用真实 span_id**，否则同一条 invoke_agent 上多个 hook 会被 `INSERT OR IGNORE` 吃掉。
+- 耗时只认 `end` 上的 `hook.duration`（单位**秒浮点**，解析时 ×1000），不要用 start/end 时间差配对（实测只差 0~1 ms）。
+- 历史行补不回来：OTLP 原始报文不落库，`events` 在入库时被丢弃后就只剩聚合结果，修好解析只对之后收到的数据生效。
 
 ## 5. 本地导入（`POST /api/import-local`）
 

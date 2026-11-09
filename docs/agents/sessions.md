@@ -37,6 +37,11 @@
 - **轮次尾巴按归属拆，不按时间猜**：每个 `execute_tool` 的 `parent_span_id` 就是它所属轮的根 `invoke_agent`。最后已知轮之后剩下的活动分两种：父 id 属于某个已知轮（或为空）→ 是该轮**自己的尾巴**（宿主先关 `invoke_agent` 再导出最后几个工具 span），必须并回该轮并延长 `EndTimeMs`，否则会把一轮拆成 52 + 6；父 id **不属于任何已知轮** → 是一轮还没导出的根（正在运行的那一轮），要在它第一个工具时就开 `InProgress` 行。旧实现只看「有没有新模型调用」，于是运行中的轮次要等首个 chat span 落地才出现，期间它的步数全算到上一轮——客户端在第一个工具调用时就开新一轮，所以两边的步数对不上。
 - **steering 消息无法拆成独立轮**：运行中插话（客户端日志里 `delivery: "steering"`）不会产生新的根 `invoke_agent`，宿主把它并进当前轮继续跑。客户端按「每条用户消息」分气泡、各算步数，而 OTel 里它们同属一轮（实测 4 次插话，26 个工具并入前一轮）。同理，子代理的 `user.message` 在客户端也是一个气泡，但它下面挂的是子代理的 `invoke_agent`（父存在，被排除出轮次列表），所以 `turns` 条数会比客户端的气泡少。
 - **入参顺序不可信**：调用明细走 `GetCalls` 的 `ORDER BY start_time_ms DESC`（分页需要最新在前），而样本投影是升序。`BuildTurns` 必须先归一化为升序再单向前进，否则所有调用会被塞进最后一轮——实测最后一个轮次显示 2690 次调用与整会话费用（回归用例在 `scripts/smoke-server.mjs` 的两轮场景）。
-- 消费方：`SessionPayload.turns`（会话页「按对话」卡片）与状态栏 `{turn}` / `{step}` / `{turns}`（见[扩展 UI](extension-ui.md)）。
+- 消费方：`SessionPayload.turns`（会话页「对话轮次」卡片）与状态栏 `{turn}` / `{step}` / `{turns}`（见[扩展 UI](extension-ui.md)）。
+- **`turns` 与 `agentRuns` 不是一个东西，共用同一个边界 span**：一条用户消息对应一个根 `invoke_agent`，它既是轮次边界，也是「主代理运行」那一行。差别在三点：
+  1. `agentRuns` 还包含**子代理**（`invoke_agent explore` 等，挂在 `execute_tool` 下），轮次明确排除它们；
+  2. 轮次会丢弃 `calls == 0 && toolCalls == 0` 的零活动轮并重编号，`agentRuns` 保留（实测 64 轮 vs 68 行：65 主 + 3 子，另有 2 条零 token 的主代理行被轮次丢弃）；
+  3. 轮次聚合调用/工具/token/费用，`agentRuns` 报的是 `invoke_agent` span 自身的 token（多为 0）、耗时、provider 与模型。
+  所以会话页两个计数**不应该相等**；Agent 运行卡片会显示「主代理 N · 子代理 M」说明差额来源。
 - **轮次不落库、全部实时算**：没有 `turns` 表，也没有快照缓存，每次 `/api/session` 都重跑 `GetSessionTurns` + `GetSessionToolRuns` 并在内存里分桶。因此改算法对**全部历史会话立即生效**，不需要迁移或回填（实测功能上线前的 11-03 会话也能算出轮次）。代价随数据量线性增长：3100 次调用 / 3128 次工具 / 62 轮时，聚合路径 `includeCalls=false` 约 210 ms，带调用列表约 880 ms（瓶颈是序列化，不是分桶）。
 - 反过来，**入库时就算好的字段改代码不会修历史行**：`spans` / `session_events` 是投影，OTLP 原始 attributes 不存（`metric_points.attrs` 除外），`permission_kind`、`tool_name` 归属、模型规范化、`call_id` 都是解析时写入的，历史行只能靠重新导入原始报文才能纠正。

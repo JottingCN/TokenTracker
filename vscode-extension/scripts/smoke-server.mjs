@@ -103,6 +103,72 @@ function spanPayload(sessionId, count) {
   });
 }
 
+// Hook signal arrives as OTel span events on the turn's invoke_agent span (there is
+// no execute_hook span in either pipeline). Only hook.end must become a row.
+function hookPayload(sessionId) {
+  const now = Date.now();
+  const traceId = 'ababababababababababababababab01';
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [
+            { key: 'service.name', value: { stringValue: 'github-copilot' } },
+            { key: 'service.namespace', value: { stringValue: 'vscode.agent-host' } },
+          ],
+        },
+        scopeSpans: [
+          {
+            spans: [
+              {
+                traceId,
+                spanId: 'turn-hook-0000001',
+                parentSpanId: 'host-session-00000',
+                name: 'invoke_agent explore',
+                kind: 1,
+                startTimeUnixNano: `${now + 10}000000`,
+                endTimeUnixNano: `${now + 900}000000`,
+                attributes: [
+                  { key: 'gen_ai.operation.name', value: { stringValue: 'invoke_agent' } },
+                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
+                ],
+                events: [
+                  {
+                    name: 'github.copilot.hook.start',
+                    timeUnixNano: `${now + 20}000000`,
+                    attributes: [
+                      { key: 'github.copilot.hook.type', value: { stringValue: 'preToolUse' } },
+                      { key: 'github.copilot.hook.invocation_id', value: { stringValue: 'hook-1' } },
+                    ],
+                  },
+                  {
+                    name: 'github.copilot.hook.end',
+                    timeUnixNano: `${now + 30}000000`,
+                    attributes: [
+                      { key: 'github.copilot.hook.type', value: { stringValue: 'preToolUse' } },
+                      { key: 'github.copilot.hook.invocation_id', value: { stringValue: 'hook-1' } },
+                      { key: 'github.copilot.hook.duration', value: { doubleValue: 0.25 } },
+                    ],
+                  },
+                  {
+                    name: 'github.copilot.hook.end',
+                    timeUnixNano: `${now + 40}000000`,
+                    attributes: [
+                      { key: 'github.copilot.hook.type', value: { stringValue: 'postToolUse' } },
+                      { key: 'github.copilot.hook.invocation_id', value: { stringValue: 'hook-2' } },
+                      { key: 'github.copilot.hook.duration', value: { doubleValue: 0.0005 } },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
 function turnPayload(sessionId) {
   const now = Date.now();
   const traceId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -974,6 +1040,46 @@ try {
     'the orphan tool is indented under the chat',
     orphanTool ? orphanTool.depth - orphanChat.depth : -1,
     1,
+  );
+
+  // Hook statistics come from span events, not from execute_hook spans.
+  const hookSession = 'smoke-hooks';
+  await request(`${base}/otlp/agent-host`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: hookPayload(hookSession),
+  });
+  const hookPayloadJson = JSON.parse(
+    (await request(`${base}/api/session/${hookSession}`)).body,
+  );
+  check('hooks are groups of runs', hookPayloadJson.hooks.length, 2);
+  check(
+    'only hook.end is counted',
+    hookPayloadJson.hooks.reduce((total, row) => total + row.count, 0),
+    2,
+  );
+  check(
+    'hook duration comes from hook.end seconds',
+    Math.round(
+      hookPayloadJson.hooks.find((row) => row.hookType === 'preToolUse')
+        ?.avgDurationMs ?? -1,
+    ),
+    250,
+  );
+  check(
+    'agent runs are detected from invoke_agent',
+    hookPayloadJson.agentRuns.length,
+    1,
+  );
+  check(
+    'a root turn with a missing parent is root',
+    hookPayloadJson.agentRuns[0]?.isRoot,
+    true,
+  );
+  check(
+    'the run name comes from the span name',
+    hookPayloadJson.agentRuns[0]?.agentName,
+    'explore',
   );
 
   const spa = await request(`${base}/`);
