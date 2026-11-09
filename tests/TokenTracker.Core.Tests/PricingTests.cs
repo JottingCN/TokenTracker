@@ -5,6 +5,7 @@ using TokenTracker.Core.Pricing;
 
 namespace TokenTracker.Core.Tests;
 
+[Collection(PricingCollection.Name)]
 public sealed class PricingTests
 {
     [Theory]

@@ -5,6 +5,7 @@ using TokenTracker.Core.Storage;
 
 namespace TokenTracker.Core.Tests;
 
+[Collection(PricingCollection.Name)]
 public sealed class SpanStoreTests
 {
     [Fact]
