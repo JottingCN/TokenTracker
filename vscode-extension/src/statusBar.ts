@@ -662,18 +662,17 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
         appendSection(
           '$(history)',
           `${tr('对话轮次', 'Conversation turn')} · ` +
-            `${numberFormatter.format(latest.index)} / ` +
             `${numberFormatter.format(details.turns.length)} · ` +
-            `${numberFormatter.format(latest.toolCalls)} ${tr('步', 'steps')}`,
-        );
-        tooltip.appendMarkdown(
-          `${[
-            `${tr('开始', 'Start')} ${formatShortTime(latest.startTimeMs)}`,
+          `${numberFormatter.format(latest.toolCalls)} ${tr('步', 'steps')}`+
+          ` · ${formatShortTime(latest.startTimeMs)}`+
             `${tr('耗时', 'Duration')} ${formatDuration(
               latest.endTimeMs === null
                 ? null
                 : latest.endTimeMs - latest.startTimeMs,
-            )}`,
+            )}`
+        );
+        tooltip.appendMarkdown(
+          `${[            
             `${tr('模型调用', 'Model calls')} ${numberFormatter.format(latest.calls)}`,
             `${tr('工具调用', 'Tool calls')} ${numberFormatter.format(latest.toolCalls)}`,
             `${tr('费用', 'Cost')} ${formatMoney(latest.costCny, this.money)}`,
