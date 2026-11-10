@@ -27,3 +27,13 @@
 - 费用展示统一 6 位小数。
 - Web 支持人民币 / 美元 / 积分（`localStorage`），价格输入按当前单位换算后**仍以 CNY 保存**。
 - 四类费用（`cacheCostCny` / `uncachedCostCny` / `outputCostCny` / `reasoningCostCny`）与 `costCny` 的关系：`costCny = 四者之和`；`ModelRow` / `SummaryDto` / `SessionTurnRow` 必须同时带齐，否则卡片与表格对不上。
+
+## 5. 统计口径（唯一规则）
+
+看板、状态栏、Tip、Agent 运行四处必须是同一个数，规则只有一条：
+
+1. **数据源固定为 `otel_source='combined'` 合并视图**，永远不要用单管线（`copilot-chat` / `agent-host`）的行去算钱。同一调用两条管线都会上报，内容却不同：`agent-host` 只报 `gen_ai.usage.input_tokens` 且**无缓存列**，按它计价会把 ¥0.002 的一次调用算成 ¥0.06（本机实测单管线合计 ¥1820，合并后 ¥63.8）。合并行按 `session + model + input + output + is_main` 分组并要求时间区间重叠，缓存取两条管线的较大值，费用再用 `ModelPricing.EvaluateDetailed` 按合并后的 token 现算（合并行自身 `cost_cny` 为 NULL，直接读只会得到 ¥0）。
+2. **只累计 `is_main = 1`**（用户可见的主调用）。`is_main = 0` 的辅助调用（标题生成、工具风险评估等）可以出现在调用明细与会话事件里，但不进任何费用 / Token 汇总，否则看板会话行（`GetSessions` 已过滤 `is_main = 1`）与会话页汇总会差一截。
+3. **时间窗在 SQL 里下推**，同一口径 + 同一 `range` 才能比较。
+4. 单管线视图只用于排障：要展示时必须标注「该管线无缓存列，费用不可与合并视图比较」，不能当成第二种口径。
+5. Agent 运行的费用是 `combined` 主调用在该 run 的 `[start, end)` 窗口内的和，一次调用只归属覆盖它的 run；普通对话（没有 `invoke_agent` span）不属于任何 run，因此 `Σ 运行费用 ≤ 会话费用`，差额正是这些未归属调用，不是统计错误。

@@ -190,6 +190,11 @@ _ = Task.Run(() =>
             Console.WriteLine(
                 $"backfilled cost breakdown for {backfilled} spans");
         }
+
+        // The merged view is rebuilt from the raw spans, and the backfill above
+        // invalidates it anyway. Doing it here keeps the first session/dashboard
+        // request from paying the whole rebuild (4.3 s on a 15k-span database).
+        store.EnsureCombinedSpans();
     }
     catch (Exception exception)
     {

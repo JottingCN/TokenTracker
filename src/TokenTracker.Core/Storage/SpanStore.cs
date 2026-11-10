@@ -1490,7 +1490,7 @@ public sealed partial class SpanStore
                    input_tokens, cache_read_tokens, output_tokens, reasoning_tokens,
                    cost_cny, cache_cost_cny, uncached_cost_cny, output_cost_cny,
                    reasoning_cost_cny, ttft_ms, end_time_ms, error_type,
-                   start_time_ms
+                   start_time_ms, is_main
             FROM spans
             WHERE session_id = @session_id
               AND start_time_ms >= @from
@@ -1526,7 +1526,8 @@ public sealed partial class SpanStore
                 reader.IsDBNull(11) ? null : reader.GetInt64(11),
                 endMs > 0 && endMs > startMs ? endMs - startMs : null,
                 reader.IsDBNull(13) ? null : reader.GetString(13),
-                startMs));
+                startMs,
+                reader.GetInt64(15) != 0));
         }
 
         return rows;

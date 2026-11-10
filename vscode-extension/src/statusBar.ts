@@ -1216,7 +1216,7 @@ export function renderStatusTemplate(
   details: SessionDetails | undefined,
   costScope: StatusCostScope,
 ): string {
-  const scope = statusScope(session, details);
+  const scope = statusScope(session, details, costScope);
   // Mark unresolved placeholders so the separator they leave behind can be
   // dropped: otherwise `$(pulse) {turn} · {hit}` renders as `$(pulse) · 25.00%`
   // whenever the session has no Agent Host turn markers.
@@ -1232,7 +1232,6 @@ export function renderStatusTemplate(
         rangeLabel,
         money,
         details,
-        costScope,
       ) ?? empty,
   );
   const collapsed = rendered
@@ -1242,13 +1241,16 @@ export function renderStatusTemplate(
   return cleanStatusText(collapsed) || '$(pulse) -';
 }
 
-// Session rows aggregate every model in the session; the status bar instead
-// reports the model of the newest main call so mixed-model sessions stay honest.
+// Every metric in the status bar follows one scope so the numbers always add up:
+// `session` (default) reports the whole session, `model` reports the newest
+// main-agent model. Mixing them — newest model's hit rate next to the session's
+// cost — is what made the bar disagree with the tip.
 function statusScope(
   session: SessionSummary,
   details: SessionDetails | undefined,
+  costScope: StatusCostScope,
 ): StatusScope {
-  const models = details?.models ?? [];
+  const models = costScope === 'model' ? details?.models ?? [] : [];
   if (models.length === 0) {
     return {
       model: session.model,
@@ -1299,7 +1301,6 @@ function resolveStatusValue(
   rangeLabel: string,
   money: MoneySettings,
   details: SessionDetails | undefined,
-  costScope: StatusCostScope,
 ): string | null {
   switch (normalizePlaceholder(rawName)) {
     case 'hit':
@@ -1309,13 +1310,9 @@ function resolveStatusValue(
     case 'speed':
       return formatSpeedMetric(scope.tokensPerSecond, spec);
     case 'cost':
-      return costScope === 'model'
-        ? scope.hasCost
-          ? formatCostMetric(scope.costCny, spec, money)
-          : null
-        : sessionHasCost(session)
-          ? formatCostMetric(session.costCny, spec, money)
-          : null;
+      return scope.hasCost
+        ? formatCostMetric(scope.costCny, spec, money)
+        : null;
     case 'calls':
       return formatCountMetric(scope.calls, spec);
     case 'duration':

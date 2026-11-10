@@ -111,7 +111,8 @@ public readonly record struct CallSample(
     long? TtftMs,
     long? DurationMs,
     string? ErrorType,
-    long StartTimeMs);
+    long StartTimeMs,
+    bool IsMain = true);
 
 public sealed partial record CallRow
 {
@@ -335,6 +336,13 @@ public sealed class AgentRunRow
     public long? EndTimeMs { get; init; }
     public bool IsError { get; init; }
     public string? ErrorType { get; init; }
+
+    /// <summary>
+    /// True for the tail of a live turn: the <c>invoke_agent</c> span of a running
+    /// run is only exported when it ends, so this row is built from the calls that
+    /// no finished run covers yet.
+    /// </summary>
+    public bool IsRunning { get; init; }
 
     public string AgentText => string.IsNullOrWhiteSpace(AgentName)
         ? "-"

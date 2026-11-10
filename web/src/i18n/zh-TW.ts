@@ -252,6 +252,7 @@ export const zhTW: Record<MessageKey, string> = {
   'root': '根',
   'root.tokens.excluded.from.totals': 'root tokens 不計入合計',
   'rows': '行數',
+  'running': '執行中',
   'save': '儲存',
   'save.failed': '儲存失敗: {error}',
   'save.retention': '儲存保留設定',

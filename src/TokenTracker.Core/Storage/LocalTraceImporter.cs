@@ -351,6 +351,18 @@ public static class LocalTraceImporter
         var eventKey = invocationId ??
             reader.GetInt64(0).ToString(
                 System.Globalization.CultureInfo.InvariantCulture);
+        // The decision and the affected tools live on the same hook.end event; the
+        // span-based path reads them from span_attributes, so the span_events path
+        // must read them from the payload or the hook row loses both.
+        var decision = TrimToNull(
+            ReadJsonField(payload, "github.copilot.hook.decision") ??
+            ReadJsonField(payload, "copilot_chat.hook.decision"));
+        var toolNames = TrimToNull(
+            ReadJsonField(payload, "github.copilot.hook.tool_names") ??
+            ReadJsonField(payload, "copilot_chat.hook.tool_names"));
+        var resultKind = TrimToNull(
+            ReadJsonField(payload, "github.copilot.hook.result_kind") ??
+            ReadJsonField(payload, "copilot_chat.hook_result_kind"));
 
         var startMs = reader.GetInt64(2);
         return new OtlpEventRecord
@@ -361,6 +373,9 @@ public static class LocalTraceImporter
             Operation = "execute_hook",
             Name = hookType is null ? "execute_hook" : $"execute_hook {hookType}",
             HookType = hookType,
+            HookDecision = decision,
+            HookToolNames = toolNames,
+            HookResultKind = resultKind,
             HookDurationMs = durationMs,
             SessionId = FirstNonEmpty(
                 reader.IsDBNull(8) ? null : reader.GetString(8),

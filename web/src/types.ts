@@ -221,6 +221,7 @@ export interface AgentRunRow {
   endTimeMs: number | null;
   isError: boolean;
   errorType: string | null;
+  isRunning: boolean;
   agentText: string;
   agentTypeText: string;
   providerText: string;

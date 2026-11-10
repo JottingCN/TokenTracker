@@ -242,7 +242,7 @@ test('asks for a server restart after repeated failures', async () => {
   controller.dispose();
 });
 
-test('status bar reports the newest main-agent model but can scope cost', () => {
+test('status bar keeps one scope for every metric', () => {
   const money = { unit: 'cny', usdRate: 7.2, creditRate: 0.01 };
   const summary = session('session-1', root, 20, {
     model: 'session-model',
@@ -315,10 +315,12 @@ test('status bar reports the newest main-agent model but can scope cost', () => 
   };
 
   const template = '{model} | {hit} | {ttft} | {speed} | {cost}';
+  // Session scope is the default: the bar and the tip then report one total.
   assert.equal(
     renderStatusTemplate(template, summary, '全部', money, details, 'session'),
-    'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥1.50',
+    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
   );
+  // Model scope narrows every metric to the newest model, not just the cost.
   assert.equal(
     renderStatusTemplate(template, summary, '全部', money, details, 'model'),
     'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥0.40',
@@ -328,7 +330,10 @@ test('status bar reports the newest main-agent model but can scope cost', () => 
     renderStatusTemplate(template, summary, '全部', money, undefined, 'session'),
     'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
   );
-
+  assert.equal(
+    renderStatusTemplate(template, summary, '全部', money, undefined, 'model'),
+    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
+  );
 });
 
 test('changing the stats range re-subscribes with the new window', () => {

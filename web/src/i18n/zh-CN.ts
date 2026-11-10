@@ -251,6 +251,7 @@ export const zhCN: Record<MessageKey, string> = {
   'root': '根',
   'root.tokens.excluded.from.totals': 'root tokens 不计入合计',
   'rows': '行数',
+  'running': '运行中',
   'save': '保存',
   'save.failed': '保存失败: {error}',
   'save.retention': '保存保留设置',

@@ -30,7 +30,7 @@
 
 会话页与状态栏只有一张「Agent 运行」表，**不再提供对话轮次**：轮次口径与聊天客户端的气泡不一致（steering 插话会并入当前轮），继续维护两套数字只会互相矛盾。
 
-- 一次运行 = 一个 invoke_agent span。根 invoke_agent（父 span 不入库）是主代理运行，每条用户消息一个；挂在 xecute_tool 下的 invoke_agent 是子代理运行。
+- 一次运行 = 一个 invoke_agent span。根 invoke_agent（父 span 不入库）是主代理运行，每条用户消息一个；挂在 execute_tool 下的 invoke_agent 是子代理运行。
 - **is_root 读取时重算**：不能按「父 id 为空」判断，根轮的父是宿主 session span（不入库），旧实现把 85/91 判成子代理。规则是「父 span 不在本地 session_events 中即为根」，与拓扑同一口径。
 - **名称回退 span 名**：Agent Host 只对部分 run 设置 gen_ai.agent.name，其余取 invoke_agent <name>；仍为空时界面显示「主代理」。
 - **模型回退**：invoke_agent 不带 model，先取运行窗口内 chat 的众数模型，再退回整条 trace 的众数。
@@ -39,5 +39,7 @@
   - 子代理 run：只取 parent_span_id 等于自己的 chat，避免子代理的短窗口吞掉父轮尾部调用；
   - 窗口内没有 combined（本地导入 / 单管线）时回退到「自己的直接子 span」。
 - **列表字段**：主代理/子代理标签、名称、模型、调用次数（窗口内 chat 数）、输入/缓存/命中率/输出/思考 tokens、耗时、开始时间、估算费用、错误。每列都可与调用明细的对应列对上。
-- **不落库、实时算**：gent_runs 行是入库投影，名称/根标记/模型/token 都在读取时补齐，因此改算法对历史会话立即生效。
+- **运行中的那一轮**：`invoke_agent` span 只在运行结束时导出，所以正在跑的一轮**没有行**，列表看起来像卡住。读取时用「最后一个已完成 run 的 `end` 之后、仍然新鲜的 combined 主调用」合成一行：`span_id = 'running'`、`is_running = true`、`end_time = now`、名称留空（界面显示「运行中」+ 主代理），真实 span 到达后该行自动消失。新鲜度上限 30 分钟；超时、或会话本来就没有任何 run（纯聊天气泡）时不合成，避免把历史会话显示成「运行中」。
+- **费用口径**：见[费用与定价](pricing.md#5-统计口径唯一规则)。run 费用只算 `combined` 主调用在 `[start, end)` 内的部分，因此 `Σ 运行费用 ≤ 会话费用`，差额是没有任何 run 覆盖的调用（普通对话、没有 `invoke_agent` 的轮次）。
+- **不落库、实时算**：agent_runs 行是入库投影，名称/根标记/模型/token 都在读取时补齐，因此改算法对历史会话立即生效。
 - 反过来，**入库时就算好的字段改代码不会修历史行**：spans / session_events 是投影，OTLP 原始 attributes 不存（metric_points.attrs 除外），permission_kind、	ool_name 归属、模型规范化、call_id 都是解析时写入的，历史行只能靠重新导入原始报文才能纠正。

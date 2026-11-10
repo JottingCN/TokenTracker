@@ -574,285 +574,516 @@ public sealed partial class SpanStore
             ? string.Empty
             : " AND a.otel_source = @source";
         using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = $"""
-            SELECT a.trace_id, a.span_id, a.parent_span_id,
-                   CASE WHEN a.is_root <> 0
-                             OR a.parent_span_id IS NULL
-                             OR NOT EXISTS (
-                                 SELECT 1 FROM session_events p
-                                 WHERE p.session_id = a.session_id
-                                   AND p.span_id = a.parent_span_id)
-                        THEN 1 ELSE 0 END AS is_root,
-                   a.session_id,
-                   a.agent_name, a.agent_type, a.provider_name,
-                   COALESCE(
-                       a.request_model,
-                       -- The model of this run: the dominant chat model inside the
-                       -- run's own time window, else the trace's dominant model (a
-                       -- subagent's chats can start before its span does).
-                       (SELECT s.model FROM spans s
-                        WHERE s.trace_id = a.trace_id AND s.model IS NOT NULL
-                          AND s.start_time_ms >= a.start_time_ms
-                          AND (a.end_time_ms IS NULL
-                               OR s.start_time_ms < a.end_time_ms)
-                        GROUP BY s.model
-                        ORDER BY COUNT(*) DESC, s.model
-                        LIMIT 1),
-                       (SELECT s.model FROM spans s
-                        WHERE s.trace_id = a.trace_id AND s.model IS NOT NULL
-                        GROUP BY s.model
-                        ORDER BY COUNT(*) DESC, s.model
-                        LIMIT 1)) AS request_model,
-                   a.response_model, a.otel_source, a.git_repository, a.git_branch,
-                   a.git_commit, a.github_org,
-                   -- A run with no chat inside its window has an unknown turn count,
-                   -- not zero, so the column stays "-" instead of claiming 0 turns.
-                   CASE WHEN a.turn_count IS NOT NULL AND a.turn_count > 0
-                        THEN a.turn_count
-                        ELSE NULLIF(
-                            (SELECT COUNT(*) FROM spans s
-                             WHERE s.trace_id = a.trace_id
-                               AND s.model IS NOT NULL
-                               AND s.start_time_ms >= a.start_time_ms
-                               AND (a.end_time_ms IS NULL
-                                    OR s.start_time_ms < a.end_time_ms)),
-                            0)
-                   END AS turn_count,
-                   a.input_tokens,
-                   a.output_tokens, a.cache_read_tokens, a.cache_creation_tokens,
-                   a.reasoning_tokens, a.start_time_ms, a.end_time_ms, a.is_error,
-                   a.error_type,
-                   (SELECT e.name FROM session_events e
-                    WHERE e.session_id = a.session_id
-                      AND e.span_id = a.span_id
-                      AND e.operation = 'invoke_agent'
-                    LIMIT 1) AS span_name,
-                   -- Usage of the model calls this run made. The invoke_agent span
-                   -- itself carries no token attributes in the Agent Host pipeline,
-                   -- so the runs used to show 0/0/0 while the session totals and the
-                   -- turn rows had real numbers. A chat's parent is the run's own
-                   -- span, so summing direct children cannot double count a
-                   -- subagent's calls into its parent turn either.
-                   COALESCE(
-                       -- A subagent's window is tiny and can overlap the tail
-                       -- of its parent's calls, so a nested run only reports
-                       -- the calls that are its own children. A root run
-                       -- reports its whole window: that is the turn total,
-                       -- and only the merged view carries cache tokens.
-                       CASE WHEN EXISTS (
-                                SELECT 1 FROM session_events p
-                                WHERE p.session_id = a.session_id
-                                  AND p.span_id = a.parent_span_id
-                                  AND p.operation = 'execute_tool')
-                            THEN NULL
-                            ELSE (SELECT SUM(s.input_tokens) FROM spans s
-                                  WHERE s.session_id = a.session_id
-                                    AND s.model IS NOT NULL
-                                    AND s.otel_source = 'combined'
-                                    AND s.start_time_ms >= a.start_time_ms
-                                    AND (a.end_time_ms IS NULL
-                                         OR s.start_time_ms < a.end_time_ms))
-                       END,
-                       -- Fallback: runs recorded without the other pipeline
-                       -- (local imports, single-source exports) still have
-                       -- their calls as direct children of the run span.
-                       (SELECT SUM(s.input_tokens) FROM spans s
-                        WHERE s.session_id = a.session_id
-                          AND s.parent_span_id = a.span_id
-                          AND s.model IS NOT NULL),
-                       0) AS run_input,
-                   COALESCE(
-                       -- A subagent's window is tiny and can overlap the tail
-                       -- of its parent's calls, so a nested run only reports
-                       -- the calls that are its own children. A root run
-                       -- reports its whole window: that is the turn total,
-                       -- and only the merged view carries cache tokens.
-                       CASE WHEN EXISTS (
-                                SELECT 1 FROM session_events p
-                                WHERE p.session_id = a.session_id
-                                  AND p.span_id = a.parent_span_id
-                                  AND p.operation = 'execute_tool')
-                            THEN NULL
-                            ELSE (SELECT SUM(s.cache_read_tokens) FROM spans s
-                                  WHERE s.session_id = a.session_id
-                                    AND s.model IS NOT NULL
-                                    AND s.otel_source = 'combined'
-                                    AND s.start_time_ms >= a.start_time_ms
-                                    AND (a.end_time_ms IS NULL
-                                         OR s.start_time_ms < a.end_time_ms))
-                       END,
-                       -- Fallback: runs recorded without the other pipeline
-                       -- (local imports, single-source exports) still have
-                       -- their calls as direct children of the run span.
-                       (SELECT SUM(s.cache_read_tokens) FROM spans s
-                        WHERE s.session_id = a.session_id
-                          AND s.parent_span_id = a.span_id
-                          AND s.model IS NOT NULL),
-                       0) AS run_cache,
-                   COALESCE(
-                       -- A subagent's window is tiny and can overlap the tail
-                       -- of its parent's calls, so a nested run only reports
-                       -- the calls that are its own children. A root run
-                       -- reports its whole window: that is the turn total,
-                       -- and only the merged view carries cache tokens.
-                       CASE WHEN EXISTS (
-                                SELECT 1 FROM session_events p
-                                WHERE p.session_id = a.session_id
-                                  AND p.span_id = a.parent_span_id
-                                  AND p.operation = 'execute_tool')
-                            THEN NULL
-                            ELSE (SELECT SUM(s.output_tokens) FROM spans s
-                                  WHERE s.session_id = a.session_id
-                                    AND s.model IS NOT NULL
-                                    AND s.otel_source = 'combined'
-                                    AND s.start_time_ms >= a.start_time_ms
-                                    AND (a.end_time_ms IS NULL
-                                         OR s.start_time_ms < a.end_time_ms))
-                       END,
-                       -- Fallback: runs recorded without the other pipeline
-                       -- (local imports, single-source exports) still have
-                       -- their calls as direct children of the run span.
-                       (SELECT SUM(s.output_tokens) FROM spans s
-                        WHERE s.session_id = a.session_id
-                          AND s.parent_span_id = a.span_id
-                          AND s.model IS NOT NULL),
-                       0) AS run_output,
-                   COALESCE(
-                       -- A subagent's window is tiny and can overlap the tail
-                       -- of its parent's calls, so a nested run only reports
-                       -- the calls that are its own children. A root run
-                       -- reports its whole window: that is the turn total,
-                       -- and only the merged view carries cache tokens.
-                       CASE WHEN EXISTS (
-                                SELECT 1 FROM session_events p
-                                WHERE p.session_id = a.session_id
-                                  AND p.span_id = a.parent_span_id
-                                  AND p.operation = 'execute_tool')
-                            THEN NULL
-                            ELSE (SELECT SUM(s.reasoning_tokens) FROM spans s
-                                  WHERE s.session_id = a.session_id
-                                    AND s.model IS NOT NULL
-                                    AND s.otel_source = 'combined'
-                                    AND s.start_time_ms >= a.start_time_ms
-                                    AND (a.end_time_ms IS NULL
-                                         OR s.start_time_ms < a.end_time_ms))
-                       END,
-                       -- Fallback: runs recorded without the other pipeline
-                       -- (local imports, single-source exports) still have
-                       -- their calls as direct children of the run span.
-                       (SELECT SUM(s.reasoning_tokens) FROM spans s
-                        WHERE s.session_id = a.session_id
-                          AND s.parent_span_id = a.span_id
-                          AND s.model IS NOT NULL),
-                       0) AS run_reasoning,
-                   COALESCE(
-                       CASE WHEN EXISTS (
-                                SELECT 1 FROM session_events p
-                                WHERE p.session_id = a.session_id
-                                  AND p.span_id = a.parent_span_id
-                                  AND p.operation = 'execute_tool')
-                            THEN NULL
-                            ELSE (SELECT SUM(s.cost_cny) FROM spans s
-                                  WHERE s.session_id = a.session_id
-                                    AND s.model IS NOT NULL
-                                    AND s.otel_source = 'combined'
-                                    AND s.start_time_ms >= a.start_time_ms
-                                    AND (a.end_time_ms IS NULL
-                                         OR s.start_time_ms < a.end_time_ms))
-                       END,
-                       (SELECT SUM(s.cost_cny) FROM spans s
-                        WHERE s.session_id = a.session_id
-                          AND s.parent_span_id = a.span_id
-                          AND s.model IS NOT NULL),
-                       0) AS run_cost
-            FROM agent_runs a
-            WHERE a.session_id = @session_id{sourceFilter}
-            ORDER BY a.start_time_ms, a.trace_id, a.span_id;
-            """;
-        command.Parameters.AddWithValue("@session_id", sessionId);
-        if (!string.IsNullOrWhiteSpace(source))
+
+        var runs = new List<RunRow>(64);
+        using (var command = connection.CreateCommand())
         {
-            command.Parameters.AddWithValue("@source", source);
+            // No correlated SUM over spans in this query: every run used to re-scan
+            // the call table for its usage, model and turn count (73 runs took
+            // 4.8 s on the real session). The aggregates are folded in memory from
+            // one span scan below.
+            command.CommandText = $"""
+                SELECT a.trace_id, a.span_id, a.parent_span_id,
+                       CASE WHEN a.is_root <> 0
+                                 OR a.parent_span_id IS NULL
+                                 OR NOT EXISTS (
+                                     SELECT 1 FROM session_events p
+                                     WHERE p.session_id = a.session_id
+                                       AND p.span_id = a.parent_span_id)
+                            THEN 1 ELSE 0 END AS is_root,
+                       a.session_id,
+                       a.agent_name, a.agent_type, a.provider_name,
+                       a.request_model, a.response_model, a.otel_source,
+                       a.git_repository, a.git_branch, a.git_commit, a.github_org,
+                       a.turn_count, a.input_tokens, a.output_tokens,
+                       a.cache_read_tokens, a.cache_creation_tokens,
+                       a.reasoning_tokens, a.start_time_ms, a.end_time_ms,
+                       a.is_error, a.error_type,
+                       (SELECT e.name FROM session_events e
+                        WHERE e.session_id = a.session_id
+                          AND e.span_id = a.span_id
+                          AND e.operation = 'invoke_agent'
+                        LIMIT 1) AS span_name
+                FROM agent_runs a
+                WHERE a.session_id = @session_id{sourceFilter}
+                ORDER BY a.start_time_ms, a.trace_id, a.span_id;
+                """;
+            command.Parameters.AddWithValue("@session_id", sessionId);
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                command.Parameters.AddWithValue("@source", source);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                runs.Add(new RunRow(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.GetInt64(3) != 0,
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.IsDBNull(8) ? null : reader.GetString(8),
+                    reader.IsDBNull(9) ? null : reader.GetString(9),
+                    reader.IsDBNull(10) ? null : reader.GetString(10),
+                    reader.IsDBNull(11) ? null : reader.GetString(11),
+                    reader.IsDBNull(12) ? null : reader.GetString(12),
+                    reader.IsDBNull(13) ? null : reader.GetString(13),
+                    reader.IsDBNull(14) ? null : reader.GetString(14),
+                    reader.IsDBNull(15) ? null : reader.GetInt64(15),
+                    reader.GetInt64(16),
+                    reader.GetInt64(17),
+                    reader.GetInt64(18),
+                    reader.GetInt64(19),
+                    reader.GetInt64(20),
+                    reader.GetInt64(21),
+                    reader.IsDBNull(22) ? null : reader.GetInt64(22),
+                    reader.GetInt64(23) != 0,
+                    reader.IsDBNull(24) ? null : reader.GetString(24),
+                    reader.IsDBNull(25) ? null : reader.GetString(25)));
+            }
         }
 
-        var rows = new List<AgentRunRow>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        if (runs.Count == 0)
         {
-            var agentName = reader.IsDBNull(5) ? null : reader.GetString(5);
-            if (string.IsNullOrWhiteSpace(agentName))
+            return Array.Empty<AgentRunRow>();
+        }
+
+        var chatSpans = ReadSessionChatSpans(sessionId);
+        // Direct children of a run span: a subagent reports only the calls it made
+        // itself, otherwise its short window swallows the tail of the parent call.
+        // Built lazily: most runs are roots with calls in their window.
+        Dictionary<string, RunUsage>? byParent = null;
+        // Root runs report their whole window: that is the turn total, and only the
+        // merged view carries cache tokens. Prefix sums make the window O(log n)
+        // instead of a table scan per run.
+        var windowSpans = SelectWindowSpans(chatSpans, source);
+
+        var cumulative = new RunUsage[windowSpans.Count + 1];
+        cumulative[0] = RunUsage.Empty;
+        for (var index = 0; index < windowSpans.Count; index++)
+        {
+            cumulative[index + 1] = cumulative[index].Add(windowSpans[index]);
+        }
+
+        Dictionary<string, Dictionary<string, int>>? traceModels = null;
+        var rows = new List<AgentRunRow>(runs.Count);
+        foreach (var run in runs)
+        {
+            var agentName = string.IsNullOrWhiteSpace(run.AgentName)
+                ? Otlp.OtlpTraceParser.AgentNameFromSpanName(run.SpanName)
+                : run.AgentName;
+            var (lo, hi) = WindowRange(windowSpans, run.StartTimeMs, run.EndTimeMs);
+            var inWindow = cumulative[hi] - cumulative[lo];
+            var turnsInWindow = hi - lo;
+            var model = DominantModel(windowSpans, lo, hi);
+            if (model is null)
             {
-                agentName = Otlp.OtlpTraceParser.AgentNameFromSpanName(
-                    reader.IsDBNull(25) ? null : reader.GetString(25));
+                traceModels ??= BuildTraceModelCounts(chatSpans);
+                model = DominantModelInTrace(traceModels, run.TraceId);
             }
 
-            var inputTokens = reader.GetInt64(16);
-            var outputTokens = reader.GetInt64(17);
-            var cacheReadTokens = reader.GetInt64(18);
-            var cacheCreationTokens = reader.GetInt64(19);
-            var reasoningTokens = reader.GetInt64(20);
-            // Prefer the calls the run made over its own invoke_agent span: the
-            // Agent Host run keeps input/output but never cache, so mixing the two
-            // would compare a cached total against an uncached input and report a
-            // hit rate above 100%.
-            var runInput = reader.GetInt64(26);
-            var runCache = reader.GetInt64(27);
-            var runOutput = reader.GetInt64(28);
-            var runReasoning = reader.GetInt64(29);
-            if (runInput > 0)
+            model ??= run.RequestModel;
+
+            RunUsage usage;
+            long? turnCount;
+            if (run.IsRoot)
             {
-                inputTokens = runInput;
+                usage = inWindow;
+                turnCount = run.TurnCount is > 0
+                    ? run.TurnCount
+                    : turnsInWindow > 0
+                        ? turnsInWindow
+                        : null;
+            }
+            else
+            {
+                usage = RunUsage.Empty;
+                turnCount = run.TurnCount;
             }
 
-            if (runCache > 0)
+            if (usage.Calls == 0)
             {
-                cacheReadTokens = runCache;
+                byParent ??= BuildUsageByParent(chatSpans);
+                usage = byParent.GetValueOrDefault(run.SpanId) ?? RunUsage.Empty;
             }
 
-            if (runOutput > 0)
+            var inputTokens = usage.Input;
+            var cacheReadTokens = usage.Cache;
+            var outputTokens = usage.Output;
+            var reasoningTokens = usage.Reasoning;
+            double? cost = usage.Cost;
+            if (inputTokens == 0 && outputTokens == 0 && cacheReadTokens == 0)
             {
-                outputTokens = runOutput;
-            }
-
-            if (runReasoning > 0)
-            {
-                reasoningTokens = runReasoning;
+                // Nothing was captured for the run's calls; fall back to whatever the
+                // invoke_agent span itself recorded.
+                inputTokens = run.InputTokens;
+                cacheReadTokens = run.CacheReadTokens;
+                outputTokens = run.OutputTokens;
+                reasoningTokens = run.ReasoningTokens;
+                cost = null;
             }
 
             rows.Add(new AgentRunRow
             {
-                TraceId = reader.GetString(0),
-                SpanId = reader.GetString(1),
-                ParentSpanId = reader.IsDBNull(2) ? null : reader.GetString(2),
-                IsRoot = reader.GetInt64(3) != 0,
-                SessionId = reader.IsDBNull(4) ? null : reader.GetString(4),
+                TraceId = run.TraceId,
+                SpanId = run.SpanId,
+                ParentSpanId = run.ParentSpanId,
+                IsRoot = run.IsRoot,
+                SessionId = run.SessionId,
                 AgentName = agentName,
-                AgentType = reader.IsDBNull(6) ? null : reader.GetString(6),
-                ProviderName = reader.IsDBNull(7) ? null : reader.GetString(7),
-                RequestModel = reader.IsDBNull(8) ? null : reader.GetString(8),
-                ResponseModel = reader.IsDBNull(9) ? null : reader.GetString(9),
-                Source = reader.IsDBNull(10) ? null : reader.GetString(10),
-                GitRepository = reader.IsDBNull(11) ? null : reader.GetString(11),
-                GitBranch = reader.IsDBNull(12) ? null : reader.GetString(12),
-                GitCommit = reader.IsDBNull(13) ? null : reader.GetString(13),
-                GithubOrg = reader.IsDBNull(14) ? null : reader.GetString(14),
-                TurnCount = reader.IsDBNull(15) ? null : reader.GetInt64(15),
+                AgentType = run.AgentType,
+                ProviderName = run.ProviderName,
+                RequestModel = model,
+                ResponseModel = run.ResponseModel,
+                Source = run.Source,
+                GitRepository = run.GitRepository,
+                GitBranch = run.GitBranch,
+                GitCommit = run.GitCommit,
+                GithubOrg = run.GithubOrg,
+                TurnCount = turnCount,
                 InputTokens = inputTokens,
                 OutputTokens = outputTokens,
                 CacheReadTokens = cacheReadTokens,
-                CacheCreationTokens = cacheCreationTokens,
+                CacheCreationTokens = run.CacheCreationTokens,
                 ReasoningTokens = reasoningTokens,
-                CostCny = reader.IsDBNull(30) ? null : reader.GetDouble(30),
-                StartTimeMs = reader.GetInt64(21),
-                EndTimeMs = reader.IsDBNull(22) ? null : reader.GetInt64(22),
-                IsError = reader.GetInt64(23) != 0,
-                ErrorType = reader.IsDBNull(24) ? null : reader.GetString(24),
+                CostCny = cost,
+                StartTimeMs = run.StartTimeMs,
+                EndTimeMs = run.EndTimeMs,
+                IsError = run.IsError,
+                ErrorType = run.ErrorType,
             });
         }
 
+        AppendRunningRun(rows, runs, windowSpans, cumulative, sessionId);
+
         return rows;
     }
+
+    // How stale the tail may be and still count as a live turn. A run that only
+    // waits for the user produces no calls, so the row has to disappear instead of
+    // claiming that an idle session is still running.
+    private const long RunningRunFreshnessMs = 30 * 60 * 1000;
+
+    /// <summary>
+    /// The Agent Host exports an <c>invoke_agent</c> span only when the turn ends,
+    /// so a running turn had no row at all and the list looked frozen for minutes.
+    /// The calls after the last finished run are reported as one running row; it
+    /// disappears on its own when the real row arrives.
+    /// </summary>
+    private static void AppendRunningRun(
+        List<AgentRunRow> rows,
+        List<RunRow> runs,
+        List<ChatSpan> windowSpans,
+        RunUsage[] cumulative,
+        string sessionId)
+    {
+        // A session that never produced a run is a plain chat session; inventing a
+        // run for it would report every call twice.
+        if (runs.Count == 0 || windowSpans.Count == 0)
+        {
+            return;
+        }
+
+        var lastEndMs = 0L;
+        foreach (var run in runs)
+        {
+            if (run.EndTimeMs is { } endMs && endMs > lastEndMs)
+            {
+                lastEndMs = endMs;
+            }
+        }
+
+        var lo = LowerBound(windowSpans, lastEndMs);
+        if (lo >= windowSpans.Count)
+        {
+            return;
+        }
+
+        var startMs = windowSpans[lo].StartTimeMs;
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (nowMs - startMs > RunningRunFreshnessMs)
+        {
+            return;
+        }
+
+        var tail = cumulative[windowSpans.Count] - cumulative[lo];
+        rows.Add(new AgentRunRow
+        {
+            TraceId = windowSpans[lo].TraceId,
+            SpanId = "running",
+            IsRoot = true,
+            IsRunning = true,
+            SessionId = sessionId,
+            // The name of the running span is unknown until it is exported; the UI
+            // labels an unnamed root run as the main agent.
+            AgentName = null,
+            RequestModel = DominantModel(
+                windowSpans,
+                lo,
+                windowSpans.Count),
+            Source = windowSpans[lo].Source,
+            TurnCount = windowSpans.Count - lo,
+            InputTokens = tail.Input,
+            OutputTokens = tail.Output,
+            CacheReadTokens = tail.Cache,
+            ReasoningTokens = tail.Reasoning,
+            CostCny = tail.Cost,
+            StartTimeMs = startMs,
+            EndTimeMs = nowMs,
+        });
+    }
+
+    private sealed record RunRow(
+        string TraceId,
+        string SpanId,
+        string? ParentSpanId,
+        bool IsRoot,
+        string? SessionId,
+        string? AgentName,
+        string? AgentType,
+        string? ProviderName,
+        string? RequestModel,
+        string? ResponseModel,
+        string? Source,
+        string? GitRepository,
+        string? GitBranch,
+        string? GitCommit,
+        string? GithubOrg,
+        long? TurnCount,
+        long InputTokens,
+        long OutputTokens,
+        long CacheReadTokens,
+        long CacheCreationTokens,
+        long ReasoningTokens,
+        long StartTimeMs,
+        long? EndTimeMs,
+        bool IsError,
+        string? ErrorType,
+        string? SpanName);
+
+    private sealed record RunUsage(
+        long Input,
+        long Cache,
+        long Output,
+        long Reasoning,
+        double Cost,
+        long Calls)
+    {
+        public static readonly RunUsage Empty = new(0, 0, 0, 0, 0, 0);
+
+        public RunUsage Add(ChatSpan span) => new(
+            Input + span.InputTokens,
+            Cache + span.CacheReadTokens,
+            Output + span.OutputTokens,
+            Reasoning + span.ReasoningTokens,
+            Cost + CostOf(span),
+            Calls + 1);
+
+        /// <summary>
+        /// Combined rows are written without cost columns (they are a merged view,
+        /// not a priced row), so summing the stored cost reported ¥0 for every run.
+        /// The cost is recomputed with the same pricing call the writer uses.
+        /// </summary>
+        private static double CostOf(ChatSpan span)
+        {
+            if (span.CostCny is { } stored)
+            {
+                return stored;
+            }
+
+            var detail = ModelPricing.EvaluateDetailed(
+                ModelPricing.GetPrice(span.Model),
+                span.InputTokens,
+                span.CacheReadTokens,
+                span.OutputTokens,
+                span.ReasoningTokens,
+                DateTimeOffset.FromUnixTimeMilliseconds(
+                    span.EndTimeMs ?? span.StartTimeMs),
+                span.CacheCreationTokens);
+            return detail.CostCny is { } cost ? (double)cost : 0;
+        }
+
+        public static RunUsage operator -(RunUsage left, RunUsage right) => new(
+            left.Input - right.Input,
+            left.Cache - right.Cache,
+            left.Output - right.Output,
+            left.Reasoning - right.Reasoning,
+            left.Cost - right.Cost,
+            left.Calls - right.Calls);
+    }
+
+    private sealed record ChatSpan(
+        string TraceId,
+        string? ParentSpanId,
+        string? Source,
+        string Model,
+        long StartTimeMs,
+        long? EndTimeMs,
+        long InputTokens,
+        long CacheReadTokens,
+        long OutputTokens,
+        long ReasoningTokens,
+        long CacheCreationTokens,
+        double? CostCny);
+
+    private List<ChatSpan> ReadSessionChatSpans(string sessionId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT trace_id, parent_span_id, otel_source, model, start_time_ms,
+                   end_time_ms, input_tokens, cache_read_tokens, output_tokens,
+                   reasoning_tokens, cache_creation_tokens, cost_cny
+            FROM spans
+            WHERE session_id = @session_id
+              AND model IS NOT NULL
+            ORDER BY start_time_ms;
+            """;
+        command.Parameters.AddWithValue("@session_id", sessionId);
+
+        var spans = new List<ChatSpan>(512);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            spans.Add(new ChatSpan(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetInt64(4),
+                reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                reader.GetInt64(6),
+                reader.GetInt64(7),
+                reader.GetInt64(8),
+                reader.GetInt64(9),
+                reader.GetInt64(10),
+                reader.IsDBNull(11) ? null : reader.GetDouble(11)));
+        }
+
+        return spans;
+    }
+
+    private static List<ChatSpan> SelectWindowSpans(
+        List<ChatSpan> spans,
+        string? source)
+    {
+        // Combined rows are the merged view and the only ones with cache tokens; a
+        // single-source request has no combined rows, so that source is used instead.
+        var preferred = string.IsNullOrWhiteSpace(source) ? "combined" : source;
+        var filtered = spans
+            .Where(span => string.Equals(
+                span.Source,
+                preferred,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return filtered.Count > 0 ? filtered : spans;
+    }
+
+    private static Dictionary<string, RunUsage> BuildUsageByParent(List<ChatSpan> spans)
+    {
+        var byParent = new Dictionary<string, RunUsage>(StringComparer.OrdinalIgnoreCase);
+        foreach (var span in spans)
+        {
+            if (string.IsNullOrEmpty(span.ParentSpanId))
+            {
+                continue;
+            }
+
+            byParent.TryGetValue(span.ParentSpanId, out var existing);
+            byParent[span.ParentSpanId] = (existing ?? RunUsage.Empty).Add(span);
+        }
+
+        return byParent;
+    }
+
+    private static (int Lo, int Hi) WindowRange(
+        List<ChatSpan> spans,
+        long startMs,
+        long? endMs)
+    {
+        var lo = LowerBound(spans, startMs);
+        var hi = endMs is null ? spans.Count : LowerBound(spans, endMs.Value);
+        return (lo, Math.Max(lo, hi));
+    }
+
+    private static int LowerBound(List<ChatSpan> spans, long startMs)
+    {
+        var lo = 0;
+        var hi = spans.Count;
+        while (lo < hi)
+        {
+            var middle = (lo + hi) / 2;
+            if (spans[middle].StartTimeMs < startMs)
+            {
+                lo = middle + 1;
+            }
+            else
+            {
+                hi = middle;
+            }
+        }
+
+        return lo;
+    }
+
+    private static string? DominantModel(
+        List<ChatSpan> spans,
+        int lo,
+        int hi)
+    {
+        if (hi <= lo)
+        {
+            return null;
+        }
+
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var index = lo; index < hi; index++)
+        {
+            counts.TryGetValue(spans[index].Model, out var count);
+            counts[spans[index].Model] = count + 1;
+        }
+
+        return counts
+            .OrderByDescending(entry => entry.Value)
+            .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+            .Select(entry => entry.Key)
+            .FirstOrDefault();
+    }
+
+    private static Dictionary<string, Dictionary<string, int>> BuildTraceModelCounts(
+        List<ChatSpan> spans)
+    {
+        var traces = new Dictionary<string, Dictionary<string, int>>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var span in spans)
+        {
+            if (!traces.TryGetValue(span.TraceId, out var counts))
+            {
+                counts = new Dictionary<string, int>(StringComparer.Ordinal);
+                traces[span.TraceId] = counts;
+            }
+
+            counts.TryGetValue(span.Model, out var count);
+            counts[span.Model] = count + 1;
+        }
+
+        return traces;
+    }
+
+    private static string? DominantModelInTrace(
+        Dictionary<string, Dictionary<string, int>> traces,
+        string traceId) =>
+        traces.TryGetValue(traceId, out var counts)
+            ? counts
+                .OrderByDescending(entry => entry.Value)
+                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                .Select(entry => entry.Key)
+                .FirstOrDefault()
+            : null;
 
     /// <summary>
     /// Aggregates hook runs per hook inside the given time window. Like tool
@@ -1182,9 +1413,10 @@ public sealed partial class SpanStore
                 Name = item.Operation == "permission"
                     ? PermissionLabel(item)
                     // The operation tag already says "Hook", so the row label only
-                    // needs the hook type ("preToolUse").
+                    // needs the hook type ("preToolUse"), plus its decision when the
+                    // hooking policy made one (allow / block / error).
                     : item.Operation == "execute_hook"
-                        ? HookTypeFromName(item.Name)
+                        ? HookLabel(item)
                         : item.Name,
                 // Permission labels already carry the tool name, so keeping Tool
                 // would repeat it through TraceNodeRow.Label. The field is still
@@ -1402,8 +1634,26 @@ public sealed partial class SpanStore
 
     /// <summary>
     /// Hook rows are stored as <c>execute_hook &lt;type&gt;</c>; the tree shows the
-    /// operation separately, so only the type is kept as the label.
+    /// operation separately, so only the type is kept as the label, followed by the
+    /// policy decision when the hook made one (measured: <c>allow</c>, and the docs
+    /// list <c>pass</c> / <c>block</c> / <c>non_blocking_error</c>).
     /// </summary>
+    private static string? HookLabel(TraceEvent item)
+    {
+        var type = HookTypeFromName(item.Name);
+        var decision = string.IsNullOrWhiteSpace(item.HookDecision)
+            ? item.HookResultKind
+            : item.HookDecision;
+        if (string.IsNullOrWhiteSpace(decision))
+        {
+            return type;
+        }
+
+        return string.IsNullOrWhiteSpace(type)
+            ? decision
+            : $"{type} · {decision}";
+    }
+
     private static string? HookTypeFromName(string? name)
     {
         const string prefix = "execute_hook";
@@ -1641,7 +1891,9 @@ public sealed partial class SpanStore
         string? ErrorType,
         bool IsError,
         string? PermissionKind,
-        string? PermissionResult);
+        string? PermissionResult,
+        string? HookDecision,
+        string? HookResultKind);
 
     private static List<TraceSpan> ReadTraceSpans(
         SqliteConnection connection,
@@ -1698,7 +1950,8 @@ public sealed partial class SpanStore
         command.CommandText = $"""
             SELECT trace_id, span_id, parent_span_id, operation, name, tool_name,
                    {SourceSql} AS source, start_time_ms, end_time_ms, error_type,
-                   is_error, permission_kind, permission_result
+                   is_error, permission_kind, permission_result, hook_decision,
+                   hook_result_kind
             FROM session_events
             WHERE session_id = @session_id{sourceFilter}
             ORDER BY start_time_ms, trace_id, span_id;
@@ -1727,7 +1980,9 @@ public sealed partial class SpanStore
                 reader.IsDBNull(9) ? null : reader.GetString(9),
                 reader.GetInt64(10) != 0,
                 reader.IsDBNull(11) ? null : reader.GetString(11),
-                reader.IsDBNull(12) ? null : reader.GetString(12)));
+                reader.IsDBNull(12) ? null : reader.GetString(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13),
+                reader.IsDBNull(14) ? null : reader.GetString(14)));
         }
 
         return events;
@@ -2445,14 +2700,48 @@ public sealed partial class SpanStore
 
             if (!string.IsNullOrWhiteSpace(toolNames))
             {
-                foreach (var tool in toolNames.Split(
-                             ',',
-                             StringSplitOptions.RemoveEmptyEntries |
-                             StringSplitOptions.TrimEntries))
+                foreach (var tool in ToolNamesFromHook(toolNames))
                 {
-                    _toolNames.Add(tool);
+                    // Hook tool names go through the same resolver as the tool
+                    // table: the host sends external tools as their SHA-256, and an
+                    // unresolved hash says nothing about which tool was hooked.
+                    var display = Otlp.ToolNameResolver.Display(tool);
+                    if (!string.IsNullOrWhiteSpace(display))
+                    {
+                        _toolNames.Add(display);
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// The attribute is an OTLP array, which the parser joins with commas, and a
+        /// hook event carries one array per tool — so a group's stored value looks
+        /// like <c>["8e6a…"], ["edit"]</c>. Splitting on commas alone leaves the
+        /// brackets and quotes in the list.
+        /// </summary>
+        private static IEnumerable<string> ToolNamesFromHook(string raw)
+        {
+            var trimmed = raw.Trim();
+            if (trimmed.StartsWith('['))
+            {
+                var parts = new List<string>();
+                foreach (var chunk in trimmed.Split(']'))
+                {
+                    var value = chunk.Trim().TrimStart('[').Trim().Trim('"');
+                    if (value.Length > 0)
+                    {
+                        parts.Add(value);
+                    }
+                }
+
+                return parts;
+            }
+
+            return trimmed.Split(
+                ',',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries);
         }
 
         public HookSummaryRow Build() => new()

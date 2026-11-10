@@ -249,6 +249,7 @@ export const en = {
   'root': 'Root',
   'root.tokens.excluded.from.totals': 'Root tokens excluded from totals',
   'rows': 'Rows',
+  'running': 'Running',
   'save': 'Save',
   'save.failed': 'Save failed: {error}',
   'save.retention': 'Save retention',

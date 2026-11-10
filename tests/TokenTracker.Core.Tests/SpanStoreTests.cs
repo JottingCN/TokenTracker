@@ -1501,11 +1501,38 @@ public sealed class SpanStoreTests
                     CacheReadTokens = 20,
                     ReceivedAtMs = 2_000,
                 },
+                // A run whose window contains no chat keeps the tokens recorded on
+                // its invoke_agent span instead of reporting zeros.
+                new AgentRunRecord
+                {
+                    TraceId = "t9",
+                    SpanId = "s9",
+                    IsRoot = true,
+                    SessionId = "session-1",
+                    AgentName = "copilot",
+                    Source = "copilot-chat",
+                    StartTimeMs = 8_000,
+                    EndTimeMs = 9_000,
+                    InputTokens = 55,
+                    OutputTokens = 7,
+                    CacheReadTokens = 5,
+                    ReceivedAtMs = 9_000,
+                },
             });
-            var agentRun = Assert.Single(store.GetAgentRuns("session-1"));
+            var runs = store.GetAgentRuns("session-1");
+            var agentRun = Assert.Single(runs, row => row.SpanId == "s1");
             Assert.Equal("copilot", agentRun.AgentName);
-            Assert.Equal(100, agentRun.InputTokens);
-            Assert.Equal(20, agentRun.CacheReadTokens);
+            // The run reports the calls it made: the chat span in its window, not
+            // the invoke_agent span's own (uncached) token snapshot. Mixing the two
+            // reported a hit rate above 100% for the Agent Host pipeline.
+            Assert.Equal(1_000, agentRun.InputTokens);
+            Assert.Equal(0, agentRun.CacheReadTokens);
+            Assert.Equal(1, agentRun.TurnCount);
+            Assert.Equal("deepseek-flash", agentRun.RequestModel);
+
+            var emptyRun = Assert.Single(runs, row => row.SpanId == "s9");
+            Assert.Equal(55, emptyRun.InputTokens);
+            Assert.Equal(5, emptyRun.CacheReadTokens);
 
             var trace = store.GetTraceNodes("session-1");
             Assert.Contains(trace, node => node.Kind == "chat");
@@ -1527,6 +1554,72 @@ public sealed class SpanStoreTests
             Assert.Contains(
                 extensionEvents,
                 row => row.SessionId == "session-1" && row.Events == 2);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ReportsTheLiveTurnBeforeItsInvokeAgentSpanArrives()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var runStart = now - 60_000;
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t-live", "chat-1", "session-1", "deepseek-flash",
+                    runStart, 1_000, 0, 100, 0.01),
+                // The Agent Host exports invoke_agent only when the turn ends, so
+                // the calls of the running turn have no run window yet.
+                Span(
+                    "t-live", "chat-2", "session-1", "deepseek-flash",
+                    now - 5_000, 2_000, 0, 200, 0.02),
+            });
+            store.InsertAgentRuns(new[]
+            {
+                new AgentRunRecord
+                {
+                    TraceId = "t-live",
+                    SpanId = "run-1",
+                    IsRoot = true,
+                    SessionId = "session-1",
+                    Source = "copilot-chat",
+                    StartTimeMs = runStart,
+                    EndTimeMs = runStart + 20_000,
+                    ReceivedAtMs = runStart + 20_000,
+                },
+            });
+
+            var runs = store.GetAgentRuns("session-1");
+            Assert.Equal(2, runs.Count);
+            var finished = Assert.Single(runs, row => row.SpanId == "run-1");
+            Assert.False(finished.IsRunning);
+            Assert.Equal(1, finished.TurnCount);
+
+            var running = Assert.Single(runs, row => row.IsRunning);
+            Assert.Equal("running", running.SpanId);
+            Assert.True(running.IsRoot);
+            Assert.Equal(now - 5_000, running.StartTimeMs);
+            Assert.Null(running.AgentName);
+            Assert.Equal(1, running.TurnCount);
+            Assert.Equal(2_000, running.InputTokens);
+            Assert.Equal(0.02, running.CostCny ?? 0, 6);
+            Assert.Equal("deepseek-flash", running.RequestModel);
         }
         finally
         {

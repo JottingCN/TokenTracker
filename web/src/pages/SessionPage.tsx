@@ -316,7 +316,9 @@ export function SessionPage({
             : row.agentText;
         return (
           <Space size={4}>
-            {row.isRoot ? (
+            {row.isRunning ? (
+              <Tag color="processing">{t('running')}</Tag>
+            ) : row.isRoot ? (
               <Tag>{t('main.agent')}</Tag>
             ) : (
               <Tag color="purple">{t('subagent')}</Tag>

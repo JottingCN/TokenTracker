@@ -401,6 +401,14 @@ public sealed class DashboardService
             StringComparer.Ordinal);
         foreach (var sample in samples)
         {
+            // Utility calls stay in the timeline but are not user-facing usage:
+            // the dashboard session rows already total `is_main = 1`, so the
+            // session page must exclude them too or the two totals disagree.
+            if (!sample.IsMain)
+            {
+                continue;
+            }
+
             totals.Add(sample);
             if (!byModel.TryGetValue(sample.Model, out var accumulator))
             {
@@ -475,7 +483,8 @@ public sealed class DashboardService
         call.TtftMs,
         call.DurationMs,
         call.ErrorType,
-        call.StartTimeMs);
+        call.StartTimeMs,
+        call.IsMain);
 
     private static List<SessionEventRow> BuildChatEvents(
         IReadOnlyList<CallRow> calls) =>
