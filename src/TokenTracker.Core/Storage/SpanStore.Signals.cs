@@ -812,7 +812,10 @@ public sealed partial class SpanStore
 
         var startMs = windowSpans[lo].StartTimeMs;
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (nowMs - startMs > RunningRunFreshnessMs)
+        // Freshness is measured on the *newest* call, not on the tail's first one:
+        // a long turn keeps producing calls for an hour, and judging by its start
+        // made the row vanish in the middle of the run.
+        if (nowMs - windowSpans[^1].StartTimeMs > RunningRunFreshnessMs)
         {
             return;
         }

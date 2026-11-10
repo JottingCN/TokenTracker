@@ -1578,17 +1578,20 @@ public sealed class SpanStoreTests
         {
             var store = new SpanStore(databasePath);
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var runStart = now - 60_000;
+            // A long turn: the first uncovered call is an hour old, the newest one
+            // is a minute old. Freshness must follow the newest call.
+            var runStart = now - 120 * 60_000;
             store.InsertMany(new[]
             {
                 Span(
                     "t-live", "chat-1", "session-1", "deepseek-flash",
                     runStart, 1_000, 0, 100, 0.01),
-                // The Agent Host exports invoke_agent only when the turn ends, so
-                // the calls of the running turn have no run window yet.
                 Span(
                     "t-live", "chat-2", "session-1", "deepseek-flash",
-                    now - 5_000, 2_000, 0, 200, 0.02),
+                    now - 60 * 60_000, 2_000, 0, 200, 0.02),
+                Span(
+                    "t-live", "chat-3", "session-1", "deepseek-flash",
+                    now - 60_000, 3_000, 0, 300, 0.03),
             });
             store.InsertAgentRuns(new[]
             {
@@ -1614,11 +1617,11 @@ public sealed class SpanStoreTests
             var running = Assert.Single(runs, row => row.IsRunning);
             Assert.Equal("running", running.SpanId);
             Assert.True(running.IsRoot);
-            Assert.Equal(now - 5_000, running.StartTimeMs);
+            Assert.Equal(now - 60 * 60_000, running.StartTimeMs);
             Assert.Null(running.AgentName);
-            Assert.Equal(1, running.TurnCount);
-            Assert.Equal(2_000, running.InputTokens);
-            Assert.Equal(0.02, running.CostCny ?? 0, 6);
+            Assert.Equal(2, running.TurnCount);
+            Assert.Equal(5_000, running.InputTokens);
+            Assert.Equal(0.05, running.CostCny ?? 0, 6);
             Assert.Equal("deepseek-flash", running.RequestModel);
         }
         finally
