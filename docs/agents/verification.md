@@ -6,7 +6,7 @@
 
 | 改动 | 必须执行 | 当前基线 |
 | --- | --- | --- |
-| Core 逻辑（解析、存储、定价、元数据） | `dotnet test tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release` | 99 项 |
+| Core 逻辑（解析、存储、定价、元数据） | `dotnet test tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release` | 100 项 |
 | 看板 `web/` | `cd web && npm run build`（内含 `tsc --noEmit`） | 构建通过 |
 | 扩展 `vscode-extension/` | `npm run compile` + `npm test` | 17 项 |
 | 服务端 / 路由 / 序列化 | `npm run sync-server`（AOT 成功）+ `npm run smoke` | 71 项 |

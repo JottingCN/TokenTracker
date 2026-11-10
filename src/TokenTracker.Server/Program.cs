@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using Microsoft.Extensions.Hosting;
 using TokenTracker.Core;
 using TokenTracker.Core.Otlp;
@@ -39,7 +39,7 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.19",
+    "1.0.20",
     1,
     port,
     startedAt,
