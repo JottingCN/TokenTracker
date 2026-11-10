@@ -523,7 +523,11 @@ export class StatusBarController implements vscode.Disposable {
 
     const key = this.breakdownKey(session);
     const cached = this.breakdownCache.get(key);
-    this.updateTooltip(session, cached);
+    // The tip is refreshed on every poll while the payload behind it is fetched
+    // separately. Falling back to the aggregate table in between swapped whole
+    // sections (per-model tables → one flat table) and made the tip jump on every
+    // turn, so the newest frame for the same session is kept until the next lands.
+    this.updateTooltip(session, cached ?? this.previousDetails(session));
     if (cached) {
       this.touchCache(key, cached);
     } else {
@@ -540,7 +544,9 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   private renderStatusText(session: SessionSummary): void {
-    const details = this.breakdownCache.get(this.breakdownKey(session));
+    const details =
+      this.breakdownCache.get(this.breakdownKey(session)) ??
+      this.previousDetails(session);
     this.item.text = renderStatusTemplate(
       this.statusBarFormat,
       session,
@@ -549,6 +555,20 @@ export class StatusBarController implements vscode.Disposable {
       details,
       this.costScope,
     );
+  }
+
+  // Newest cached frame for this session, even when it was built for an older
+  // key: its numbers are one poll stale, which reads far better than the
+  // structural jump of the fallback table.
+  private previousDetails(session: SessionSummary): SessionDetails | undefined {
+    const prefix = `${session.sessionId}|`;
+    let previous: SessionDetails | undefined;
+    for (const [key, value] of this.breakdownCache) {
+      if (key.startsWith(prefix)) {
+        previous = value;
+      }
+    }
+    return previous;
   }
 
   private updateTooltip(

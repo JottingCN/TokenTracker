@@ -102,14 +102,16 @@ public static class OtlpEndpoints
                 token,
                 bufferBody: captureEnabled);
             var receivedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var seenNames = new HashSet<string>(StringComparer.Ordinal);
             var parsed = OtlpMetricParser.Parse(
                 document,
                 receivedAtMs,
-                sourceOverride);
+                sourceOverride,
+                seenNames);
             var inserted = parsed.Count > 0
                 ? store.InsertMetricPoints(parsed)
                 : 0;
-            counters.RecordMetrics(parsed.Count, inserted);
+            counters.RecordMetrics(parsed.Count, inserted, seenNames);
             if (inserted > 0)
             {
                 counters.Record(inserted);

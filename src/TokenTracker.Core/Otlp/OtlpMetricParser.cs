@@ -14,7 +14,8 @@ public static class OtlpMetricParser
     public static IReadOnlyList<OtlpMetricPointRecord> Parse(
         JsonDocument document,
         long receivedAtMs,
-        string? sourceOverride = null)
+        string? sourceOverride = null,
+        ISet<string>? seenMetricNames = null)
     {
         var results = new List<OtlpMetricPointRecord>();
         if (!OtlpTraceParser.TryGet(
@@ -76,8 +77,17 @@ public static class OtlpMetricParser
                 foreach (var metric in metrics.EnumerateArray())
                 {
                     var metricName = GetString(metric, "name");
-                    if (string.IsNullOrWhiteSpace(metricName) ||
-                        !AllowedMetrics.Contains(metricName))
+                    if (string.IsNullOrWhiteSpace(metricName))
+                    {
+                        continue;
+                    }
+
+                    // Every exporter sends GenAI metrics next to the outcome ones,
+                    // so a batch that stores nothing is indistinguishable from "no
+                    // metrics at all" without the names that were dropped.
+                    seenMetricNames?.Add(metricName);
+
+                    if (!AllowedMetrics.Contains(metricName))
                     {
                         continue;
                     }

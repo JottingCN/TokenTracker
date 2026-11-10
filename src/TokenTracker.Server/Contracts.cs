@@ -12,7 +12,12 @@ public sealed record ReceiverInfo(
     string? LastError,
     long MetricBatches = 0,
     long MetricPoints = 0,
-    long MetricRejectedBatches = 0);
+    long MetricRejectedBatches = 0,
+    /// <summary>
+    /// Names of the metrics that arrived but matched no outcome allowlist entry,
+    /// with how many batches carried them. Empty when every batch stored a point.
+    /// </summary>
+    string? MetricFilteredNames = null);
 
 public sealed record AhpSessionPayload(
     string Resource,

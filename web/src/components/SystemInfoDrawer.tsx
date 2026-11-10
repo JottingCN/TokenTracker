@@ -230,11 +230,24 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               type="info"
               showIcon
               message={t('no.outcome.metrics.received.yet')}
-              description={t('outcome.metrics.explanation', {
-                batches: data.receiver.metricBatches,
-                points: data.receiver.metricPoints,
-                rejected: data.receiver.metricRejectedBatches,
-              })}
+              description={
+                <>
+                  <div>
+                    {t('outcome.metrics.explanation', {
+                      batches: data.receiver.metricBatches,
+                      points: data.receiver.metricPoints,
+                      rejected: data.receiver.metricRejectedBatches,
+                    })}
+                  </div>
+                  {data.receiver.metricFilteredNames && (
+                    <div style={{ marginTop: 6 }}>
+                      {t('outcome.metrics.filtered.names', {
+                        names: data.receiver.metricFilteredNames,
+                      })}
+                    </div>
+                  )}
+                </>
+              }
             />
           )}
 

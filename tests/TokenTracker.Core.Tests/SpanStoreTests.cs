@@ -874,6 +874,78 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void CombinedMergeWaitsForTheChatTwinBeforePublishingACost()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+        // Cached input is far cheaper than uncached, so the two merges differ by
+        // an order of magnitude and the assertion is unambiguous.
+        var price = new ModelPrice(
+            new PriceTier(0.02m, 1m, 4m),
+            new PriceTier(0.02m, 1m, 4m),
+            PeakAware: false);
+        ModelPricing.SetOverrides(new[]
+        {
+            new KeyValuePair<string, ModelPrice>("deepseek-flash", price),
+        });
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            // Agent Host reports the call first, without cache tokens: merging it
+            // alone would price the whole input at the uncached rate (≈25× here).
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t-win", "agent-1", "session-1", "deepseek-flash",
+                    now - 500, 29_726, 0, 61, 1.5,
+                    source: "agent-host",
+                    serviceName: "github-copilot"),
+            });
+            store.EnsureCombinedSpans();
+
+            // Nothing is published yet: the row is too young for its twin to be
+            // ruled out, and a wrong price that later halves is what made the
+            // status bar and the tip flicker.
+            Assert.Empty(store.GetCallsForSession("session-1", source: "combined"));
+
+            // The Chat row arrives with the cache column filled.
+            store.InsertMany(new[]
+            {
+                Span(
+                    "t-win", "chat-1", "session-1", "deepseek-flash",
+                    now - 400, 29_726, 8_576, 61, 0.03),
+            });
+            store.EnsureCombinedSpans();
+
+            var call = Assert.Single(store.GetCallsForSession(
+                "session-1",
+                source: "combined"));
+            Assert.Equal(8_576, call.CacheReadTokens);
+            // 21 150 uncached × ¥1/M + 8 576 cached × ¥0.02/M + 61 × ¥4/M ≈ 0.0215,
+            // versus ≈ 0.0297 for the same call without its cache column.
+            Assert.Equal(
+                0.02156552,
+                Assert.IsType<double>(call.CostCny),
+                8);
+        }
+        finally
+        {
+            ModelPricing.SetOverrides(
+                Array.Empty<KeyValuePair<string, ModelPrice>>());
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void CombinedMergeUsesIntervalOverlapAndRecomputesCost()
     {
         var directory = Path.Combine(

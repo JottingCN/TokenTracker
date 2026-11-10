@@ -204,6 +204,7 @@ export const zhTW: Record<MessageKey, string> = {
   'otlp.receiver.endpoint': 'OTLP 接收端點',
   'outcome.metric.points': '結果指標點',
   'outcome.metrics.explanation': '編輯接受率、程式碼行數、回饋、PR 等來自 OTel metrics。目前 metric_points 中沒有結果類指標，因此 Dashboard 的「編輯與結果指標」卡片不會顯示；這不是統計錯誤。本次執行已收到 {batches} 批 metrics（{points} 個結果點，{rejected} 批全部被過濾）；若為 0，表示 Copilot/Agent Host 根本沒有匯出 metrics，請確認 OTel 啟用命令已執行並重新載入視窗。',
+    'outcome.metrics.filtered.names': '實際收到但不屬於結果類指標：{names}。Copilot 用同一個 meter 匯出這些指標，表示結果類計數器在擴充功能裡存在但從未被匯出 —— 接收端無需修改。',
   'output': '輸出',
   'output.tokens': '輸出 tokens',
   'output.tokens.include.reasoning.tokens.and.are.priced': '輸出 token 包含思考 token，費用按輸出單價計算。',

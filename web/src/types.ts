@@ -343,6 +343,7 @@ export interface ReceiverInfo {
   metricBatches: number;
   metricPoints: number;
   metricRejectedBatches: number;
+  metricFilteredNames: string | null;
 }
 
 export interface AhpSessionInfo {
@@ -506,6 +507,7 @@ export interface SystemInfo {
     metricBatches: number;
     metricPoints: number;
     metricRejectedBatches: number;
+    metricFilteredNames?: string | null;
   };
   retentionDays: number;
   dataDirectory: string;

@@ -62,6 +62,8 @@ public sealed partial class SpanStore
                 return;
             }
 
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var waitingForTwin = false;
             using var connection = OpenConnection();
             using var transaction = connection.BeginTransaction();
 
@@ -72,18 +74,22 @@ public sealed partial class SpanStore
                 InsertCombinedSpans(
                     connection,
                     transaction,
-                    MergeRawSpans(raw));
+                    MergeRawSpans(raw, nowMs, out waitingForTwin));
             }
             else
             {
                 foreach (var (sessionId, window) in _combinedDirtySessions)
                 {
-                    RebuildCombinedSessionWindow(
-                        connection,
-                        transaction,
-                        sessionId,
-                        window.FromMs,
-                        window.ToMs);
+                    if (RebuildCombinedSessionWindow(
+                            connection,
+                            transaction,
+                            sessionId,
+                            window.FromMs,
+                            window.ToMs,
+                            nowMs))
+                    {
+                        waitingForTwin = true;
+                    }
                 }
             }
 
@@ -117,7 +123,8 @@ public sealed partial class SpanStore
                         InsertCombinedSpans(
                             connection,
                             transaction,
-                            MergeRawSpans(raw));
+                            MergeRawSpans(raw, nowMs, out var windowWaiting));
+                        waitingForTwin |= windowWaiting;
                         rebuilt = true;
                         break;
                     }
@@ -132,11 +139,23 @@ public sealed partial class SpanStore
                 {
                     var all = ReadRawSpans(connection, transaction, sessionId: null);
                     DeleteCombinedSpans(connection, transaction, sessionId: null);
-                    InsertCombinedSpans(connection, transaction, MergeRawSpans(all));
+                    InsertCombinedSpans(
+                        connection,
+                        transaction,
+                        MergeRawSpans(all, nowMs, out var allWaiting));
+                    waitingForTwin |= allWaiting;
                 }
             }
 
             transaction.Commit();
+            if (waitingForTwin)
+            {
+                // A group is still waiting for its Copilot Chat twin. Keep the dirty
+                // window so the next request re-merges it once the grace expires;
+                // clearing it here would drop that call from the merged view.
+                return;
+            }
+
             _combinedAllDirty = false;
             _combinedDirtySessions.Clear();
             _combinedDirtyFromMs = long.MaxValue;
@@ -155,14 +174,17 @@ public sealed partial class SpanStore
     // One new span only changes merge groups whose intervals overlap it, and a
     // group can be chained through overlapping rows, so the window is grown until
     // it stops moving. Anything larger than the cap falls back to the session.
-    private static void RebuildCombinedSessionWindow(
+    // Returns true when a group was held back waiting for its Copilot Chat twin.
+    private static bool RebuildCombinedSessionWindow(
         SqliteConnection connection,
         SqliteTransaction transaction,
         string sessionId,
         long fromMs,
-        long toMs)
+        long toMs,
+        long nowMs)
     {
         var rebuilt = false;
+        var waiting = false;
         for (var pass = 0; pass < CombinedWindowMaxPasses && !rebuilt; pass++)
         {
             var raw = ReadRawSpans(
@@ -188,7 +210,7 @@ public sealed partial class SpanStore
                 InsertCombinedSpans(
                     connection,
                     transaction,
-                    MergeRawSpans(raw));
+                    MergeRawSpans(raw, nowMs, out waiting));
                 rebuilt = true;
                 break;
             }
@@ -199,12 +221,16 @@ public sealed partial class SpanStore
 
         if (rebuilt)
         {
-            return;
+            return waiting;
         }
 
         var all = ReadRawSpans(connection, transaction, sessionId);
         DeleteCombinedSpans(connection, transaction, sessionId);
-        InsertCombinedSpans(connection, transaction, MergeRawSpans(all));
+        InsertCombinedSpans(
+            connection,
+            transaction,
+            MergeRawSpans(all, nowMs, out waiting));
+        return waiting;
     }
 
     private static (long FromMs, long ToMs) ExtendWindow(
@@ -484,9 +510,28 @@ public sealed partial class SpanStore
         return rows;
     }
 
+    // The Agent Host pipeline reports a call without any cache tokens and reaches
+    // the server ~0.5 s before Copilot Chat reports the same call with them
+    // (measured on 4300 twin pairs: p90 1.2 s, p99 1.8 s). Merging the lone Agent
+    // Host row published a wrong price for a moment and corrected it when the twin
+    // landed, which is what made the status bar cost and the tip flicker.
+    private const long CombinedTwinGraceMs = 3000;
+
+    private static bool IsChatSource(string? source) =>
+        string.Equals(source, "copilot-chat", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Merges the two pipelines into one row per call. A group waits for the
+    /// Copilot Chat row (the only one carrying cache tokens) until
+    /// <see cref="CombinedTwinGraceMs"/> proves it will not arrive; the caller then
+    /// has to retry, or the group would never be published.
+    /// </summary>
     private static List<CombinedSpan> MergeRawSpans(
-        IReadOnlyList<CombinedSpan> raw)
+        IReadOnlyList<CombinedSpan> raw,
+        long nowMs,
+        out bool waitingForTwin)
     {
+        waitingForTwin = false;
         var groups = new Dictionary<string, List<List<CombinedSpan>>>(
             StringComparer.Ordinal);
         foreach (var row in raw)
@@ -523,12 +568,17 @@ public sealed partial class SpanStore
             {
                 var primary = group
                     .OrderByDescending(row => row.TtftMs is > 0)
-                    .ThenByDescending(row => string.Equals(
-                        row.Source,
-                        "copilot-chat",
-                        StringComparison.OrdinalIgnoreCase))
+                    .ThenByDescending(row => IsChatSource(row.Source))
                     .ThenBy(row => row.StartTimeMs)
                     .First();
+
+                if (!group.Any(row => IsChatSource(row.Source)) &&
+                    nowMs - group.Max(row => row.StartTimeMs) < CombinedTwinGraceMs)
+                {
+                    waitingForTwin = true;
+                    continue;
+                }
+
                 var cacheRead = group.Max(row => row.CacheReadTokens);
                 var cacheCreation = group.Max(row => row.CacheCreationTokens);
                 var reasoning = group.Max(row => row.ReasoningTokens);

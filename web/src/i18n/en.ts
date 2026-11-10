@@ -201,6 +201,7 @@ export const en = {
   'otlp.receiver.endpoint': 'OTLP receiver endpoint',
   'outcome.metric.points': 'Outcome metric points',
   'outcome.metrics.explanation': 'Edit acceptance, LOC, feedback and PR metrics come from OTel metrics. metric_points currently has no outcome metrics, so the dashboard outcomes card is hidden. This run received {batches} metric batches ({points} outcome points, {rejected} fully filtered); at 0, Copilot/Agent Host never exported metrics, so re-run the OTel enable command and reload the window.',
+    'outcome.metrics.filtered.names': 'Metrics that arrived but are not outcome metrics: {names}. Copilot exports these from the same meter, so the outcome counters exist in the extension but were never exported — nothing to fix on the receiver side.',
   'output': 'Output',
   'output.tokens': 'Output tokens',
   'output.tokens.include.reasoning.tokens.and.are.priced': 'Output tokens include reasoning tokens and are priced at the output rate.',

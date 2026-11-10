@@ -14,6 +14,10 @@ public sealed class ReceiverCounters
     private long _metricPoints;
     private long _metricRejected;
     private string? _lastError;
+    private readonly object _metricNameLock = new();
+    private readonly Dictionary<string, long> _filteredMetricNames =
+        new(StringComparer.Ordinal);
+    private const int MaxFilteredMetricNames = 8;
 
     public void Record(int spans)
     {
@@ -24,17 +28,62 @@ public sealed class ReceiverCounters
     // Metrics are tracked separately: an empty metric_points table is either
     // "nothing arrived" or "everything was filtered by the outcome allowlist",
     // and the two need different fixes.
-    public void RecordMetrics(int parsedPoints, int storedPoints)
+    public void RecordMetrics(
+        int parsedPoints,
+        int storedPoints,
+        IReadOnlyCollection<string>? seenNames = null)
     {
         Interlocked.Increment(ref _metricBatches);
         Interlocked.Add(ref _metricPoints, storedPoints);
-        if (parsedPoints == 0)
+        if (parsedPoints != 0)
         {
-            Interlocked.Increment(ref _metricRejected);
+            return;
+        }
+
+        Interlocked.Increment(ref _metricRejected);
+        if (seenNames is not { Count: > 0 })
+        {
+            return;
+        }
+
+        lock (_metricNameLock)
+        {
+            foreach (var name in seenNames)
+            {
+                _filteredMetricNames.TryGetValue(name, out var count);
+                _filteredMetricNames[name] = count + 1;
+            }
+
+            while (_filteredMetricNames.Count > MaxFilteredMetricNames)
+            {
+                var smallest = _filteredMetricNames
+                    .OrderBy(entry => entry.Value)
+                    .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                    .First()
+                    .Key;
+                _filteredMetricNames.Remove(smallest);
+            }
         }
     }
 
     public void RecordError(string message) => _lastError = message;
+
+    // "gen_ai.client.operation.duration ×12, copilot_chat.session.count ×3": the
+    // names Copilot actually exports when none of them match the allowlist.
+    private string? FilteredMetricText()
+    {
+        lock (_metricNameLock)
+        {
+            return _filteredMetricNames.Count == 0
+                ? null
+                : string.Join(
+                    ", ",
+                    _filteredMetricNames
+                        .OrderByDescending(entry => entry.Value)
+                        .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                        .Select(entry => $"{entry.Key} ×{entry.Value}"));
+        }
+    }
 
     public ReceiverInfo Snapshot(string endpoint, bool running) =>
         new(
@@ -45,7 +94,8 @@ public sealed class ReceiverCounters
             _lastError,
             Interlocked.Read(ref _metricBatches),
             Interlocked.Read(ref _metricPoints),
-            Interlocked.Read(ref _metricRejected));
+            Interlocked.Read(ref _metricRejected),
+            FilteredMetricText());
 }
 
 public sealed class DashboardService
