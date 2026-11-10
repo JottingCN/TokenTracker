@@ -25,6 +25,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TokenTracker.Core\TokenTracker.Core.csproj" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
   </ItemGroup>
 </Project>
