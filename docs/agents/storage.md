@@ -41,6 +41,7 @@ finish_reasons, received_at_ms
 - 会话页所有统计都遵循标题栏范围：调用与 Agent 运行按 `startTimeMs`，事件/工具/Hook 按上述 SQL 窗口，outcome 指标同样传区间。VS Code Tip 也按 `tokentracker.statsRange` 传 `range` 给 `/api/session`——**聚合不能靠客户端过滤**。
 - `includeCalls=false` 时必须走 `SpanStore.GetSessionCallSamples`（`CallSample` 投影），不要 materialize 数千个 `CallRow`；`SummaryAccumulator` 的算术只保留一份实现（`Add(CallRow)` 转调 `Add(CallSample)`）。会话快照从约 880 KB 降到约 36 KB。
 - combined 行按「脏会话 + 会话级时间窗」增量重建，窗口沿重叠区间扩展，超过 12 小时或 4 轮不收敛才回退该会话全量；**不要**恢复「按会话整库重算」（单个新 span 曾要重算整个 5k span 会话，实测 208 ms/次）。无 `session_id` 的辅助调用按批次时间窗增量重建，**不要**恢复「辅助调用批次 → 全表重建」（实测 2 万 span 全量读取 3~12 秒 CPU，窗口重建 0.16 秒）。窗口查询写成可用 `ix_spans_start` / `ix_spans_end` 的 OR 形式，`COALESCE(end_time_ms, start_time_ms)` 会退化成全表扫描。
+- **合并不许抢跑**：Agent Host 行不带缓存列且比 Copilot Chat 早到约 0.5 秒（4300 对双胞胎实测：起点差 p50 500 ms、p90 1.2 s、p99 1.8 s）。只有 Agent Host 行时先发布，价格会从「未缓存」跳到「已缓存」（本机实测 ¥0.0297 → ¥0.0013，25 倍），状态栏与 Tip 每轮都跳。所以合并组必须等到 chat 行，只有超过 `CombinedTwinGraceMs`（3 秒）宽限仍无 chat 行才单独发布；等待中的组必须保留 dirty 标记让下次请求重试，**清掉 dirty 会永久丢掉该调用**。
 - 调用明细必须服务端分页（`total`/`offset`/`limit`，单页上限 500），不要重新引入固定 2000 条截断；文本检索在服务端匹配会话标题（元数据）、模型与会话 ID 后直接分页。
 - 跨请求缓存必须有上界：`ToolNameResolver.Cache`（4096 后清空）、`SessionMetadataProvider._cache`（2048）、`DashboardService._outcomeCache`（32）。WS 接收缓冲上限 256 KB，超过即断开。
 - `SessionMetadataProvider` 的 `workspace.yaml` 缓存被 HTTP 与 WS 快照并发读写，**必须持锁**（普通 `Dictionary` 并发写入会抛 `concurrent update ... corrupted its state` 并 500）。`AgentHostTitleReader`、`CopilotChatTitleReader`、`AhpTitleClient` 同样内置锁，新增缓存保持该约定。
