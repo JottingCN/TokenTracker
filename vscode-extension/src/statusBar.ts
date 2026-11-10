@@ -9,7 +9,7 @@ import {
 import { serverUrl } from './serverManager';
 
 export const DEFAULT_STATUS_BAR_FORMAT =
-  '$(pulse) {turn} · {hit} · {ttft} · {speed} · {cost}';
+  '$(pulse) {hit} · {ttft} · {speed} · {cost}';
 
 // The server keeps SessionDisplay language-neutral, so the missing-title
 // label has to be produced here where the display language is known.
@@ -163,22 +163,11 @@ interface SignalHealthSummary {
   lastSignalText: string;
 }
 
-interface SessionTurnSummary {
-  index: number;
-  startTimeMs: number;
-  endTimeMs: number | null;
-  calls: number;
-  toolCalls: number;
-  costCny: number;
-  inProgress?: boolean;
-}
-
 interface SessionPayload {
   sessionId: string;
   calls: SessionCall[];
   events: SessionEventSummary[];
   tools: SessionToolSummary[];
-  turns: SessionTurnSummary[];
   agentRuns: AgentRunSummary[];
   hooks: HookSummary[];
   signalHealth: SignalHealthSummary;
@@ -233,7 +222,6 @@ interface SessionDetails {
   models: ModelBreakdown[];
   events: SessionEventSummary[];
   tools: SessionToolSummary[];
-  turns: SessionTurnSummary[];
   agentRuns: AgentRunSummary[];
   hooks: HookSummary[];
   signalHealth: SignalHealthSummary;
@@ -657,33 +645,6 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       );
     }
 
-    if (details && (details.turns ?? []).length > 0) {
-      const latest = latestTurn(details);
-      if (latest) {
-        appendSection(
-          '$(history)',
-          `${tr('对话轮次', 'Conversation turn')} · ` +
-            `${numberFormatter.format(details.turns.length)}${tr('轮', ' turns')} · ` +
-            `${numberFormatter.format(latest.toolCalls)}${tr('步', ' steps')} · ` +
-            `${formatShortTime(latest.startTimeMs)} · ` +
-            `${tr('耗时', 'Duration')} ${formatDuration(
-              latest.endTimeMs === null
-                ? null
-                : latest.endTimeMs - latest.startTimeMs,
-            )}` +
-            (latest.inProgress ? ` · ${tr('进行中', 'live')}` : ''),
-        );
-        tooltip.appendMarkdown(
-          `${[
-            `${tr('模型调用', 'Model calls')} ${numberFormatter.format(latest.calls)}`,
-            `${tr('工具调用', 'Tool calls')} ${numberFormatter.format(latest.toolCalls)}`,
-            `${tr('费用', 'Cost')} ${formatMoney(latest.costCny, this.money)}`,
-          ].join(' · ')}
-`,
-        );
-      }
-    }
-
     if (details && details.tools.length > 0) {
       const totalCalls = details.tools.reduce(
         (total, row) => total + row.calls,
@@ -785,14 +746,10 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
     const hooks = (data.hooks ?? []).filter(
       (row) => row.lastSeenMs >= fromMs && row.lastSeenMs < toMs,
     );
-    // Turns are already windowed server-side and only the newest one drives the
-    // status bar, so keep them all.
-    const turns = data.turns ?? [];
     if (
       breakdown.length === 0 &&
       events.length === 0 &&
       tools.length === 0 &&
-      turns.length === 0 &&
       agentRuns.length === 0 &&
       hooks.length === 0
     ) {
@@ -803,7 +760,6 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       models: breakdown,
       events,
       tools,
-      turns,
       agentRuns,
       hooks,
       signalHealth: data.signalHealth ?? {
@@ -1395,30 +1351,6 @@ function resolveStatusValue(
       return details
         ? formatCountMetric(details.agentRuns.length, spec)
         : null;
-    case 'turns':
-      return details
-        ? formatCountMetric((details.turns ?? []).length, spec)
-        : null;
-    case 'turn': {
-      // The newest turn with activity: index is its ordinal in the session and
-      // steps are the tool runs it already completed (one tool use = one step).
-      const latest = latestTurn(details);
-      if (!latest) {
-        return null;
-      }
-
-      const mark = latest.inProgress ? tr('（进行中）', ' (live)') : '';
-      return latest.toolCalls > 0
-        ? tr(
-            `第${latest.index}轮 ${numberFormatter.format(latest.toolCalls)}步${mark}`,
-            `turn ${latest.index} · ${numberFormatter.format(latest.toolCalls)} steps${mark}`,
-          )
-        : tr(`第${latest.index}轮${mark}`, `turn ${latest.index}${mark}`);
-    }
-    case 'step':
-      return details
-        ? formatCountMetric(latestTurn(details)?.toolCalls ?? 0, spec)
-        : null;
     case 'hooks':
       return details
         ? formatCountMetric(
@@ -1437,19 +1369,6 @@ function resolveStatusValue(
     default:
       return `{${rawName}${spec === undefined ? '' : `:${spec}`}}`;
   }
-}
-
-// The newest turn is the one that just ran; its tool count is the number of
-// steps already completed inside it.
-function latestTurn(details: SessionDetails | undefined): SessionTurnSummary | null {
-  const turns = details?.turns;
-  if (!turns || turns.length === 0) {
-    return null;
-  }
-
-  return turns.reduce((current, row) =>
-    row.startTimeMs >= current.startTimeMs ? row : current,
-  );
 }
 
 function normalizePlaceholder(name: string): string {
@@ -1509,15 +1428,6 @@ function normalizePlaceholder(name: string): string {
     case 'agents':
     case 'agentruns':
       return 'agents';
-    case 'turns':
-    case 'turncount':
-      return 'turns';
-    case 'turn':
-    case 'currentturn':
-      return 'turn';
-    case 'step':
-    case 'steps':
-      return 'step';
     case 'hooks':
     case 'hookcalls':
       return 'hooks';

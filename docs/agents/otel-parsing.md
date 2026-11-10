@@ -2,7 +2,7 @@
 
 上级：[AGENTS.md](../../AGENTS.md) · 依据：`docs/Copilot Chat OpenTelemetry 监控信息文档.md`、`docs/Agent Host OpenTelemetry 监控信息文档.md`、`docs/三层关系总览.md`（含实测附录）。改解析规则前先读对应章节，**不要凭官方文档猜键名**。
 
-相关：[结果指标](outcome-metrics.md)、[会话与轮次](sessions.md)、[存储](storage.md)
+相关：[结果指标](outcome-metrics.md)、[会话与 Agent 运行](sessions.md)、[存储](storage.md)
 
 ## 1. 来源归因
 
@@ -33,19 +33,20 @@
 - 跨管线没有共享唯一 ID（`gen_ai.response.id`、`trace_id`、`span_id` 互不相通），combined 只能用「会话 + 规范化模型 + 输入/输出 token + 主/辅助 + span 时间区间重叠」匹配，派生行写 `otel_source='combined'`，原始记录保持不变并懒重建。费用不继承任一来源估算值，按合并后 token 与配置价格重算。
 - 只统计 `gen_ai.operation.name=chat` 的 span 作为调用，避免与 `invoke_agent` / `execute_tool` 重复计数。
 - 子代理 `invoke_agent` 写 `agent_runs`（父 span 为对应 `execute_tool`），其工具调用计入根会话工具统计；子代理 chat span 是真实 LLM 调用，计入会话调用与费用，但 `agent_runs` 汇总 token 不重复计入 chat 汇总。
-- **`agent_runs.is_root` 不能按“父 id 为空”判断**：根轮次的 `invoke_agent` 有父（宿主 session span，从不入库），实测 91 行里 85 行被判成子代理，会话页把每一轮都标成 subagent。`GetAgentRuns` 改为读取时按「父 span 是否在本地 `session_events` 中」重算，与轮次边界同一口径（历史行自动纠正）。
+- **`agent_runs.is_root` 不能按“父 id 为空”判断**：根轮次的 `invoke_agent` 有父（宿主 session span，从不入库），实测 91 行里 85 行被判成子代理，会话页把每一轮都标成 subagent。`GetAgentRuns` 改为读取时按「父 span 是否在本地 `session_events` 中」重算，与拓扑同一口径（历史行自动纠正）。
 - **agent 名称回退到 span 名**：Agent Host 只对部分 run 设置 `gen_ai.agent.name`，其余靠 span 名 `invoke_agent <name>`（如 `invoke_agent explore`）。解析时写入，读取时再从 `session_events.name` 兜底一次，历史行也能显示。
 - **模型回退到同 trace 的主模型**：`invoke_agent` 本身不带 model，`GetAgentRuns` 用同 `trace_id` 下 chat span 的众数模型填充，否则整列显示 `-`。
 - **token/cache 来自这个 run 自己的调用**：`invoke_agent` span 的 token 永远没有 cache（Agent Host 不发 cache token），所以直接用会把缓存列显示成 0。现在的规则是：
-  - **根 run**：取时间窗内 `otel_source='combined'` 的 chat 汇总（combined 才有 cache，且它的行不带 parent、trace 也是另一条管线的，只能按「会话 + 时间窗」关联）。结果与该轮 `turns` 行完全一致；
+  - **根 run**：取时间窗内 `otel_source='combined'` 的 chat 汇总（combined 才有 cache，且它的行不带 parent、trace 也是另一条管线的，只能按「会话 + 时间窗」关联），结果与该 run 的整轮调用一致；
   - **子代理 run**：只取 `parent_span_id = 自己的 chat`，否则子代理那个极短的窗口会吞掉父轮尾部的调用；
   - 窗口内没有 combined（本地导入、单管线）时回退到「自己的直接子 span」。
-- **agent 运行与轮次是同一批 span**：根 `invoke_agent` = 轮次边界 = 「主代理运行」。会话页把主代理名与轮内子代理数直接挂在轮次行上，`agentRuns` 只作为明细表保留；两者计数**不应该相等**（子代理、零活动轮、运行中的最后一轮，见[会话与轮次](sessions.md)）。
+- **不再有对话轮次**：会话页只保留 `agentRuns`（见[会话与 Agent 运行](sessions.md)）；原来的轮次分桶已删除，避免与客户端气泡口径互相矛盾。
 - 只有 `gen_ai.operation.name=chat`（或 `name` 以 `chat ` 开头）且有 `gen_ai.usage.input_tokens` 的 span 才成为调用行；缺 token 的 chat span 会被丢弃。
 
 ## 4. 工具、审批、Hook
 
-- 工具统计按 `gen_ai.tool.name` 汇总；工具事件同时保存 `gen_ai.tool.type`（**实测全为 `function`，不能用来区分 MCP**）与可选的 `edit_type` / `skill_name`。
+- 工具统计按 `gen_ai.tool.name` 汇总；工具事件同时保存 `gen_ai.tool.type`（**实测全为 `function`，不能用来区分 MCP**）与可选的 `edit_type` / `skill_name`。表格里因此**不再显示 MCP Server / MCP 工具 / Agent 三列**——实测这些属性不存在，显示出来永远是 `-`。
+- 耗时列用**中位数**而不是平均值：`openBrowserPage` 这类工具会被保持打开数小时（实测单条 51 432 s），平均值被拉到 30 分钟，中位数仍是秒级。最大值保留，作为最坏情况。
 - 工具名统一用 `ToolNameResolver`（Core）显示：上游把扩展宿主注册的外部工具名发成 `SHA-256(工具名)`，解析器用内置公开工具清单现算哈希反查（不维护哈希表），`ToolCallRow.ToolDisplayText` 与 Trace 节点 `label` 共用；扩展只读服务端返回的 `toolDisplayText`，**不要在客户端再维护一份哈希表**。MCP server 哈希保持不可解读。
 
 ### 4.1 审批（permission）

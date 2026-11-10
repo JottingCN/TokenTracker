@@ -20,7 +20,7 @@ Token Tracker 是本地 Copilot Token 用量与费用看板。Copilot Chat / Age
 | [存储、聚合与迁移](docs/agents/storage.md) | 改 SQL、schema、聚合口径、`includeCalls` 路径 |
 | [OTel 来源与解析](docs/agents/otel-parsing.md) | 改解析规则、来源归因、工具/审批/Hook、本地导入 |
 | [结果指标](docs/agents/outcome-metrics.md) | 改 outcome allowlist、指标归属、卡片渲染 |
-| [会话元数据与轮次](docs/agents/sessions.md) | 改标题优先级、工作区归属、AHP、`turns` |
+| [会话元数据与 Agent 运行](docs/agents/sessions.md) | 改标题优先级、工作区归属、AHP、`agentRuns` |
 | [Trace 拓扑](docs/agents/trace-topology.md) | 改拓扑分块、节点构成、前端虚拟滚动 |
 | [费用与定价](docs/agents/pricing.md) | 改价格模型、峰谷、节假日、费用展示 |
 | [服务生命周期](docs/agents/lifecycle.md) | 改启动/接管/更新/空闲退出/推送延迟 |
@@ -41,7 +41,7 @@ Token Tracker 是本地 Copilot Token 用量与费用看板。Copilot Chat / Age
 5. **拓扑窗口外的祖先用 `isContext` 行补齐**，不计数；实时刷新用**尾部窗口重载**（晚到的父 span 追不上递增游标），合并时真实行不得被 context 行覆盖 → [拓扑](docs/agents/trace-topology.md)
 6. **AOT**：JSON 只走 `AppJsonContext`；`MapPost/MapGet` lambda 带 `HttpContext` 时必须再带 `CancellationToken`；错误用 `ErrorPayload` 不用 `Results.Problem` → [工程约束](docs/agents/engineering.md)
 7. **审批没有“自动/人工”标记**：`permission.result` 只有 `approved` / `denied-interactively-by-user`，只能按有无 span 与耗时读现象；解析必须按 span 名优先判 `permission` → [OTel 解析](docs/agents/otel-parsing.md)
-8. **轮次来自根 `invoke_agent`**（运行中的轮次没有边界，必须输出 `InProgress` 行，否则一直显示上一轮）；`EndTimeMs` 取工具结束时间，0 次数的轮次丢弃并重编号，`summary.calls` 必须等于 `turns` 之和 → [会话与轮次](docs/agents/sessions.md)
+8. **不再提供对话轮次**：轮次口径与客户端气泡不一致（steering 插话会并入当前轮），会话页与状态栏只保留「Agent 运行」。一次运行 = 一个 `invoke_agent`；根/子代理按「父 span 是否入库」判定，token/缓存/费用取该 run 窗口内的 combined 调用 → [会话与 Agent 运行](docs/agents/sessions.md)
 9. **跨请求缓存必须有上界**；WS 快照聚合不能靠客户端过滤（Tip 也传 `range`）→ [存储](docs/agents/storage.md)
 10. **界面文案全部走 i18n**（`en` / `zh-CN` / `zh-TW` 三文件齐平；扩展另有三份 `package.nls`）→ [扩展 UI](docs/agents/extension-ui.md)
 
@@ -72,7 +72,7 @@ npm run package       # 生成 tokentracker-*.vsix（排除 server/）
 
 - `scripts/sync-server.mjs` 会先删 `server/` 再发布；**服务端进程正在运行时删除会 EPERM**，先停自己起的实例。
 - 跨平台构建用 `TOKENTRACKER_TARGET_RID=<rid> node vscode-extension/scripts/sync-server.mjs`，AOT 必须在目标平台执行。
-- 验证基线：Core 98 项、扩展 18 项、冒烟 87 项（见[验证](docs/agents/verification.md)）。
+- 验证基线：Core 99 项、扩展 17 项、冒烟 71 项（见[验证](docs/agents/verification.md)）。
 
 ## 目录
 

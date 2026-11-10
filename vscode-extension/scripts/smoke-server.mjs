@@ -578,43 +578,6 @@ function turnsPayload(sessionId, idSuffix = '') {
   });
 }
 
-// Only a trailing chat call: the root invoke_agent of that turn has not been
-// exported yet, which is what a running turn looks like.
-function trailingCallPayload(sessionId, atMs) {
-  return JSON.stringify({
-    resourceSpans: [
-      {
-        resource: {
-          attributes: [
-            { key: 'service.name', value: { stringValue: 'github-copilot' } },
-          ],
-        },
-        scopeSpans: [
-          {
-            spans: [
-              {
-                traceId: 'dddddddddddddddddddddddddddddddd',
-                spanId: 'chat-live-0000001',
-                name: 'chat smoke-model',
-                kind: 1,
-                startTimeUnixNano: `${atMs}000000`,
-                endTimeUnixNano: `${atMs + 100}000000`,
-                attributes: [
-                  { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
-                  { key: 'gen_ai.response.model', value: { stringValue: 'smoke-model' } },
-                  { key: 'gen_ai.usage.input_tokens', value: { stringValue: '100' } },
-                  { key: 'gen_ai.usage.output_tokens', value: { stringValue: '10' } },
-                  { key: 'gen_ai.conversation.id', value: { stringValue: sessionId } },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  });
-}
-
 function metricsPayload(count) {
   const now = `${Date.now()}000000`;
   return JSON.stringify({
@@ -924,13 +887,12 @@ try {
     400,
   );
 
-  // The session snapshot carries per-turn rows; the smoke data has no
-  // invoke_agent span, so the list must be present but empty.
+  // The session snapshot no longer carries per-turn rows: the agent run list is the
+  // per-turn view, and a turn without a root invoke_agent must not invent one.
   const sessionPayload = JSON.parse(
     (await request(`${base}/api/session/${sessionId}`)).body,
   );
-  check('GET /api/session exposes turns', Array.isArray(sessionPayload.turns), true);
-  check('turns stay empty without invoke_agent', sessionPayload.turns.length, 0);
+  check('GET /api/session has no turns payload', sessionPayload.turns, undefined);
   check(
     'session payload keeps the aggregate calls',
     sessionPayload.summary.calls,
@@ -974,129 +936,42 @@ try {
     borrowed?.label,
     'read · approved · grep',
   );
-  // A root invoke_agent with no chat call and no tool run is not a usable turn.
-  const turnOnly = JSON.parse(
+  const afterApproval = JSON.parse(
     (await request(`${base}/api/session/${sessionId}`)).body,
   );
-  check('turns skip empty turns', turnOnly.turns.length, 0);
-  check('events still count the approval', turnOnly.events.some((row) => row.operation === 'permission'), true);
+  check(
+    'events still count the approval',
+    afterApproval.events.some((row) => row.operation === 'permission'),
+    true,
+  );
 
-  // Regression: the call list is newest-first, so a naive forward walk assigns
-  // every call to the last turn. Each turn must only own the calls that start
-  // before the next turn.
+  // One root invoke_agent per turn: both runs are main agents, and a tool that
+  /// arrives after them must not create another one.
   const turnSession = 'smoke-turns';
   await request(`${base}/otlp/agent-host`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: turnsPayload(turnSession),
   });
-  const withTurns = JSON.parse(
+  const withRuns = JSON.parse(
     (await request(`${base}/api/session/${turnSession}`)).body,
   );
-  check('turns are detected from root invoke_agent', withTurns.turns.length, 2);
-  check('first turn owns its own calls', withTurns.turns[0]?.calls, 2);
-  check('second turn owns its own calls', withTurns.turns[1]?.calls, 1);
+  check('runs are detected from root invoke_agent', withRuns.agentRuns.length, 2);
   check(
-    'turn calls add up to the session total',
-    withTurns.turns.reduce((total, row) => total + row.calls, 0),
-    withTurns.summary.calls,
+    'every run is a main agent',
+    withRuns.agentRuns.filter((row) => row.isRoot).length,
+    2,
   );
-  check(
-    'turn cost adds up to the session total',
-    Math.round(
-      withTurns.turns.reduce((total, row) => total + row.costCny, 0) * 1e6,
-    ),
-    Math.round(withTurns.summary.costCny * 1e6),
-  );
-  check('turns are not marked live', withTurns.turns.some((row) => row.inProgress), false);
-
-  // A running turn has calls but no root invoke_agent yet (that span is exported
-  // when the turn ends), so it must show up as an extra in-progress row instead of
-  // being folded into the previous turn.
   const now = Date.now();
-  await request(`${base}/otlp/agent-host`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: trailingCallPayload(turnSession, now + 60_000),
-  });
-  const withLive = JSON.parse(
-    (await request(`${base}/api/session/${turnSession}`)).body,
-  );
-  check('a running turn is reported before it ends', withLive.turns.length, 3);
-  check('the running turn is flagged', withLive.turns[2]?.inProgress, true);
-  check('the running turn owns its call', withLive.turns[2]?.calls, 1);
-  check(
-    'the finished turn keeps only its own calls',
-    withLive.turns[1]?.calls,
-    1,
-  );
-
-  // A trailing tool-only tail is the last turn's own work: the host closes the
-  // agent span before the final tool spans are exported, so merging it into a new
-  // turn would show two turns where the client shows one (measured: 52 + 6 vs 59).
-  const beforeTools = withLive.turns.length;
   await request(`${base}/otlp/agent-host`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: trailingToolPayload(turnSession, now + 90_000),
   });
-  const withTail = JSON.parse(
+  const afterTail = JSON.parse(
     (await request(`${base}/api/session/${turnSession}`)).body,
   );
-  check('a tool-only tail does not add a turn', withTail.turns.length, beforeTools);
-  check(
-    'the tool-only tail joins the running turn',
-    withTail.turns[withTail.turns.length - 1]?.toolCalls,
-    1,
-  );
-
-  // A tool that names a turn no stored span matches belongs to a turn whose root
-  // invoke_agent has not been exported yet — the running turn. Folding it into the
-  // previous turn made the step count differ from the chat client, which opens the
-  // new turn on the first tool call.
-  const nextSession = 'smoke-next';
-  await request(`${base}/otlp/agent-host`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: turnsPayload(nextSession, '-n'),
-  });
-  const beforeNext = JSON.parse(
-    (await request(`${base}/api/session/${nextSession}`)).body,
-  );
-  await request(`${base}/otlp/agent-host`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: trailingToolPayload(
-      nextSession,
-      Date.now() + 120_000,
-      'future-turn-0001',
-      'tool-next-000001',
-    ),
-  });
-  const withNextTurn = JSON.parse(
-    (await request(`${base}/api/session/${nextSession}`)).body,
-  );
-  check(
-    'a tool from a not-yet-exported turn opens a new turn',
-    withNextTurn.turns.length,
-    beforeNext.turns.length + 1,
-  );
-  check(
-    'the new turn is reported as running',
-    withNextTurn.turns[withNextTurn.turns.length - 1]?.inProgress,
-    true,
-  );
-  check(
-    'the new turn owns only its own steps',
-    withNextTurn.turns[withNextTurn.turns.length - 1]?.toolCalls,
-    1,
-  );
-  check(
-    'the previous turn keeps its own steps',
-    withNextTurn.turns[withNextTurn.turns.length - 2]?.toolCalls,
-    0,
-  );
-
+  check('a trailing tool does not add a run', afterTail.agentRuns.length, 2);
   // The tool hangs below the model call that requested it, and the approval below
   // the tool: chat → execute_tool → permission.
   const chain = JSON.parse(
@@ -1190,21 +1065,18 @@ try {
   const agentTurn = JSON.parse(
     (await request(`${base}/api/session/${agentSession}`)).body,
   );
-  check('the turn carries its agent', agentTurn.turns[0]?.agentName, 'main-agent');
   check(
-    'the turn counts its subagent runs',
-    agentTurn.turns[0]?.subagentCount,
-    1,
+    'the main agent is named from the span name',
+    agentTurn.agentRuns.find((row) => row.isRoot)?.agentName,
+    'main-agent',
   );
   check(
-    'a subagent run is not a turn of its own',
+    'the subagent run is kept apart from the main agent',
     agentTurn.agentRuns.filter((row) => !row.isRoot).length,
     1,
   );
-  // invoke_agent spans carry no usage in the Agent Host pipeline, so the run has
-  // to report the calls it made; without this the run row showed 0/0/0 while the
-  // session totals had real numbers. A root run reports its whole window (the same
-  // numbers as the turn), while a nested run reports only its own children.
+  // A root run reports its whole window (the same numbers as the old turn row),
+  // while a nested run reports only its own children.
   check(
     'the run reports the usage of its own calls',
     agentTurn.agentRuns.find((row) => row.isRoot)?.inputTokens,

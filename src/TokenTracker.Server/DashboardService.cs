@@ -63,6 +63,12 @@ public sealed class DashboardService
     private long _outcomeVersion;
     private readonly SessionWorkspaceCache _workspaces;
 
+    /// <summary>
+    /// Pass-through of <see cref="SpanStore.DataVersion"/> so a WebSocket connection
+    /// can skip rebuilding a snapshot that no write has invalidated.
+    /// </summary>
+    public long DataVersion => _store.DataVersion;
+
     public DashboardService(
         SpanStore store,
         SessionMetadataProvider metadata,
@@ -429,12 +435,6 @@ public sealed class DashboardService
             .GetAgentRuns(sessionId, detailSource)
             .Where(row => row.StartTimeMs >= fromMs && row.StartTimeMs < toMs)
             .ToList();
-        var turns = AttachAgentRuns(
-            BuildTurns(
-                _store.GetSessionTurns(sessionId, detailSource, fromMs, toMs),
-                _store.GetSessionToolRuns(sessionId, detailSource, fromMs, toMs),
-                samples),
-            agentRuns);
         _workspaces.Flush();
 
         return new SessionPayload(
@@ -445,7 +445,6 @@ public sealed class DashboardService
             includeCalls ? calls.ToList() : new List<CallRow>(),
             events,
             tools,
-            turns,
             agentRuns,
             _store
                 .GetHookSummaries(sessionId, detailSource, fromMs, toMs)
@@ -459,73 +458,6 @@ public sealed class DashboardService
             sessionId,
             metadata?.Title,
             metadata?.WorkspacePath);
-    }
-
-    /// <summary>
-    /// A turn and its root <c>invoke_agent</c> are the same event, so the run's name
-    /// and its subagent runs belong on the turn row rather than in a second table.
-    /// The root run is matched by start time (both come from the same span); a
-    /// subagent is counted for the turn whose window contains its start.
-    /// </summary>
-    private static List<SessionTurnRow> AttachAgentRuns(
-        List<SessionTurnRow> turns,
-        IReadOnlyList<AgentRunRow> runs)
-    {
-        if (turns.Count == 0 || runs.Count == 0)
-        {
-            return turns;
-        }
-
-        const long matchToleranceMs = 2_000;
-        for (var index = 0; index < turns.Count; index++)
-        {
-            var turn = turns[index];
-            var nextStart = index + 1 < turns.Count
-                ? turns[index + 1].StartTimeMs
-                : turn.EndTimeMs ?? long.MaxValue;
-            string? agentName = null;
-            foreach (var run in runs)
-            {
-                if (run.IsRoot &&
-                    Math.Abs(run.StartTimeMs - turn.StartTimeMs) <= matchToleranceMs)
-                {
-                    agentName = run.AgentName;
-                    break;
-                }
-            }
-
-            var subagents = 0;
-            foreach (var run in runs)
-            {
-                if (!run.IsRoot &&
-                    run.StartTimeMs >= turn.StartTimeMs &&
-                    run.StartTimeMs < nextStart)
-                {
-                    subagents++;
-                }
-            }
-
-            turns[index] = new SessionTurnRow
-            {
-                Index = turn.Index,
-                StartTimeMs = turn.StartTimeMs,
-                EndTimeMs = turn.EndTimeMs,
-                Calls = turn.Calls,
-                InputTokens = turn.InputTokens,
-                CacheReadTokens = turn.CacheReadTokens,
-                OutputTokens = turn.OutputTokens,
-                ReasoningTokens = turn.ReasoningTokens,
-                CostCny = turn.CostCny,
-                ToolCalls = turn.ToolCalls,
-                InProgress = turn.InProgress,
-                AgentName = string.IsNullOrWhiteSpace(agentName)
-                    ? null
-                    : agentName,
-                SubagentCount = subagents,
-            };
-        }
-
-        return turns;
     }
 
     private static CallSample ToSample(CallRow call) => new(
@@ -544,257 +476,6 @@ public sealed class DashboardService
         call.DurationMs,
         call.ErrorType,
         call.StartTimeMs);
-
-    /// <summary>
-    /// Buckets the calls and tool runs of a session into turns. Turns are ordered by
-    /// start time; the call list may arrive either ascending (the sample projection)
-    /// or descending (the newest-first call page), so it is normalized first instead
-    /// of trusting the caller.
-    /// <para>
-    /// A root <c>invoke_agent</c> only arrives when the turn finishes, so the newest
-    /// turn is never in the list while it runs. Activity that starts after the last
-    /// known turn ended therefore becomes an extra in-progress row: without it the
-    /// status bar keeps reporting the previous turn until the run completes.
-    /// </para>
-    /// <para>
-    /// The leftover after the last turn is split by ownership, not by a guess. Every
-    /// tool run names its turn through <see cref="ToolRunSample.ParentSpanId"/>: a
-    /// parent that is one of the known turns (or none at all) is the finished turn's
-    /// own tail — the host closes the agent span before the last tool spans are
-    /// exported, so folding them back is what keeps one turn from being split into
-    /// 52 + 6. A parent that belongs to no known turn is a turn whose root span has
-    /// not been exported yet, which is exactly the running turn: its first steps
-    /// must show up immediately instead of inflating the previous turn's step count
-    /// (the client opens a new turn on the first tool call, so anything else reads
-    /// as a wrong step count).
-    /// </para>
-    /// Calls before the first turn (a period without Agent Host data) are left out
-    /// because they have no boundary. Turns without any call or tool run are dropped
-    /// (a user message the host never turned into work) and the rest are renumbered
-    /// so the list and the status bar agree on "turn N".
-    /// </summary>
-    private static List<SessionTurnRow> BuildTurns(
-        IReadOnlyList<(long StartTimeMs, long? EndTimeMs, string SpanId)> turns,
-        IReadOnlyList<ToolRunSample> toolRuns,
-        IReadOnlyList<CallSample> calls)
-    {
-        if (turns.Count == 0)
-        {
-            return new List<SessionTurnRow>();
-        }
-
-        var knownTurnIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var turn in turns)
-        {
-            knownTurnIds.Add(turn.SpanId);
-        }
-
-        var ordered = IsAscending(calls)
-            ? calls
-            : calls.OrderBy(call => call.StartTimeMs).ToList();
-        var rows = new List<SessionTurnRow>(turns.Count + 1);
-        var callIndex = 0;
-        var toolIndex = 0;
-        for (var index = 0; index < turns.Count; index++)
-        {
-            var start = turns[index].StartTimeMs;
-            // The last known turn is capped by its own end time: anything that
-            // starts later cannot belong to it, it belongs to the running turn.
-            var next = index + 1 < turns.Count
-                ? turns[index + 1].StartTimeMs
-                : turns[index].EndTimeMs ?? long.MaxValue;
-            var bucket = Accumulate(
-                ordered,
-                toolRuns,
-                ref callIndex,
-                ref toolIndex,
-                start,
-                next);
-            if (bucket.Calls == 0 && bucket.Tools == 0)
-            {
-                continue;
-            }
-
-            rows.Add(bucket.ToRow(rows.Count + 1, start));
-        }
-
-        if (callIndex < ordered.Count || toolIndex < toolRuns.Count)
-        {
-            var leftoverStart = long.MaxValue;
-            if (callIndex < ordered.Count)
-            {
-                leftoverStart = Math.Min(
-                    leftoverStart,
-                    ordered[callIndex].StartTimeMs);
-            }
-
-            if (toolIndex < toolRuns.Count)
-            {
-                leftoverStart = Math.Min(
-                    leftoverStart,
-                    toolRuns[toolIndex].StartTimeMs);
-            }
-
-            // The first call of a new turn also proves the turn exists; a tool run
-            // proves it earlier, as soon as its parent turns out to be unknown.
-            var runningStart = callIndex < ordered.Count
-                ? ordered[callIndex].StartTimeMs
-                : long.MaxValue;
-            for (var index = toolIndex; index < toolRuns.Count; index++)
-            {
-                var parent = toolRuns[index].ParentSpanId;
-                if (!string.IsNullOrEmpty(parent) && !knownTurnIds.Contains(parent))
-                {
-                    runningStart = Math.Min(runningStart, toolRuns[index].StartTimeMs);
-                    break;
-                }
-            }
-
-            if (runningStart > leftoverStart && rows.Count > 0)
-            {
-                // Everything before the running turn is the previous turn's tail.
-                var tail = Accumulate(
-                    ordered,
-                    toolRuns,
-                    ref callIndex,
-                    ref toolIndex,
-                    leftoverStart,
-                    runningStart);
-                if (tail.Calls > 0 || tail.Tools > 0)
-                {
-                    rows[^1] = ExtendWith(rows[^1], tail);
-                }
-            }
-
-            var running = Accumulate(
-                ordered,
-                toolRuns,
-                ref callIndex,
-                ref toolIndex,
-                runningStart == long.MaxValue ? leftoverStart : runningStart,
-                long.MaxValue);
-            if (running.Calls > 0 || running.Tools > 0)
-            {
-                rows.Add(running.ToRow(
-                    rows.Count + 1,
-                    runningStart == long.MaxValue ? leftoverStart : runningStart,
-                    inProgress: true));
-            }
-        }
-
-        return rows;
-    }
-
-    private static SessionTurnRow ExtendWith(
-        SessionTurnRow last,
-        TurnBucket tail) => new()
-        {
-            Index = last.Index,
-            StartTimeMs = last.StartTimeMs,
-            EndTimeMs = Math.Max(
-                last.EndTimeMs ?? last.StartTimeMs,
-                tail.LastEndMs ?? last.StartTimeMs),
-            Calls = last.Calls + tail.Calls,
-            InputTokens = last.InputTokens + tail.Input,
-            CacheReadTokens = last.CacheReadTokens + tail.Cache,
-            OutputTokens = last.OutputTokens + tail.Output,
-            ReasoningTokens = last.ReasoningTokens + tail.Reasoning,
-            CostCny = last.CostCny + tail.Cost,
-            ToolCalls = last.ToolCalls + tail.Tools,
-            InProgress = last.InProgress,
-        };
-
-    private static TurnBucket Accumulate(
-        IReadOnlyList<CallSample> calls,
-        IReadOnlyList<ToolRunSample> toolRuns,
-        ref int callIndex,
-        ref int toolIndex,
-        long fromMs,
-        long toMs)
-    {
-        var bucket = new TurnBucket();
-        while (callIndex < calls.Count && calls[callIndex].StartTimeMs < fromMs)
-        {
-            callIndex++;
-        }
-
-        while (callIndex < calls.Count && calls[callIndex].StartTimeMs < toMs)
-        {
-            var call = calls[callIndex++];
-            bucket.Calls++;
-            bucket.Input += call.InputTokens;
-            bucket.Cache += call.CacheReadTokens;
-            bucket.Output += call.OutputTokens;
-            bucket.Reasoning += call.ReasoningTokens;
-            bucket.Cost += call.CostCny ?? 0;
-            bucket.Extend(call.StartTimeMs + (call.DurationMs ?? 0));
-        }
-
-        while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < fromMs)
-        {
-            toolIndex++;
-        }
-
-        while (toolIndex < toolRuns.Count && toolRuns[toolIndex].StartTimeMs < toMs)
-        {
-            var tool = toolRuns[toolIndex++];
-            bucket.Tools++;
-            bucket.Extend(tool.EndTimeMs);
-        }
-
-        return bucket;
-    }
-
-    private sealed class TurnBucket
-    {
-        public long Calls;
-        public long Tools;
-        public long Input;
-        public long Cache;
-        public long Output;
-        public long Reasoning;
-        public double Cost;
-        private long? _lastEnd;
-
-        public long? LastEndMs => _lastEnd;
-
-        public void Extend(long endMs)
-        {
-            if (_lastEnd is null || endMs > _lastEnd)
-            {
-                _lastEnd = endMs;
-            }
-        }
-
-        public SessionTurnRow ToRow(int index, long startMs, bool inProgress = false) => new()
-        {
-            Index = index,
-            StartTimeMs = startMs,
-            // The time the turn actually worked, not the idle gap until the user
-            // sent the next message.
-            EndTimeMs = _lastEnd ?? startMs,
-            Calls = Calls,
-            InputTokens = Input,
-            CacheReadTokens = Cache,
-            OutputTokens = Output,
-            ReasoningTokens = Reasoning,
-            CostCny = Cost,
-            ToolCalls = Tools,
-            InProgress = inProgress,
-        };
-    }
-    private static bool IsAscending(IReadOnlyList<CallSample> calls)
-    {
-        for (var index = 1; index < calls.Count; index++)
-        {
-            if (calls[index].StartTimeMs < calls[index - 1].StartTimeMs)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
 
     private static List<SessionEventRow> BuildChatEvents(
         IReadOnlyList<CallRow> calls) =>

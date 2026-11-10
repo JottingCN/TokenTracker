@@ -30,7 +30,6 @@ import type {
   HookSummaryRow,
   SessionEventRow,
   SessionPayload,
-  SessionTurnRow,
   ToolCallRow,
 } from '../types';
 import { useUi } from '../ui';
@@ -246,32 +245,11 @@ export function SessionPage({
       },
     },
     {
-      title: t('mcp.server'),
-      key: 'mcpServer',
-      width: 160,
-      ellipsis: true,
-      render: (_, row) => row.mcpServerHashText,
-    },
-    {
-      title: t('mcp.tool'),
-      key: 'mcpTool',
-      width: 160,
-      ellipsis: true,
-      render: (_, row) => row.mcpToolNameText,
-    },
-    {
       title: t('error'),
       key: 'errorType',
       width: 130,
       ellipsis: true,
       render: (_, row) => row.errorTypeText,
-    },
-    {
-      title: t('agent'),
-      key: 'agentName',
-      width: 150,
-      ellipsis: true,
-      render: (_, row) => row.agentNameText,
     },
     {
       title: t('calls'),
@@ -281,16 +259,20 @@ export function SessionPage({
       render: (_, row) => number.format(row.calls),
     },
     {
-      title: t('avg.duration'),
-      key: 'avgDuration',
-      width: 110,
+      title: (
+        <Tooltip title={t('median.duration.hint')}>
+          {t('median.duration')}
+        </Tooltip>
+      ),
+      key: 'medianDuration',
+      width: 120,
       align: 'right',
-      render: (_, row) => formatLatency(row.avgDurationMs),
+      render: (_, row) => formatLatency(row.medianDurationMs),
     },
     {
       title: t('max.duration'),
       key: 'maxDuration',
-      width: 110,
+      width: 120,
       align: 'right',
       render: (_, row) => formatLatency(row.maxDurationMs),
     },
@@ -317,72 +299,67 @@ export function SessionPage({
     },
   ];
 
-  const turnColumns: ColumnsType<SessionTurnRow> = [
+  // The run list mirrors the turn columns: identity, model, calls, tokens, hit
+  // rate, duration, start, cost. A root run's numbers are the same as its turn's
+  // (its whole window); a subagent only reports its own calls.
+  const agentRunColumns: ColumnsType<AgentRunRow> = [
     {
-      title: t('turns'),
-      key: 'index',
-      width: 90,
-      align: 'right',
-      render: (_, row) =>
-        row.inProgress ? (
-          <Space size={4}>
-            <span>{row.indexText}</span>
-            <Tag color="processing">{t('in.progress')}</Tag>
-          </Space>
-        ) : (
-          row.indexText
-        ),
-    },
-    {
-      title: t('start'),
-      key: 'start',
-      width: 130,
-      render: (_, row) => row.startText,
-    },
-    {
-      // A turn and its root invoke_agent are the same event, so the agent identity
-      // belongs here instead of in a second table; subagents are counted because
-      // their calls are already part of the turn's totals.
       title: t('agent'),
       key: 'agent',
-      width: 170,
+      width: 190,
       ellipsis: true,
-      render: (_, row) => (
-        <Space size={4}>
-          <span>{agentLabel(row.agentName, t) ?? t('main.agent')}</span>
-          {row.subagentCount > 0 && (
-            <Tag color="purple">{`+${number.format(row.subagentCount)}`}</Tag>
-          )}
-        </Space>
-      ),
+      render: (_, row) => {
+        const label = row.isRoot
+          ? agentLabel(row.agentName, t)
+          : row.agentText === '-'
+            ? null
+            : row.agentText;
+        return (
+          <Space size={4}>
+            {row.isRoot ? (
+              <Tag>{t('main.agent')}</Tag>
+            ) : (
+              <Tag color="purple">{t('subagent')}</Tag>
+            )}
+            {label && <span>{label}</span>}
+          </Space>
+        );
+      },
     },
     {
-      title: t('duration'),
-      key: 'duration',
-      width: 100,
-      align: 'right',
-      render: (_, row) => row.durationText,
+      title: t('model'),
+      key: 'model',
+      width: 180,
+      ellipsis: true,
+      render: (_, row) => row.modelText,
     },
     {
       title: t('calls'),
-      key: 'calls',
+      key: 'turns',
       width: 80,
       align: 'right',
-      render: (_, row) => number.format(row.calls),
+      render: (_, row) => row.turnText,
     },
     {
       title: t('input.tokens'),
       key: 'input',
-      width: 110,
+      width: 120,
       align: 'right',
       render: (_, row) => number.format(row.inputTokens),
     },
     {
       title: t('cached.tokens'),
       key: 'cache',
-      width: 110,
+      width: 120,
       align: 'right',
       render: (_, row) => number.format(row.cacheReadTokens),
+    },
+    {
+      title: t('hit'),
+      key: 'hitRate',
+      width: 80,
+      align: 'right',
+      render: (_, row) => row.hitRateText,
     },
     {
       title: t('output.tokens'),
@@ -399,112 +376,6 @@ export function SessionPage({
       render: (_, row) => number.format(row.reasoningTokens),
     },
     {
-      title: t('tool.calls'),
-      key: 'toolCalls',
-      width: 100,
-      align: 'right',
-      render: (_, row) => number.format(row.toolCalls),
-    },
-    {
-      title: t('estimated.cost'),
-      key: 'cost',
-      width: 120,
-      align: 'right',
-      render: (_, row) => formatMoney(row.costCny),
-    },
-  ];
-
-  const agentRunColumns: ColumnsType<AgentRunRow> = [
-    {
-      title: t('scope'),
-      key: 'scope',
-      width: 90,
-      render: (_, row) =>
-        row.isRoot ? (
-          <Tag>{t('root')}</Tag>
-        ) : (
-          <Tag color="purple">{t('subagent')}</Tag>
-        ),
-    },
-    {
-      title: t('agent'),
-      key: 'agent',
-      width: 160,
-      ellipsis: true,
-      render: (_, row) =>
-        // Agent Host leaves gen_ai.agent.name unset on most root turns; the run is
-        // still the main agent, not an unnamed subagent.
-        row.agentText === '-' && row.isRoot ? t('main.agent') : row.agentText,
-    },
-    {
-      title: t('type'),
-      key: 'agentType',
-      width: 100,
-      ellipsis: true,
-      render: (_, row) => row.agentTypeText,
-    },
-    {
-      title: t('provider'),
-      key: 'provider',
-      width: 120,
-      ellipsis: true,
-      render: (_, row) => row.providerText,
-    },
-    {
-      title: t('model'),
-      key: 'model',
-      width: 180,
-      ellipsis: true,
-      render: (_, row) => row.modelText,
-    },
-    {
-      title: t('turns'),
-      key: 'turns',
-      width: 70,
-      align: 'right',
-      render: (_, row) => row.turnText,
-    },
-    {
-      title: t('input.cache.output'),
-      key: 'tokens',
-      width: 190,
-      align: 'right',
-      render: (_, row) =>
-        `${row.inputText} / ${row.cacheText} / ${row.outputText}`,
-    },
-    {
-      title: t('repo.branch'),
-      key: 'repo',
-      width: 220,
-      ellipsis: true,
-      render: (_, row) => {
-        const parts = [row.gitRepository, row.gitBranch].filter(
-          (value): value is string => Boolean(value),
-        );
-        if (parts.length === 0) {
-          return '-';
-        }
-
-        const details = [
-          row.gitRepository ? `repo: ${row.gitRepository}` : null,
-          row.gitBranch ? `branch: ${row.gitBranch}` : null,
-          row.gitCommit ? `commit: ${row.gitCommit}` : null,
-          row.githubOrg ? `org: ${row.githubOrg}` : null,
-        ].filter((value): value is string => Boolean(value));
-        return (
-          <Tooltip
-            title={
-              <span style={{ whiteSpace: 'pre-line' }}>
-                {details.join('\n')}
-              </span>
-            }
-          >
-            <span>{parts.join(' / ')}</span>
-          </Tooltip>
-        );
-      },
-    },
-    {
       title: t('duration'),
       key: 'duration',
       width: 100,
@@ -519,9 +390,16 @@ export function SessionPage({
       render: (_, row) => formatTime(row.startTimeMs),
     },
     {
+      title: t('estimated.cost'),
+      key: 'cost',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatMoney(row.costCny),
+    },
+    {
       title: t('error'),
       key: 'error',
-      width: 120,
+      width: 110,
       ellipsis: true,
       render: (_, row) =>
         row.isError ? (
@@ -531,7 +409,6 @@ export function SessionPage({
         ),
     },
   ];
-
   const hookColumns: ColumnsType<HookSummaryRow> = [
     {
       title: t('hook'),
@@ -693,54 +570,6 @@ export function SessionPage({
           </Card>
         }
       />
-
-      <Card
-        size="small"
-        styles={collapsedBodyStyle(openPanels.includes('turns'))}
-        title={
-          <Tooltip title={t('turns.hint')}>
-            <span style={{ cursor: 'help' }}>{`${t('turns.by.turn')}(${data?.turns?.length ?? 0})`}</span>
-          </Tooltip>
-        }
-        extra={
-          <Space size={8}>
-            {data && (data.turns?.length ?? 0) > 0 && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {`${t('total.duration')}: ${formatLatency(
-                  (data.turns ?? []).reduce(
-                    (total, row) =>
-                      total + Math.max(0, (row.endTimeMs ?? row.startTimeMs) - row.startTimeMs),
-                    0,
-                  ),
-                )}`}
-              </Typography.Text>
-            )}
-            <CollapseToggle
-              panel="turns"
-              open={openPanels.includes('turns')}
-              onToggle={togglePanel}
-            />
-          </Space>
-        }
-      >
-        {openPanels.includes('turns') &&
-          (data && (data.turns?.length ?? 0) === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={t('turns.none')}
-            />
-          ) : (
-            <Table
-              size="small"
-              rowKey={(row) => String(row.index)}
-              columns={turnColumns}
-              dataSource={data?.turns ?? []}
-              loading={!data}
-              pagination={false}
-              scroll={{ x: 1040, y: listHeight }}
-            />
-          ))}
-      </Card>
 
       <Card
         size="small"

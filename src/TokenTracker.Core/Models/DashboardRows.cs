@@ -260,6 +260,12 @@ public sealed class ToolCallRow
     public string? Source { get; init; }
     public long Calls { get; init; }
     public double? AvgDurationMs { get; init; }
+    /// <summary>
+    /// Median duration. A tool such as the browser stays open for hours, and a
+    /// single such span made the average report 30 minutes for a tool that
+    /// normally returns in about a second.
+    /// </summary>
+    public double? MedianDurationMs { get; init; }
     public double? MaxDurationMs { get; init; }
     public long ErrorCount { get; init; }
     public long LastSeenMs { get; init; }
@@ -275,6 +281,7 @@ public sealed class ToolCallRow
     public string CallsText => DisplayFormat.Number(Calls);
     public string ToolDisplayText => Otlp.ToolNameResolver.Display(Tool);
     public string AvgDurationText => DisplayFormat.Duration(AvgDurationMs);
+    public string MedianDurationText => DisplayFormat.Duration(MedianDurationMs);
     public string MaxDurationText => DisplayFormat.Duration(MaxDurationMs);
     public string LastSeenText => DisplayFormat.LocalTime(LastSeenMs);
     public string ToolTypeText => ToolTypes.Count > 0
@@ -323,6 +330,7 @@ public sealed class AgentRunRow
     public long CacheReadTokens { get; init; }
     public long CacheCreationTokens { get; init; }
     public long ReasoningTokens { get; init; }
+    public double? CostCny { get; init; }
     public long StartTimeMs { get; init; }
     public long? EndTimeMs { get; init; }
     public bool IsError { get; init; }
@@ -351,77 +359,19 @@ public sealed class AgentRunRow
     public string InputText => DisplayFormat.Number(InputTokens);
     public string CacheText => DisplayFormat.Number(CacheReadTokens);
     public string OutputText => DisplayFormat.Number(OutputTokens);
+    public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
     public string TimeText => DisplayFormat.LocalTime(StartTimeMs);
     public string DurationText => DisplayFormat.Duration(
         EndTimeMs is null ? null : EndTimeMs - StartTimeMs);
+    public string HitRateText => InputTokens > 0
+        ? $"{CacheReadTokens * 100d / InputTokens:0.0}%"
+        : "-";
+    public string CostText => CostCny is null
+        ? "-"
+        : DisplayFormat.Cost(CostCny.Value);
     public string ErrorText => string.IsNullOrWhiteSpace(ErrorType)
         ? "-"
         : ErrorType;
-}
-
-/// <summary>
-/// One tool execution as seen by the turn builder: the start decides which turn
-/// owns it, the end decides how long the turn was still working.
-/// <para>
-/// <c>ParentSpanId</c> is the tool's own parent inside the Agent Host trace, which
-/// is the turn's root <c>invoke_agent</c>. A tool whose parent is not one of the
-/// known turns therefore belongs to a turn that has not been exported yet — the
-/// only way to tell a running turn's first steps from the previous turn's tail
-/// before that turn's first model call completes.
-/// </para>
-/// </summary>
-public readonly record struct ToolRunSample(
-    long StartTimeMs,
-    long EndTimeMs,
-    string? ParentSpanId = null);
-
-/// <summary>
-/// One Agent Host turn. A turn starts at a root <c>invoke_agent</c> span (one per
-/// user message) and owns every call and tool run until the next turn starts.
-/// </summary>
-public sealed class SessionTurnRow
-{
-    public int Index { get; init; }
-    public long StartTimeMs { get; init; }
-    public long? EndTimeMs { get; init; }
-    public long Calls { get; init; }
-    public long InputTokens { get; init; }
-    public long CacheReadTokens { get; init; }
-    public long OutputTokens { get; init; }
-    public long ReasoningTokens { get; init; }
-    public double CostCny { get; init; }
-    public long ToolCalls { get; init; }
-
-    /// <summary>
-    /// True for the trailing bucket that has activity but no root invoke_agent yet:
-    /// that span only arrives when the turn ends, so without this flag a running
-    /// turn would be reported as the previous one.
-    /// </summary>
-    public bool InProgress { get; init; }
-
-    /// <summary>
-    /// Name of the main-agent run that owns the turn (null when the host did not
-    /// name it). A turn and a root <c>invoke_agent</c> are the same event, so the
-    /// run is shown on the turn instead of in a separate table.
-    /// </summary>
-    public string? AgentName { get; init; }
-
-    /// <summary>
-    /// Subagent runs that started inside this turn. Their calls and tools are part
-    /// of the turn's totals, so the count is the only thing the turn row needs.
-    /// </summary>
-    public int SubagentCount { get; init; }
-
-    public string IndexText => DisplayFormat.Number(Index);
-    public string StartText => DisplayFormat.LocalTime(StartTimeMs);
-    public string DurationText => DisplayFormat.Duration(
-        EndTimeMs is null ? null : EndTimeMs - StartTimeMs);
-    public string CallsText => DisplayFormat.Number(Calls);
-    public string InputText => DisplayFormat.Number(InputTokens);
-    public string CacheText => DisplayFormat.Number(CacheReadTokens);
-    public string OutputText => DisplayFormat.Number(OutputTokens);
-    public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
-    public string ToolCallsText => DisplayFormat.Number(ToolCalls);
 }
 
 public sealed class HookSummaryRow

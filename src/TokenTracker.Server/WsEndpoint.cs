@@ -134,9 +134,27 @@ public static class WsEndpoint
                 await Task.Delay(50, token);
             }
 
+            Subscription.SubscriptionState? lastState = null;
+            long lastDataVersion = -1;
+            byte[]? lastPayload = null;
+
             while (!token.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
                 var state = subscription.Snapshot();
+                var dataVersion = service.DataVersion;
+                if (lastPayload is not null &&
+                    dataVersion == lastDataVersion &&
+                    state == lastState)
+                {
+                    // Nothing changed since the last snapshot: rebuilding it would
+                    // hold the write lock and starve every other request (the
+                    // dashboard and model views rebuild in ~1s on this data).
+                    await connection.WaitForSignalAsync(
+                        RealtimeHub.FallbackInterval,
+                        token);
+                    continue;
+                }
+
                 byte[] payload;
                 try
                 {
@@ -230,6 +248,9 @@ public static class WsEndpoint
                     continue;
                 }
 
+                lastState = state;
+                lastDataVersion = dataVersion;
+                lastPayload = payload;
                 await socket.SendAsync(payload, WebSocketMessageType.Text, true, token);
                 await connection.WaitForSignalAsync(
                     RealtimeHub.FallbackInterval,

@@ -168,6 +168,7 @@ export interface ToolCallRow {
   tool: string;
   source: string | null;  calls: number;
   avgDurationMs: number | null;
+  medianDurationMs: number | null;
   maxDurationMs: number | null;
   errorCount: number;
   lastSeenMs: number;
@@ -181,6 +182,7 @@ export interface ToolCallRow {
   callsText: string;
   toolDisplayText: string;
   avgDurationText: string;
+  medianDurationText: string;
   maxDurationText: string;
   lastSeenText: string;
   toolTypeText: string;
@@ -214,6 +216,7 @@ export interface AgentRunRow {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   reasoningTokens: number;
+  costCny: number | null;
   startTimeMs: number;
   endTimeMs: number | null;
   isError: boolean;
@@ -229,8 +232,11 @@ export interface AgentRunRow {
   inputText: string;
   cacheText: string;
   outputText: string;
+  reasoningText: string;
   timeText: string;
   durationText: string;
+  hitRateText: string;
+  costText: string;
   errorText: string;
 }
 
@@ -383,38 +389,12 @@ export interface SessionModelPayload {
   summary: Summary;
 }
 
-export interface SessionTurnRow {
-  index: number;
-  startTimeMs: number;
-  endTimeMs: number | null;
-  calls: number;
-  inputTokens: number;
-  cacheReadTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  costCny: number;
-  toolCalls: number;
-  inProgress: boolean;
-  agentName: string | null;
-  subagentCount: number;
-  indexText: string;
-  startText: string;
-  durationText: string;
-  callsText: string;
-  inputText: string;
-  cacheText: string;
-  outputText: string;
-  reasoningText: string;
-  toolCallsText: string;
-}
-
 export interface SessionPayload {
   summary: Summary;
   models: SessionModelPayload[];
   calls: CallRow[];
   events: SessionEventRow[];
   tools: ToolCallRow[];
-  turns: SessionTurnRow[];
   agentRuns: AgentRunRow[];
   hooks: HookSummaryRow[];
   signalHealth: SignalHealth;

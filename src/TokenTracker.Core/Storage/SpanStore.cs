@@ -66,6 +66,17 @@ public sealed partial class SpanStore
 
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    // Bumped on every write so a WebSocket snapshot can tell whether the payload it
+    // already sent is still current. Rebuilding an unchanged dashboard/model payload
+    // takes about a second on real data, so repeating it for every ingest batch
+    // starved the HTTP endpoints.
+    private long _dataVersion;
+
+    /// <summary>Monotonic counter of successful writes (see <see cref="_dataVersion"/>).</summary>
+    public long DataVersion => Interlocked.Read(ref _dataVersion);
+
+    private void BumpDataVersion() => Interlocked.Increment(ref _dataVersion);
+
     // The version found on open, so callers can tell an upgraded file from one that
     // was written by a newer build.
     private int _openedSchemaVersion;
@@ -578,6 +589,7 @@ public sealed partial class SpanStore
             return 0;
         }
 
+        BumpDataVersion();
         _writeLock.Wait();
         try
         {
@@ -813,6 +825,7 @@ public sealed partial class SpanStore
             return 0;
         }
 
+        BumpDataVersion();
         _writeLock.Wait();
         try
         {
@@ -1654,55 +1667,6 @@ public sealed partial class SpanStore
                 ErrorCount = reader.GetInt64(4),
                 LastSeenMs = reader.GetInt64(5),
             });
-        }
-
-        return rows;
-    }
-
-    /// <summary>
-    /// Start and end of each tool run, used to attribute tool calls to a turn and
-    /// to measure how long the turn kept working. The parent span id comes along
-    /// because it names the turn that owns the tool (<c>invoke_agent</c>), even
-    /// while that turn's own span has not been exported yet.
-    /// </summary>
-    public IReadOnlyList<ToolRunSample> GetSessionToolRuns(
-        string sessionId,
-        string? source = null,
-        long fromMs = 0,
-        long toMs = long.MaxValue)
-    {
-        var sourceFilter = string.IsNullOrWhiteSpace(source)
-            ? string.Empty
-            : $" AND {SourceSql} = @source";
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = $"""
-            SELECT start_time_ms, end_time_ms, parent_span_id
-            FROM session_events
-            WHERE session_id = @session_id
-              AND operation = 'execute_tool'
-              AND start_time_ms >= @from
-              AND start_time_ms < @to{sourceFilter}
-            ORDER BY start_time_ms;
-            """;
-        command.Parameters.AddWithValue("@session_id", sessionId);
-        command.Parameters.AddWithValue("@from", fromMs);
-        command.Parameters.AddWithValue("@to", toMs);
-        if (!string.IsNullOrWhiteSpace(source))
-        {
-            command.Parameters.AddWithValue("@source", source);
-        }
-
-        var rows = new List<ToolRunSample>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            var startMs = reader.GetInt64(0);
-            var endMs = reader.IsDBNull(1) ? startMs : reader.GetInt64(1);
-            rows.Add(new ToolRunSample(
-                startMs,
-                Math.Max(startMs, endMs),
-                reader.IsDBNull(2) ? null : reader.GetString(2)));
         }
 
         return rows;
@@ -2739,6 +2703,7 @@ public sealed partial class SpanStore
         private double _totalDurationMs;
         private long _durationSamples;
         private double? _maxDurationMs;
+        private readonly List<double> _durations = new();
 
         public ToolAccumulator(string tool, string source)
         {
@@ -2771,6 +2736,7 @@ public sealed partial class SpanStore
                 var duration = (double)(endMs.Value - startMs);
                 _totalDurationMs += duration;
                 _durationSamples++;
+                _durations.Add(duration);
                 _maxDurationMs = Math.Max(_maxDurationMs ?? 0, duration);
             }
 
@@ -2796,6 +2762,7 @@ public sealed partial class SpanStore
             AvgDurationMs = _durationSamples > 0
                 ? _totalDurationMs / _durationSamples
                 : null,
+            MedianDurationMs = Median(),
             MaxDurationMs = _maxDurationMs,
             ErrorCount = ErrorCount,
             LastSeenMs = LastSeenMs,
@@ -2807,6 +2774,20 @@ public sealed partial class SpanStore
             ErrorTypes = Sorted(_errorTypes),
             AgentNames = Sorted(_agentNames),
         };
+
+        private double? Median()
+        {
+            if (_durations.Count == 0)
+            {
+                return null;
+            }
+
+            _durations.Sort();
+            var middle = _durations.Count / 2;
+            return _durations.Count % 2 == 0
+                ? (_durations[middle - 1] + _durations[middle]) / 2
+                : _durations[middle];
+        }
 
         private static void AddValue(HashSet<string> values, string? value)
         {

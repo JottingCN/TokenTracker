@@ -1539,106 +1539,6 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void TurnStartsOnlyIncludeRootAgentInvocations()
-    {
-        var directory = Path.Combine(
-            Path.GetTempPath(),
-            "tokentracker-tests",
-            Guid.NewGuid().ToString("N"));
-        var databasePath = Path.Combine(directory, "tokentracker.db");
-
-        try
-        {
-            var store = new SpanStore(databasePath);
-            store.InsertEvents(new[]
-            {
-                // Root turn: its parent is the host session span, which is not
-                // stored, so the turn has no local ancestor.
-                new OtlpEventRecord
-                {
-                    TraceId = "t1",
-                    SpanId = "a1",
-                    ParentSpanId = "host-session",
-                    Operation = "invoke_agent",
-                    SessionId = "session-1",
-                    ServiceName = "github-copilot",
-                    Source = "agent-host",
-                    StartTimeMs = 1_000,
-                    EndTimeMs = 2_000,
-                    ReceivedAtMs = 2_000,
-                },
-                // Subagent: hangs below a stored tool span, so it is not a turn.
-                new OtlpEventRecord
-                {
-                    TraceId = "t1",
-                    SpanId = "tool-1",
-                    ParentSpanId = "a1",
-                    Operation = "execute_tool",
-                    ToolName = "task",
-                    SessionId = "session-1",
-                    ServiceName = "github-copilot",
-                    Source = "agent-host",
-                    StartTimeMs = 1_100,
-                    EndTimeMs = 1_200,
-                    ReceivedAtMs = 1_200,
-                },
-                new OtlpEventRecord
-                {
-                    TraceId = "t1",
-                    SpanId = "sub-1",
-                    ParentSpanId = "tool-1",
-                    Operation = "invoke_agent",
-                    SessionId = "session-1",
-                    ServiceName = "github-copilot",
-                    Source = "agent-host",
-                    StartTimeMs = 1_150,
-                    EndTimeMs = 1_900,
-                    ReceivedAtMs = 1_900,
-                },
-                new OtlpEventRecord
-                {
-                    TraceId = "t2",
-                    SpanId = "a2",
-                    ParentSpanId = "host-session",
-                    Operation = "invoke_agent",
-                    SessionId = "session-1",
-                    ServiceName = "github-copilot",
-                    Source = "agent-host",
-                    StartTimeMs = 10_000,
-                    EndTimeMs = 11_000,
-                    ReceivedAtMs = 11_000,
-                },
-            });
-
-            Assert.Equal(
-                new (long, long?, string)[]
-                {
-                    (1_000L, 2_000L, "a1"),
-                    (10_000L, 11_000L, "a2"),
-                },
-                store.GetSessionTurns("session-1"));
-            Assert.Equal(
-                new (long, long?, string)[] { (10_000L, 11_000L, "a2") },
-                store.GetSessionTurns("session-1", null, 5_000, 20_000));
-            Assert.Empty(store.GetSessionTurns("session-1", "copilot-chat"));
-            Assert.Equal(
-                new[] { new ToolRunSample(1_100, 1_200, "a1") },
-                store.GetSessionToolRuns("session-1"));
-            Assert.Equal(
-                new (long, long?, string)[] { (10_000L, 11_000L, "a2") },
-                store.GetSessionTurns("session-1", null, 9_000, 20_000));
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(directory))
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-        }
-    }
-
-    [Fact]
     public void TraceTopologyHangsToolsUnderTheRequestingChat()
     {
         var directory = Path.Combine(
@@ -1841,6 +1741,184 @@ public sealed class SpanStoreTests
         }
     }
 
+    [Fact]
+    public void TraceTopologyKeepsSubagentWorkUnderItsOwnAgent()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            const string trace = "subagent-trace";
+            store.InsertMany(new[]
+            {
+                Span(
+                    trace, "chat-main", "session-1", "deepseek-flash",
+                    2_000, 10, 0, 5, 0.1,
+                    source: "agent-host",
+                    serviceName: "github-copilot",
+                    parentSpanId: "turn-root"),
+                Span(
+                    trace, "chat-sub", "session-1", "deepseek-flash",
+                    5_000, 10, 0, 5, 0.1,
+                    source: "agent-host",
+                    serviceName: "github-copilot",
+                    parentSpanId: "sub-inside-task"),
+            });
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "turn-root",
+                    ParentSpanId = "host-session",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 9_000,
+                    ReceivedAtMs = 9_000,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "task-tool",
+                    ParentSpanId = "turn-root",
+                    Operation = "execute_tool",
+                    ToolName = "task",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 3_000,
+                    EndTimeMs = 8_000,
+                    ReceivedAtMs = 8_000,
+                },
+                // A subagent's invoke_agent hangs below the tool that delegated to it.
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "sub-inside-task",
+                    ParentSpanId = "task-tool",
+                    Operation = "invoke_agent",
+                    AgentName = "explore",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 4_000,
+                    EndTimeMs = 7_000,
+                    ReceivedAtMs = 7_000,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = trace,
+                    SpanId = "sub-tool",
+                    ParentSpanId = "sub-inside-task",
+                    Operation = "execute_tool",
+                    ToolName = "grep",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 6_000,
+                    EndTimeMs = 6_500,
+                    ReceivedAtMs = 6_500,
+                },
+            });
+
+            var nodes = store.GetTraceNodes("session-1");
+            var mainChat = Assert.Single(nodes, node => node.Id.EndsWith("chat-main"));
+            var taskTool = Assert.Single(nodes, node => node.Id.EndsWith("task-tool"));
+            var subAgent = Assert.Single(
+                nodes,
+                node => node.Id.EndsWith("sub-inside-task"));
+            var subTool = Assert.Single(nodes, node => node.Id.EndsWith("sub-tool"));
+
+            // A tool requested by the main model hangs under that chat...
+            Assert.Equal(mainChat.Id, taskTool.ParentId);
+            // ...the subagent hangs under the delegating tool...
+            Assert.Equal(taskTool.Id, subAgent.ParentId);
+            // ...and the subagent's own tool must stay under the subagent instead
+            // of being re-hung under the previous chat of the parent turn.
+            Assert.Equal(subAgent.Id, subTool.ParentId);
+            Assert.Equal(subAgent.Depth + 1, subTool.Depth);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void TraceTopologyLabelsImportedHooksWithTheirType()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertEvents(new[]
+            {
+                new OtlpEventRecord
+                {
+                    TraceId = "hook-trace",
+                    SpanId = "hook-parent",
+                    ParentSpanId = "host-session",
+                    Operation = "invoke_agent",
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 1_000,
+                    EndTimeMs = 9_000,
+                    ReceivedAtMs = 9_000,
+                },
+                // Local imports materialise hook.end as its own event row.
+                new OtlpEventRecord
+                {
+                    TraceId = "hook-trace",
+                    SpanId = "hook-parent#hook#1",
+                    ParentSpanId = "hook-parent",
+                    Operation = "execute_hook",
+                    Name = "execute_hook preToolUse",
+                    HookType = "preToolUse",
+                    HookDurationMs = 12,
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 2_000,
+                    EndTimeMs = 2_012,
+                    ReceivedAtMs = 9_000,
+                },
+            });
+
+            var nodes = store.GetTraceNodes("session-1");
+            var hook = Assert.Single(
+                nodes,
+                node => node.Operation == "execute_hook");
+            // The operation tag already says "Hook", so the label is the type.
+            Assert.Equal("preToolUse", hook.Label);
+            Assert.Equal("hook-parent", hook.ParentId?.Split(':').Last());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
     [Fact]
     public void TraceTopologyShowsApprovalSpansWithKindAndResult()
     {

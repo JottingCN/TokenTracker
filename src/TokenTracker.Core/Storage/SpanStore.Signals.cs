@@ -13,6 +13,7 @@ public sealed partial class SpanStore
             return 0;
         }
 
+        BumpDataVersion();
         _writeLock.Wait();
         try
         {
@@ -158,6 +159,7 @@ public sealed partial class SpanStore
             return 0;
         }
 
+        BumpDataVersion();
         _writeLock.Wait();
         try
         {
@@ -564,71 +566,6 @@ public sealed partial class SpanStore
         }
     }
 
-    /// <summary>
-    /// Start and end of the session's turns. Agent Host opens exactly one root
-    /// <c>invoke_agent</c> span per user message and it only arrives once the turn
-    /// finished, so the end time is also the only way to tell that newer activity
-    /// belongs to a turn that is still running. A subagent's invoke_agent hangs
-    /// below a stored tool span, so requiring the parent to be unknown keeps the
-    /// list to real turns. The span id is returned because it is what a tool's
-    /// parent points at, so the turn builder can recognise a not-yet-exported turn.
-    /// </summary>
-    public IReadOnlyList<(long StartTimeMs, long? EndTimeMs, string SpanId)> GetSessionTurns(
-        string sessionId,
-        string? source = null,
-        long fromMs = 0,
-        long toMs = long.MaxValue)
-    {
-        var sourceFilter = string.IsNullOrWhiteSpace(source)
-            ? string.Empty
-            : $" AND {SourceSql} = @source";
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = $"""
-            SELECT start_time_ms, end_time_ms, span_id
-            FROM session_events e
-            WHERE e.session_id = @session_id
-              AND e.operation = 'invoke_agent'
-              AND e.start_time_ms >= @from
-              AND e.start_time_ms < @to{sourceFilter}
-              AND NOT EXISTS (
-                  SELECT 1 FROM session_events p
-                  WHERE p.session_id = e.session_id
-                    AND p.span_id = e.parent_span_id)
-            ORDER BY e.start_time_ms;
-            """;
-        command.Parameters.AddWithValue("@session_id", sessionId);
-        command.Parameters.AddWithValue("@from", fromMs);
-        command.Parameters.AddWithValue("@to", toMs);
-        if (!string.IsNullOrWhiteSpace(source))
-        {
-            command.Parameters.AddWithValue("@source", source);
-        }
-
-        var rows = new List<(long StartTimeMs, long? EndTimeMs, string SpanId)>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            rows.Add((
-                reader.GetInt64(0),
-                reader.IsDBNull(1) ? null : reader.GetInt64(1),
-                reader.GetString(2)));
-        }
-
-        return rows;
-    }
-
-    /// <summary>
-    /// Agent runs of a session. The stored <c>is_root</c> flag cannot be trusted for
-    /// the Agent Host pipeline: a turn's root <c>invoke_agent</c> does have a parent
-    /// (the host session span, which is never ingested), so every turn used to be
-    /// reported as a subagent. Root therefore means "the parent span is not stored",
-    /// the same rule the turn list uses. The run name falls back to the span name
-    /// because Agent Host only sets <c>gen_ai.agent.name</c> for some runs, the model
-    /// falls back to the dominant chat model of the same trace (the
-    /// <c>invoke_agent</c> span carries none), and the turn count falls back to the
-    /// chat spans that started inside the run.
-    /// </summary>
     public IReadOnlyList<AgentRunRow> GetAgentRuns(
         string sessionId,
         string? source = null)
@@ -808,7 +745,27 @@ public sealed partial class SpanStore
                         WHERE s.session_id = a.session_id
                           AND s.parent_span_id = a.span_id
                           AND s.model IS NOT NULL),
-                       0) AS run_reasoning
+                       0) AS run_reasoning,
+                   COALESCE(
+                       CASE WHEN EXISTS (
+                                SELECT 1 FROM session_events p
+                                WHERE p.session_id = a.session_id
+                                  AND p.span_id = a.parent_span_id
+                                  AND p.operation = 'execute_tool')
+                            THEN NULL
+                            ELSE (SELECT SUM(s.cost_cny) FROM spans s
+                                  WHERE s.session_id = a.session_id
+                                    AND s.model IS NOT NULL
+                                    AND s.otel_source = 'combined'
+                                    AND s.start_time_ms >= a.start_time_ms
+                                    AND (a.end_time_ms IS NULL
+                                         OR s.start_time_ms < a.end_time_ms))
+                       END,
+                       (SELECT SUM(s.cost_cny) FROM spans s
+                        WHERE s.session_id = a.session_id
+                          AND s.parent_span_id = a.span_id
+                          AND s.model IS NOT NULL),
+                       0) AS run_cost
             FROM agent_runs a
             WHERE a.session_id = @session_id{sourceFilter}
             ORDER BY a.start_time_ms, a.trace_id, a.span_id;
@@ -886,6 +843,7 @@ public sealed partial class SpanStore
                 CacheReadTokens = cacheReadTokens,
                 CacheCreationTokens = cacheCreationTokens,
                 ReasoningTokens = reasoningTokens,
+                CostCny = reader.IsDBNull(30) ? null : reader.GetDouble(30),
                 StartTimeMs = reader.GetInt64(21),
                 EndTimeMs = reader.IsDBNull(22) ? null : reader.GetInt64(22),
                 IsError = reader.GetInt64(23) != 0,
@@ -1223,7 +1181,11 @@ public sealed partial class SpanStore
                 // label per row.
                 Name = item.Operation == "permission"
                     ? PermissionLabel(item)
-                    : item.Name,
+                    // The operation tag already says "Hook", so the row label only
+                    // needs the hook type ("preToolUse").
+                    : item.Operation == "execute_hook"
+                        ? HookTypeFromName(item.Name)
+                        : item.Name,
                 // Permission labels already carry the tool name, so keeping Tool
                 // would repeat it through TraceNodeRow.Label. The field is still
                 // filled so AttachApprovalTools can tell whether the span named the
@@ -1273,12 +1235,23 @@ public sealed partial class SpanStore
     private static void NestedToolsUnderChat(List<TraceNodeRow> nodes)
     {
         var operations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var parents = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var positions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < nodes.Count; index++)
         {
-            operations[nodes[index].Id] = nodes[index].Operation;
-            positions[nodes[index].Id] = index;
+            var node = nodes[index];
+            operations[node.Id] = node.Operation;
+            parents[node.Id] = node.ParentId;
+            positions[node.Id] = index;
         }
+
+        // A subagent's invoke_agent hangs below its execute_tool span, so a tool
+        // whose parent is that agent already has the right owner.
+        bool IsNestedAgent(string agentId) =>
+            parents.TryGetValue(agentId, out var grandParent) &&
+            grandParent is not null &&
+            operations.TryGetValue(grandParent, out var grandParentOperation) &&
+            grandParentOperation == "execute_tool";
 
         var ordered = nodes.OrderBy(node => node.StartTimeMs).ToList();
         var turnStart = long.MinValue;
@@ -1287,8 +1260,15 @@ public sealed partial class SpanStore
         {
             if (node.Kind != "permission" && node.Operation == "invoke_agent")
             {
-                turnStart = node.StartTimeMs;
-                lastChat = null;
+                // Only a root turn starts a new window: a subagent runs inside the
+                // turn it was delegated from, so its chats must not reset which
+                // model call owns the tools that follow.
+                if (!IsNestedAgent(node.Id))
+                {
+                    turnStart = node.StartTimeMs;
+                    lastChat = null;
+                }
+
                 continue;
             }
 
@@ -1307,7 +1287,9 @@ public sealed partial class SpanStore
 
             var parentKnown =
                 operations.TryGetValue(node.ParentId, out var parentOperation);
-            if (parentKnown && parentOperation != "invoke_agent")
+            if (parentKnown &&
+                (parentOperation != "invoke_agent" ||
+                 IsNestedAgent(node.ParentId)))
             {
                 continue;
             }
@@ -1416,6 +1398,27 @@ public sealed partial class SpanStore
         }
 
         return parts.Count == 0 ? "permission" : string.Join(" · ", parts);
+    }
+
+    /// <summary>
+    /// Hook rows are stored as <c>execute_hook &lt;type&gt;</c>; the tree shows the
+    /// operation separately, so only the type is kept as the label.
+    /// </summary>
+    private static string? HookTypeFromName(string? name)
+    {
+        const string prefix = "execute_hook";
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return name;
+        }
+
+        var rest = name[prefix.Length..].Trim();
+        return rest.Length == 0 ? null : rest;
     }
 
     // A block can start in the middle of a trace; repeating the missing ancestors as
