@@ -797,6 +797,13 @@ public sealed partial class SpanStore
             }
         }
 
+        // Without a finished run there is nothing to attribute the tail to, and a
+        // run row that never got its end time must not claim the whole session.
+        if (lastEndMs == 0)
+        {
+            return;
+        }
+
         var lo = LowerBound(windowSpans, lastEndMs);
         if (lo >= windowSpans.Count)
         {
