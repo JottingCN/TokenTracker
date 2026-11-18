@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\TokenTracker.Core\TokenTracker.Core.csproj" />
+    <ProjectReference Include="..\..\src\TokenTracker.Server\TokenTracker.Server.csproj" />
   </ItemGroup>
 
 </Project>

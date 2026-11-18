@@ -2059,6 +2059,7 @@ public sealed class SpanStoreTests
                     ParentSpanId = "hook-parent",
                     Operation = "execute_hook",
                     Name = "execute_hook preToolUse",
+                    ToolName = "powershell",
                     HookType = "preToolUse",
                     HookDurationMs = 12,
                     SessionId = "session-1",

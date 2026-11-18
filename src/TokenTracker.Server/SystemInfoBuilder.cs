@@ -134,6 +134,7 @@ public static class SystemInfoBuilder
             new("holiday-api", holidayApi, "http"),
             new("otlp-endpoint", endpoint, "http"),
             new("ahp-title-sync", "named pipe / UDS / TCP", "ipc"),
+            new("session-event-log", access.SessionRoot, "events.jsonl"),
         };
 
         return new SystemInfoPayload(

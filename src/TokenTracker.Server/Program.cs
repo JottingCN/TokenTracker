@@ -44,7 +44,7 @@ var serverInfo = new ServerInfoPayload(
     port,
     startedAt,
     string.IsNullOrWhiteSpace(buildId) ? null : buildId,
-    ["dashboard", "calls", "events", "tools", "prices", "settings", "holidays", "breakdown", "source-paths", "source-copilot-chat", "otel-metrics", "agent-runs", "trace-tree", "otel-metrics-store", "ws"]);
+    ["dashboard", "calls", "events", "tools", "prices", "settings", "holidays", "breakdown", "source-paths", "source-copilot-chat", "otel-metrics", "agent-runs", "trace-tree", "otel-metrics-store", "session-event-log", "ws"]);
 
 var dataDirectory = Environment.GetEnvironmentVariable("TOKENTRACKER_DATA_DIR");
 if (string.IsNullOrWhiteSpace(dataDirectory))
@@ -120,6 +120,12 @@ if (store.GetSetting("metric_attribution_v1") != "1")
 
 var hub = new RealtimeHub();
 metadata.AhpStatusChanged += hub.NotifyChanged;
+var sessionEventMonitor = new SessionEventLogMonitor(
+    metadata.GetAccessInfo().SessionRoot,
+    hub);
+_ = Task.Run(
+    () => sessionEventMonitor.RunAsync(app.Lifetime.ApplicationStopping),
+    app.Lifetime.ApplicationStopping);
 
 // Health probes must not keep an otherwise-unused server alive, but every other
 // request (including polling clients without a WebSocket) counts as activity.
@@ -290,6 +296,21 @@ app.MapGet("/api/system", () =>
             dataDirectory,
             endpoint),
         AppJsonContext.Default.SystemInfoPayload));
+
+app.MapGet("/api/session-events/status", () =>
+{
+    var status = sessionEventMonitor.GetStatus();
+    return Results.Json(
+        new SessionEventLogStatusPayload(
+            status.Root,
+            status.Running,
+            status.MonitoredSessions,
+            status.EventsRead,
+            status.UniqueEvents,
+            status.LastReadText,
+            status.LastError),
+        AppJsonContext.Default.SessionEventLogStatusPayload);
+});
 
 app.MapGet("/api/dashboard", (
     int? range,

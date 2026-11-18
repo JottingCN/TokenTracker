@@ -36,6 +36,7 @@ const PROVIDER_SUGGESTIONS = [
   'Anthropic',
   'Google',
   'Meta',
+  'Microsoft',
   'Kimi',
   '小米 MiMo',
   'MiniMax',

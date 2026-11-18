@@ -461,6 +461,8 @@ public sealed record TraceNodeRow
         ? Model ?? Name ?? Operation
         : Kind == "permission"
             ? Name ?? Operation
+            : Operation == "execute_hook"
+                ? Name ?? Operation
             : string.IsNullOrWhiteSpace(Tool)
                 ? Name ?? Operation
                 : $"{Operation} {Otlp.ToolNameResolver.Display(Tool)}";

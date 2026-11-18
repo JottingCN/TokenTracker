@@ -112,6 +112,15 @@ public sealed record SystemInfoPayload(
     List<SystemPathInfo> WatchedPaths,
     List<SystemAccessInfo> Accesses);
 
+public sealed record SessionEventLogStatusPayload(
+    string Root,
+    bool Running,
+    int MonitoredSessions,
+    long EventsRead,
+    long UniqueEvents,
+    string? LastReadText,
+    string? LastError);
+
 public sealed record ServerInfoPayload(
     string Name,
     string Version,
@@ -240,6 +249,7 @@ public sealed record ErrorPayload(string Error);
 [JsonSerializable(typeof(LocalImportPayload))]
 [JsonSerializable(typeof(AhpStatusPayload))]
 [JsonSerializable(typeof(AhpSessionPayload))]
+[JsonSerializable(typeof(SessionEventLogStatusPayload))]
 [JsonSerializable(typeof(SettingsPayload))]
 [JsonSerializable(typeof(SettingsUpdateRequest))]
 [JsonSerializable(typeof(ServerInfoPayload))]

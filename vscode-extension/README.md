@@ -51,13 +51,11 @@ code --install-extension tokentracker-*.vsix --force
   "github.copilot.chat.otel.enabled": true,
   "github.copilot.chat.otel.exporterType": "otlp-http",
   "github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:4318/otlp/copilot-chat",
-  "github.copilot.chat.otel.protocol": "http/json",
   "github.copilot.chat.otel.captureContent": false,
 
   "chat.agentHost.otel.enabled": true,
   "chat.agentHost.otel.exporterType": "otlp-http",
   "chat.agentHost.otel.otlpEndpoint": "http://127.0.0.1:4318/otlp/agent-host",
-  "chat.agentHost.otel.otlpProtocol": "http/json",
   "chat.agentHost.otel.captureContent": false
 }
 ```

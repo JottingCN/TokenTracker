@@ -6,6 +6,10 @@ const PROVIDERS: Array<[RegExp, string]> = [
   [/^(anthropic|claude)/i, 'Anthropic'],
   [/^(google|gemini)/i, 'Google'],
   [/^(meta|llama)/i, 'Meta'],
+  [/^(microsoft|phi|mai)([-/:]|$)/i, 'Microsoft'],
+  [/^(alibaba|qwen)([-/:]|$)/i, 'Alibaba'],
+  [/^(xai|grok)([-/:]|$)/i, 'xAI'],
+  [/^(mistral|codestral|devstral|ministral|magistral)([-/:]|$)/i, 'Mistral'],
   [/^kimi/i, 'Kimi'],
   [/^mimo/i, '小米 MiMo'],
   [/^minimax/i, 'MiniMax'],
@@ -50,7 +54,7 @@ export function leafModelName(model: string): string {
 export function shortModelName(model: string): string {
   const leaf = leafOf(model);
   const stripped = leaf.replace(
-    /^(deepseek|openai|anthropic|google|meta|kimi|mimo|minimax|glm)[-/:]/i,
+    /^(deepseek|openai|anthropic|google|meta|microsoft|phi|mai|alibaba|qwen|xai|grok|mistral|codestral|devstral|ministral|magistral|kimi|mimo|minimax|glm)[-/:]/i,
     '',
   );
   if (!stripped || /^\d/.test(stripped)) {
