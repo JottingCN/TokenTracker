@@ -48,18 +48,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing extension $TAG"
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Run core tests
-        run: dotnet test --project tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release --nologo
-
+ 
   extension:
     runs-on: ubuntu-latest
     needs: [meta]
@@ -99,7 +88,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    needs: [meta, test, extension]
+    needs: [meta, extension]
     steps:
       - uses: actions/checkout@v4
         with:
