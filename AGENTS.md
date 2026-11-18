@@ -49,7 +49,7 @@ Token Tracker 是本地 Copilot Token 用量与费用看板。Copilot Chat / Age
 
 ```bash
 # 核心测试（改任何 Core 逻辑都必须跑）
-dotnet test tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release
+dotnet test --project tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release
 
 # 服务端
 dotnet run --project src/TokenTracker.Server -c Release

@@ -58,7 +58,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Run core tests
-        run: dotnet test tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release --nologo
+        run: dotnet test --project tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release --nologo
 
   extension:
     runs-on: ubuntu-latest
