@@ -50,10 +50,13 @@ interface SessionSummary {
   calls: number;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   costCny: number;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   reasoningCostCny: number;
@@ -82,6 +85,7 @@ interface SessionCall {
   isMain: boolean;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   durationMs: number | null;
@@ -89,6 +93,8 @@ interface SessionCall {
   tokensPerSecond: number | null;
   costCny: number | null;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   reasoningCostCny: number;
@@ -187,11 +193,14 @@ interface ModelBreakdown {
   calls: number;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   costCny: number;
   unpricedCalls: number;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   reasoningCostCny: number;
@@ -245,10 +254,14 @@ interface StatusScope {
   tokensPerSecond: number | null;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   avgDurationMs: number | null;
   costCny: number;
+  inputCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   hasCost: boolean;
 }
 
@@ -641,7 +654,12 @@ ${summaryMarkdown(modelTotals(row), this.money)}
           [
             tr('缓存', 'Cached'),
             session.cacheText,
-            formatMoney(session.cacheCostCny, this.money),
+            formatMoney(session.cacheReadCostCny, this.money),
+          ],
+          [
+            tr('缓存写入', 'Cache write'),
+            numberFormatter.format(session.cacheCreationTokens),
+            formatMoney(session.cacheWriteCostCny, this.money),
           ],
           [
             tr('输出', 'Output'),
@@ -816,9 +834,12 @@ ${summaryMarkdown(sessionTotals(session), this.money)}
       session.calls,
       session.inputTokens,
       session.cacheReadTokens,
+      session.cacheCreationTokens,
       session.outputTokens,
       session.reasoningTokens,
       session.costCny,
+      session.cacheReadCostCny,
+      session.cacheWriteCostCny,
       session.unpricedCalls,
       session.avgTtftMs,
       session.tokensPerSecond,
@@ -894,11 +915,14 @@ function aggregateModels(calls: SessionCall[]): ModelBreakdown[] {
         calls: 0,
         inputTokens: 0,
         cacheReadTokens: 0,
+        cacheCreationTokens: 0,
         outputTokens: 0,
         reasoningTokens: 0,
         costCny: 0,
         unpricedCalls: 0,
         cacheCostCny: 0,
+        cacheReadCostCny: 0,
+        cacheWriteCostCny: 0,
         uncachedCostCny: 0,
         outputCostCny: 0,
         reasoningCostCny: 0,
@@ -919,6 +943,7 @@ function aggregateModels(calls: SessionCall[]): ModelBreakdown[] {
     row.calls += 1;
     row.inputTokens += call.inputTokens;
     row.cacheReadTokens += call.cacheReadTokens;
+    row.cacheCreationTokens += call.cacheCreationTokens;
     row.outputTokens += call.outputTokens;
     row.reasoningTokens += call.reasoningTokens;
     row.costCny += call.costCny ?? 0;
@@ -926,6 +951,8 @@ function aggregateModels(calls: SessionCall[]): ModelBreakdown[] {
       row.unpricedCalls += 1;
     }
     row.cacheCostCny += call.cacheCostCny;
+    row.cacheReadCostCny += call.cacheReadCostCny;
+    row.cacheWriteCostCny += call.cacheWriteCostCny;
     row.uncachedCostCny += call.uncachedCostCny;
     row.outputCostCny += call.outputCostCny;
     row.reasoningCostCny += call.reasoningCostCny;
@@ -1074,10 +1101,12 @@ function modelTableFor(row: ModelBreakdown, money: MoneySettings): string {
   return modelTable(
     row.inputTokens,
     row.cacheReadTokens,
+    row.cacheCreationTokens,
     row.outputTokens,
     row.reasoningTokens,
     row.uncachedCostCny,
-    row.cacheCostCny,
+    row.cacheReadCostCny,
+    row.cacheWriteCostCny,
     row.outputCostCny,
     row.reasoningCostCny,
     money,
@@ -1087,10 +1116,12 @@ function modelTableFor(row: ModelBreakdown, money: MoneySettings): string {
 function modelTable(
   inputTokens: number,
   cacheReadTokens: number,
+  cacheCreationTokens: number,
   outputTokens: number,
   reasoningTokens: number,
   uncachedCost: number,
-  cacheCost: number,
+  cacheReadCost: number,
+  cacheWriteCost: number,
   outputCost: number,
   reasoningCost: number,
   money: MoneySettings,
@@ -1099,12 +1130,17 @@ function modelTable(
     [
       tr('输入', 'Input'),
       numberFormatter.format(inputTokens),
-      formatMoney(uncachedCost + cacheCost, money),
+      formatMoney(uncachedCost + cacheReadCost + cacheWriteCost, money),
     ],
     [
       tr('缓存', 'Cached'),
       numberFormatter.format(cacheReadTokens),
-      formatMoney(cacheCost, money),
+      formatMoney(cacheReadCost, money),
+    ],
+    [
+      tr('缓存写入', 'Cache write'),
+      numberFormatter.format(cacheCreationTokens),
+      formatMoney(cacheWriteCost, money),
     ],
     [
       tr('输出', 'Output'),
@@ -1262,16 +1298,14 @@ export function renderStatusTemplate(
   return cleanStatusText(collapsed) || '$(pulse) -';
 }
 
-// Every metric in the status bar follows one scope so the numbers always add up:
-// `session` (default) reports the whole session, `model` reports the newest
-// main-agent model. Mixing them — newest model's hit rate next to the session's
-// cost — is what made the bar disagree with the tip.
+// Usage metrics always describe the newest main-agent model when its breakdown
+// is available; statusBarCost selects only which amount the cost placeholder uses.
 function statusScope(
   session: SessionSummary,
   details: SessionDetails | undefined,
   costScope: StatusCostScope,
 ): StatusScope {
-  const models = costScope === 'model' ? details?.models ?? [] : [];
+  const models = details?.models ?? [];
   if (models.length === 0) {
     return {
       model: session.model,
@@ -1281,10 +1315,14 @@ function statusScope(
       tokensPerSecond: session.tokensPerSecond,
       inputTokens: session.inputTokens,
       cacheReadTokens: session.cacheReadTokens,
+      cacheCreationTokens: session.cacheCreationTokens,
       outputTokens: session.outputTokens,
       reasoningTokens: session.reasoningTokens,
       avgDurationMs: session.avgDurationMs,
       costCny: session.costCny,
+      inputCostCny: session.uncachedCostCny + session.cacheCostCny,
+      cacheReadCostCny: session.cacheReadCostCny,
+      cacheWriteCostCny: session.cacheWriteCostCny,
       hasCost: sessionHasCost(session),
     };
   }
@@ -1292,6 +1330,7 @@ function statusScope(
   const newest = models.reduce((current, row) =>
     row.lastSeenMs > current.lastSeenMs ? row : current,
   );
+  const useModelCost = costScope === 'model';
   return {
     model: newest.model,
     calls: newest.calls,
@@ -1303,14 +1342,20 @@ function statusScope(
     tokensPerSecond: newest.tokensPerSecond,
     inputTokens: newest.inputTokens,
     cacheReadTokens: newest.cacheReadTokens,
+    cacheCreationTokens: newest.cacheCreationTokens,
     outputTokens: newest.outputTokens,
     reasoningTokens: newest.reasoningTokens,
     avgDurationMs:
       newest.durationSamples > 0
         ? newest.totalDurationMs / newest.durationSamples
         : null,
-    costCny: newest.costCny,
-    hasCost: newest.costCny > 0 || newest.unpricedCalls === 0,
+    costCny: useModelCost ? newest.costCny : session.costCny,
+    inputCostCny: newest.uncachedCostCny + newest.cacheCostCny,
+    cacheReadCostCny: newest.cacheReadCostCny,
+    cacheWriteCostCny: newest.cacheWriteCostCny,
+    hasCost: useModelCost
+      ? newest.costCny > 0 || newest.unpricedCalls === 0
+      : sessionHasCost(session),
   };
 }
 
@@ -1342,6 +1387,14 @@ function resolveStatusValue(
       return formatCountMetric(scope.inputTokens, spec);
     case 'cache':
       return formatCountMetric(scope.cacheReadTokens, spec);
+    case 'cachewrite':
+      return formatCountMetric(scope.cacheCreationTokens, spec);
+    case 'inputcost':
+      return formatCostMetric(scope.inputCostCny, spec, money);
+    case 'cachecost':
+      return formatCostMetric(scope.cacheReadCostCny, spec, money);
+    case 'cachewritecost':
+      return formatCostMetric(scope.cacheWriteCostCny, spec, money);
     case 'output':
       return formatCountMetric(scope.outputTokens, spec);
     case 'reasoning':

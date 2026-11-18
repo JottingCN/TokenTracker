@@ -62,7 +62,7 @@ public sealed partial class SpanStore
     /// <see cref="Initialize"/> using only additive statements: an older build must
     /// still be able to open and read the same file.
     /// </summary>
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
 
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -247,6 +247,8 @@ public sealed partial class SpanStore
                 ttft_ms INTEGER,
                 nano_aiu INTEGER,
                 cache_cost_cny REAL,
+                cache_read_cost_cny REAL,
+                cache_write_cost_cny REAL,
                 uncached_cost_cny REAL,
                 output_cost_cny REAL,
                 reasoning_cost_cny REAL,
@@ -419,6 +421,8 @@ public sealed partial class SpanStore
         command.ExecuteNonQuery();
 
         EnsureColumn(connection, "spans", "cache_cost_cny", "REAL");
+        EnsureColumn(connection, "spans", "cache_read_cost_cny", "REAL");
+        EnsureColumn(connection, "spans", "cache_write_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "uncached_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "output_cost_cny", "REAL");
         EnsureColumn(connection, "spans", "reasoning_cost_cny", "REAL");
@@ -604,7 +608,8 @@ public sealed partial class SpanStore
                     model, session_id, is_main,
                     input_tokens, output_tokens, cache_read_tokens,
                     cache_creation_tokens, reasoning_tokens, ttft_ms, nano_aiu,
-                    cache_cost_cny, uncached_cost_cny, output_cost_cny, reasoning_cost_cny,
+                    cache_cost_cny, cache_read_cost_cny, cache_write_cost_cny,
+                    uncached_cost_cny, output_cost_cny, reasoning_cost_cny,
                     hit_rate, cost_cny, pricing_period, error_type, provider_name,
                     agent_name, window_session_id, finish_reasons, received_at_ms
                 ) VALUES (
@@ -613,7 +618,8 @@ public sealed partial class SpanStore
                     @model, @session_id, @is_main,
                     @input_tokens, @output_tokens, @cache_read_tokens,
                     @cache_creation_tokens, @reasoning_tokens, @ttft_ms, @nano_aiu,
-                    @cache_cost_cny, @uncached_cost_cny, @output_cost_cny, @reasoning_cost_cny,
+                    @cache_cost_cny, @cache_read_cost_cny, @cache_write_cost_cny,
+                    @uncached_cost_cny, @output_cost_cny, @reasoning_cost_cny,
                     @hit_rate, @cost_cny, @pricing_period, @error_type, @provider_name,
                     @agent_name, @window_session_id, @finish_reasons, @received_at_ms
                 );
@@ -640,6 +646,8 @@ public sealed partial class SpanStore
             AddParameter(command, "@ttft_ms", SqliteType.Integer);
             AddParameter(command, "@nano_aiu", SqliteType.Integer);
             AddParameter(command, "@cache_cost_cny", SqliteType.Real);
+            AddParameter(command, "@cache_read_cost_cny", SqliteType.Real);
+            AddParameter(command, "@cache_write_cost_cny", SqliteType.Real);
             AddParameter(command, "@uncached_cost_cny", SqliteType.Real);
             AddParameter(command, "@output_cost_cny", SqliteType.Real);
             AddParameter(command, "@reasoning_cost_cny", SqliteType.Real);
@@ -688,6 +696,14 @@ public sealed partial class SpanStore
                     span.NanoAiu is null ? DBNull.Value : span.NanoAiu.Value;
                 command.Parameters["@cache_cost_cny"].Value =
                     span.CacheCostCny is null ? DBNull.Value : span.CacheCostCny.Value;
+                command.Parameters["@cache_read_cost_cny"].Value =
+                    span.CacheReadCostCny is null
+                        ? DBNull.Value
+                        : span.CacheReadCostCny.Value;
+                command.Parameters["@cache_write_cost_cny"].Value =
+                    span.CacheWriteCostCny is null
+                        ? DBNull.Value
+                        : span.CacheWriteCostCny.Value;
                 command.Parameters["@uncached_cost_cny"].Value =
                     span.UncachedCostCny is null ? DBNull.Value : span.UncachedCostCny.Value;
                 command.Parameters["@output_cost_cny"].Value =
@@ -1118,7 +1134,10 @@ public sealed partial class SpanStore
                 COALESCE(SUM(uncached_cost_cny), 0),
                 COALESCE(SUM(output_cost_cny), 0),
                 COALESCE(SUM(reasoning_cost_cny), 0),
-                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(cache_read_cost_cny), 0),
+                COALESCE(SUM(cache_write_cost_cny), 0)
             FROM spans
             WHERE start_time_ms >= @from
               AND start_time_ms < @to{filter}{sourceFilter};
@@ -1150,6 +1169,9 @@ public sealed partial class SpanStore
             OutputCostCny = reader.GetDouble(9),
             ReasoningCostCny = reader.GetDouble(10),
             UnpricedCalls = reader.GetInt64(11),
+            CacheCreationTokens = reader.GetInt64(12),
+            CacheReadCostCny = reader.GetDouble(13),
+            CacheWriteCostCny = reader.GetDouble(14),
         };
     }
 
@@ -1229,7 +1251,10 @@ public sealed partial class SpanStore
                     THEN s.end_time_ms - s.start_time_ms END),
                 AVG(s.ttft_ms),
                 COUNT(s.ttft_ms),
-                {SpeedSql}
+                {SpeedSql},
+                COALESCE(SUM(s.cache_creation_tokens), 0),
+                COALESCE(SUM(s.cache_read_cost_cny), 0),
+                COALESCE(SUM(s.cache_write_cost_cny), 0)
             FROM spans s
             WHERE s.is_main = 1
               AND s.start_time_ms >= @from
@@ -1273,6 +1298,9 @@ public sealed partial class SpanStore
                 AvgTtftMs = reader.IsDBNull(16) ? null : reader.GetDouble(16),
                 TtftSamples = reader.GetInt64(17),
                 TokensPerSecond = reader.IsDBNull(18) ? null : reader.GetDouble(18),
+                CacheCreationTokens = reader.GetInt64(19),
+                CacheReadCostCny = reader.GetDouble(20),
+                CacheWriteCostCny = reader.GetDouble(21),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -1327,7 +1355,10 @@ public sealed partial class SpanStore
                 error_type,
                 agent_name,
                 finish_reasons,
-                subagent_name
+                subagent_name,
+                cache_creation_tokens,
+                cache_read_cost_cny,
+                cache_write_cost_cny
             FROM spans
             WHERE {where}
             ORDER BY start_time_ms DESC
@@ -1490,7 +1521,8 @@ public sealed partial class SpanStore
                    input_tokens, cache_read_tokens, output_tokens, reasoning_tokens,
                    cost_cny, cache_cost_cny, uncached_cost_cny, output_cost_cny,
                    reasoning_cost_cny, ttft_ms, end_time_ms, error_type,
-                   start_time_ms, is_main
+                   start_time_ms, is_main, cache_creation_tokens,
+                   cache_read_cost_cny, cache_write_cost_cny
             FROM spans
             WHERE session_id = @session_id
               AND start_time_ms >= @from
@@ -1516,10 +1548,13 @@ public sealed partial class SpanStore
                 reader.IsDBNull(1) ? null : reader.GetString(1),
                 reader.GetInt64(2),
                 reader.GetInt64(3),
+                reader.GetInt64(16),
                 reader.GetInt64(4),
                 reader.GetInt64(5),
                 reader.IsDBNull(6) ? null : reader.GetDouble(6),
                 reader.IsDBNull(7) ? 0 : reader.GetDouble(7),
+                reader.IsDBNull(17) ? 0 : reader.GetDouble(17),
+                reader.IsDBNull(18) ? 0 : reader.GetDouble(18),
                 reader.IsDBNull(8) ? 0 : reader.GetDouble(8),
                 reader.IsDBNull(9) ? 0 : reader.GetDouble(9),
                 reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
@@ -1549,6 +1584,7 @@ public sealed partial class SpanStore
                 IsMain = reader.GetInt64(3) != 0,
                 InputTokens = reader.GetInt64(4),
                 CacheReadTokens = reader.GetInt64(5),
+                CacheCreationTokens = reader.GetInt64(25),
                 OutputTokens = reader.GetInt64(6),
                 HitRate = reader.IsDBNull(7) ? null : reader.GetDouble(7),
                 CostCny = reader.IsDBNull(8) ? null : reader.GetDouble(8),
@@ -1570,6 +1606,8 @@ public sealed partial class SpanStore
                 AgentName = reader.IsDBNull(22) ? null : reader.GetString(22),
                 FinishReasons = reader.IsDBNull(23) ? null : reader.GetString(23),
                 SubagentName = reader.IsDBNull(24) ? null : reader.GetString(24),
+                CacheReadCostCny = reader.IsDBNull(26) ? 0 : reader.GetDouble(26),
+                CacheWriteCostCny = reader.IsDBNull(27) ? 0 : reader.GetDouble(27),
             });
         }
 
@@ -1787,7 +1825,10 @@ public sealed partial class SpanStore
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
                 AVG(ttft_ms),
                 COUNT(ttft_ms),
-                {SpeedSql}
+                {SpeedSql},
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(cache_read_cost_cny), 0),
+                COALESCE(SUM(cache_write_cost_cny), 0)
             FROM spans
             WHERE start_time_ms >= @from
               AND start_time_ms < @to
@@ -1825,6 +1866,9 @@ public sealed partial class SpanStore
                 AvgTtftMs = reader.IsDBNull(12) ? null : reader.GetDouble(12),
                 TtftSamples = reader.GetInt64(13),
                 TokensPerSecond = reader.IsDBNull(14) ? null : reader.GetDouble(14),
+                CacheCreationTokens = reader.GetInt64(15),
+                CacheReadCostCny = reader.GetDouble(16),
+                CacheWriteCostCny = reader.GetDouble(17),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -1881,7 +1925,10 @@ public sealed partial class SpanStore
                     AND output_tokens >= 5
                     AND end_time_ms - start_time_ms - ttft_ms >= 50
                     THEN output_tokens * 1000.0 /
-                        (end_time_ms - start_time_ms - ttft_ms) END)
+                        (end_time_ms - start_time_ms - ttft_ms) END),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(cache_read_cost_cny), 0),
+                COALESCE(SUM(cache_write_cost_cny), 0)
             FROM spans
             WHERE model = @model
               AND start_time_ms >= @from
@@ -1924,6 +1971,9 @@ public sealed partial class SpanStore
                 reader.IsDBNull(17) ? null : reader.GetDouble(17),
             MaxTokensPerSecond =
                 reader.IsDBNull(18) ? null : reader.GetDouble(18),
+            CacheCreationTokens = reader.GetInt64(19),
+            CacheReadCostCny = reader.GetDouble(20),
+            CacheWriteCostCny = reader.GetDouble(21),
         };
     }
 
@@ -1960,7 +2010,10 @@ public sealed partial class SpanStore
                     THEN s.end_time_ms - s.start_time_ms END),
                 AVG(s.ttft_ms),
                 COUNT(s.ttft_ms),
-                {SpeedSql}
+                {SpeedSql},
+                COALESCE(SUM(s.cache_creation_tokens), 0),
+                COALESCE(SUM(s.cache_read_cost_cny), 0),
+                COALESCE(SUM(s.cache_write_cost_cny), 0)
             FROM spans s
             WHERE s.is_main = 1
               AND s.model = @model
@@ -2006,6 +2059,9 @@ public sealed partial class SpanStore
                 AvgTtftMs = reader.IsDBNull(16) ? null : reader.GetDouble(16),
                 TtftSamples = reader.GetInt64(17),
                 TokensPerSecond = reader.IsDBNull(18) ? null : reader.GetDouble(18),
+                CacheCreationTokens = reader.GetInt64(19),
+                CacheReadCostCny = reader.GetDouble(20),
+                CacheWriteCostCny = reader.GetDouble(21),
                 HitRate = inputTokens > 0
                     ? (double)cacheReadTokens / inputTokens
                     : null,
@@ -2486,6 +2542,8 @@ public sealed partial class SpanStore
                 SET cost_cny = @cost,
                     pricing_period = @period,
                     cache_cost_cny = @cache_cost,
+                    cache_read_cost_cny = @cache_read_cost,
+                    cache_write_cost_cny = @cache_write_cost,
                     uncached_cost_cny = @uncached_cost,
                     output_cost_cny = @output_cost,
                     reasoning_cost_cny = @reasoning_cost
@@ -2494,6 +2552,8 @@ public sealed partial class SpanStore
             AddParameter(update, "@cost", SqliteType.Real);
             AddParameter(update, "@period", SqliteType.Text);
             AddParameter(update, "@cache_cost", SqliteType.Real);
+            AddParameter(update, "@cache_read_cost", SqliteType.Real);
+            AddParameter(update, "@cache_write_cost", SqliteType.Real);
             AddParameter(update, "@uncached_cost", SqliteType.Real);
             AddParameter(update, "@output_cost", SqliteType.Real);
             AddParameter(update, "@reasoning_cost", SqliteType.Real);
@@ -2522,6 +2582,14 @@ public sealed partial class SpanStore
                 update.Parameters["@period"].Value = detail.Period;
                 update.Parameters["@cache_cost"].Value =
                     detail.CacheCost is null ? (object)DBNull.Value : (double)detail.CacheCost.Value;
+                update.Parameters["@cache_read_cost"].Value =
+                    detail.CacheReadCost is null
+                        ? (object)DBNull.Value
+                        : (double)detail.CacheReadCost.Value;
+                update.Parameters["@cache_write_cost"].Value =
+                    detail.CacheWriteCost is null
+                        ? (object)DBNull.Value
+                        : (double)detail.CacheWriteCost.Value;
                 update.Parameters["@uncached_cost"].Value =
                     detail.UncachedCost is null ? (object)DBNull.Value : (double)detail.UncachedCost.Value;
                 update.Parameters["@output_cost"].Value =
@@ -2549,7 +2617,8 @@ public sealed partial class SpanStore
             using var check = connection.CreateCommand();
             check.CommandText = """
                 SELECT COUNT(*) FROM spans
-                WHERE cost_cny IS NOT NULL AND cache_cost_cny IS NULL;
+                WHERE cost_cny IS NOT NULL
+                  AND (cache_read_cost_cny IS NULL OR cache_write_cost_cny IS NULL);
                 """;
             var missing = Convert.ToInt64(
                 check.ExecuteScalar(),

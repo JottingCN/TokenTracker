@@ -26,7 +26,7 @@
 
 - 费用展示统一 6 位小数。
 - Web 支持人民币 / 美元 / 积分（`localStorage`），价格输入按当前单位换算后**仍以 CNY 保存**。
-- 四类费用（`cacheCostCny` / `uncachedCostCny` / `outputCostCny` / `reasoningCostCny`）与 `costCny` 的关系：`costCny = 四者之和`；`ModelRow` / `SummaryDto` / `SessionTurnRow` 必须同时带齐，否则卡片与表格对不上。
+- 费用明细中 `cacheCostCny` 继续兼容表示缓存读取与写入费用之和；新增的 `cacheReadCostCny` / `cacheWriteCostCny` 将二者拆开，且 `cacheCostCny = cacheReadCostCny + cacheWriteCostCny`。总费用仍为 `uncachedCostCny + cacheCostCny + outputCostCny`（思考费用是输出费用的子项，不重复累加）。`ModelRow` / `SummaryDto` / `SessionRow` / `CallRow` 必须同时携带对应字段，避免卡片与表格口径不一致。
 
 ## 5. 统计口径（唯一规则）
 

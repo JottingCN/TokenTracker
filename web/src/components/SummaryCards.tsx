@@ -39,8 +39,13 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
     {
       label: t('cached.tokens'),
       value: summary ? number.format(summary.cacheReadTokens) : '-',
-      cost: summary ? formatMoney(summary.cacheCostCny) : '-',
+      cost: summary ? formatMoney(summary.cacheReadCostCny) : '-',
       hint: t('cache.cost.includes.cache.reads.and.cache.writes'),
+    },
+    {
+      label: t('cache.write'),
+      value: summary ? number.format(summary.cacheCreationTokens) : '-',
+      cost: summary ? formatMoney(summary.cacheWriteCostCny) : '-',
     },
     {
       label: t('hit.rate'),

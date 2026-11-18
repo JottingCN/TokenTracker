@@ -4,7 +4,7 @@
 
 ## 1. 状态栏
 
-- **口径只能有一个**：由 `tokentracker.statusBarCost` 决定 `session`（默认，整会话）或 `model`（最新主 agent 模型），`{hit}` / `{ttft}` / `{speed}` / `{cost}` / `{calls}` / 各 token 占位符**全部**跟随该口径，不允许多数指标取最新模型、只有 `{cost}` 取会话 —— 那样状态栏自己就对不上，也和 Tip 的会话总计对不上。breakdown 未加载（或 `model` 口径下没有模型行）时回退会话汇总。
+- `tokentracker.statusBarCost` **只决定 `{cost}`** 使用整会话金额（默认）还是最新主 agent 模型金额。模型明细可用时，`{model}` / `{hit}` / `{ttft}` / `{speed}` / `{calls}` / `{duration}` 与各 token / 费用明细占位符固定显示最新主 agent 模型；`{input}` 保留总输入 token，`{cache}` / `{cachewrite}` 分别表示缓存读取 / 写入 token，`{inputcost}` / `{cachecost}` / `{cachewritecost}` 分别表示输入 / 缓存读取 / 缓存写入费用。`{events}` / `{tools}` / `{toolerrors}` / `{agents}` / `{hooks}` 按会话统计。模型明细尚未加载或不可用时，调用指标回退到会话汇总。
 - **严格按工作区匹配**：只显示归属当前文件夹（或其子目录）的会话；工作区未知的会话与其他工作区的会话都不显示，Tip 里也不写工作区信息。归属缺失应由 `session_workspaces` 缓存回补，而不是放宽匹配。
 - 费用单位由 `tokentracker.costUnit` 决定（`cny` / `usd` / `credit`，按 `usdRate` / `creditRate` 换算）。
 - `tokentracker.statsRange` 修改后即时生效（`StatusBarController.setRange` 清空 breakdown 缓存并重新订阅），无需重载窗口。订阅请求必须带 `range`，聚合不能靠客户端过滤（见[存储](storage.md)）。

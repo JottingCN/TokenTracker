@@ -249,7 +249,7 @@ export function CallsPage({
               dataSource={rows}
               loading={!data}
               pagination={false}
-              scroll={{ x: 1900, y: tableHeightPx }}
+              scroll={{ x: 2010, y: tableHeightPx }}
             />
           </div>
         )}

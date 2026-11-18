@@ -22,10 +22,10 @@
   "config.costUnit.credit": "Credits",
   "config.creditRate": "CNY value of one credit.",
   "config.usdRate": "CNY value of one US dollar.",
-  "config.statusBarFormat": "Status bar template. Placeholders: {icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turn} {turns} {step} {hooks} {range} {model} {session}. {turn} is the newest conversation turn and its completed steps (tool runs); it disappears when the session has no Agent Host turn markers. Add a format after a colon, e.g. {hit:0.00%}, {ttft:0.0s}, {speed:0.0}, {cost:0.000000}, {calls:0}. Metrics other than {cost} come from the newest main-agent model.",
-  "config.statusBarCost": "Which cost {cost} reports.",
-  "config.statusBarCost.session": "Whole session total.",
-  "config.statusBarCost.model": "Newest main-agent model only.",
+  "config.statusBarFormat": "Status bar template. Placeholders: {icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {cachewrite} {inputcost} {cachecost} {cachewritecost} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turn} {turns} {step} {hooks} {range} {model} {session}. {input} remains total input tokens; {cache} and {cachewrite} show cache-read and cache-write tokens separately. {inputcost}, {cachecost} and {cachewritecost} show input, cache-read and cache-write costs. {turn} is the newest conversation turn and its completed steps (tool runs); it disappears when the session has no Agent Host turn markers. Add a format after a colon, e.g. {hit:0.00%}, {ttft:0.0s}, {speed:0.0}, {cost:0.000000}, {calls:0}. Usage metrics come from the newest main-agent model when available; event/tool/hook/run counts are session-wide. The cost scope setting affects only {cost}.",
+  "config.statusBarCost": "Which amount {cost} reports.",
+  "config.statusBarCost.session": "Cost across the whole session.",
+  "config.statusBarCost.model": "Cost of the newest main-agent model.",
   "config.group.display": "Token Tracker: Status bar and display",
   "config.group.server": "Token Tracker: Server"
 }

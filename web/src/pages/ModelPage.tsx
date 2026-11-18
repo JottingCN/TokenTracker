@@ -105,7 +105,7 @@ export function ModelPage({
               dataSource={pageRows}
               loading={!data}
               pagination={false}
-              scroll={{ x: 1340, y: sessionTableHeight }}
+              scroll={{ x: 1440, y: sessionTableHeight }}
             />
           </div>
         )}

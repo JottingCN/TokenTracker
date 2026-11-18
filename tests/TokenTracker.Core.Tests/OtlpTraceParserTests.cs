@@ -443,6 +443,29 @@ public sealed class OtlpTraceParserTests
                           ]
                         }
                       ]
+                    },
+                    {
+                      "traceId": "hook-trace",
+                      "spanId": "turn-span-copy",
+                      "parentSpanId": "host-span",
+                      "name": "invoke_agent",
+                      "startTimeUnixNano": "{{startNanos}}",
+                      "endTimeUnixNano": "{{startNanos + 60_000_000_000}}",
+                      "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-hook" } }
+                      ],
+                      "events": [
+                        {
+                          "name": "github.copilot.hook.end",
+                          "timeUnixNano": "{{startNanos + 1_500_000_000}}",
+                          "attributes": [
+                            { "key": "github.copilot.hook.type", "value": { "stringValue": "preToolUse" } },
+                            { "key": "github.copilot.hook.invocation_id", "value": { "stringValue": "inv-1" } },
+                            { "key": "github.copilot.hook.duration", "value": { "doubleValue": 0.25 } }
+                          ]
+                        }
+                      ]
                     }
                   ]
                 }
@@ -462,13 +485,16 @@ public sealed class OtlpTraceParserTests
         var hooks = result.Events
             .Where(row => row.Operation == "execute_hook")
             .ToList();
-        Assert.Equal(2, hooks.Count);
-        Assert.Single(result.Events, row => row.Operation == "invoke_agent");
+        Assert.Equal(3, hooks.Count);
+        Assert.Equal(2, result.Events.Count(row => row.Operation == "invoke_agent"));
 
-        var preTool = Assert.Single(
-            hooks,
-            row => row.HookType == "preToolUse");
-        Assert.Equal("turn-span#hook#inv-1", preTool.SpanId);
+        var preTools = hooks
+            .Where(row => row.HookType == "preToolUse")
+            .ToList();
+        Assert.Equal(2, preTools.Count);
+        Assert.Equal(preTools[0].SpanId, preTools[1].SpanId);
+        var preTool = preTools[0];
+        Assert.Equal("hook#pretooluse#inv-1", preTool.SpanId);
         Assert.Equal("turn-span", preTool.ParentSpanId);
         Assert.Equal("session-hook", preTool.SessionId);
         Assert.Equal(250d, preTool.HookDurationMs!.Value, 6);

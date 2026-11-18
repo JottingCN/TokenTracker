@@ -5,11 +5,14 @@ public sealed class SummaryDto
     public long Calls { get; init; }
     public long InputTokens { get; init; }
     public long CacheReadTokens { get; init; }
+    public long CacheCreationTokens { get; init; }
     public long OutputTokens { get; init; }
     public long ReasoningTokens { get; init; }
     public long Sessions { get; init; }
     public double CostCny { get; init; }
     public double CacheCostCny { get; init; }
+    public double CacheReadCostCny { get; init; }
+    public double CacheWriteCostCny { get; init; }
     public double UncachedCostCny { get; init; }
     public double OutputCostCny { get; init; }
     public double ReasoningCostCny { get; init; }
@@ -52,11 +55,14 @@ public sealed partial record SessionRow
     public long Calls { get; init; }
     public long InputTokens { get; init; }
     public long CacheReadTokens { get; init; }
+    public long CacheCreationTokens { get; init; }
     public long OutputTokens { get; init; }
     public long ReasoningTokens { get; init; }
     public double? HitRate { get; init; }
     public double CostCny { get; init; }
     public double CacheCostCny { get; init; }
+    public double CacheReadCostCny { get; init; }
+    public double CacheWriteCostCny { get; init; }
     public double UncachedCostCny { get; init; }
     public double OutputCostCny { get; init; }
     public double ReasoningCostCny { get; init; }
@@ -74,6 +80,7 @@ public sealed partial record SessionRow
     public string CallsText => DisplayFormat.Number(Calls);
     public string InputText => DisplayFormat.Number(InputTokens);
     public string CacheText => DisplayFormat.Number(CacheReadTokens);
+    public string CacheCreationText => DisplayFormat.Number(CacheCreationTokens);
     public string OutputText => DisplayFormat.Number(OutputTokens);
     public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
     public string HitRateText => DisplayFormat.Rate(HitRate);
@@ -101,10 +108,13 @@ public readonly record struct CallSample(
     string? Source,
     long InputTokens,
     long CacheReadTokens,
+    long CacheCreationTokens,
     long OutputTokens,
     long ReasoningTokens,
     double? CostCny,
     double CacheCostCny,
+    double CacheReadCostCny,
+    double CacheWriteCostCny,
     double UncachedCostCny,
     double OutputCostCny,
     double ReasoningCostCny,
@@ -123,6 +133,7 @@ public sealed partial record CallRow
     public bool IsMain { get; init; }
     public long InputTokens { get; init; }
     public long CacheReadTokens { get; init; }
+    public long CacheCreationTokens { get; init; }
     public long OutputTokens { get; init; }
     public long ReasoningTokens { get; init; }
     public long? NanoAiu { get; init; }
@@ -138,6 +149,8 @@ public sealed partial record CallRow
     public double? HitRate { get; init; }
     public double? CostCny { get; init; }
     public double CacheCostCny { get; init; }
+    public double CacheReadCostCny { get; init; }
+    public double CacheWriteCostCny { get; init; }
     public double UncachedCostCny { get; init; }
     public double OutputCostCny { get; init; }
     public double ReasoningCostCny { get; init; }
@@ -148,6 +161,7 @@ public sealed partial record CallRow
     public string SessionDisplay => DisplayFormat.SessionDisplay(Title, SessionId);
     public string InputText => DisplayFormat.Number(InputTokens);
     public string CacheText => DisplayFormat.Number(CacheReadTokens);
+    public string CacheCreationText => DisplayFormat.Number(CacheCreationTokens);
     public string OutputText => DisplayFormat.Number(OutputTokens);
     public string HitRateText => DisplayFormat.Rate(HitRate);
     public string CostText => CostCny is null ? "-" : DisplayFormat.Cost(CostCny.Value);
@@ -202,11 +216,14 @@ public sealed partial class ModelRow
     public long Calls { get; init; }
     public long InputTokens { get; init; }
     public long CacheReadTokens { get; init; }
+    public long CacheCreationTokens { get; init; }
     public long OutputTokens { get; init; }
     public long ReasoningTokens { get; init; }
     public double? HitRate { get; init; }
     public double CostCny { get; init; }
     public double CacheCostCny { get; init; }
+    public double CacheReadCostCny { get; init; }
+    public double CacheWriteCostCny { get; init; }
     public double UncachedCostCny { get; init; }
     public double OutputCostCny { get; init; }
     public double ReasoningCostCny { get; init; }
@@ -220,6 +237,7 @@ public sealed partial class ModelRow
         $"{DisplayFormat.Number(InputTokens)} / {DisplayFormat.Number(CacheReadTokens)}";
     public string InputText => DisplayFormat.Number(InputTokens);
     public string CacheText => DisplayFormat.Number(CacheReadTokens);
+    public string CacheCreationText => DisplayFormat.Number(CacheCreationTokens);
     public string OutputText => DisplayFormat.Number(OutputTokens);
     public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
     public string HitRateText => DisplayFormat.Rate(HitRate);

@@ -2,11 +2,14 @@ export interface Summary {
   calls: number;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   sessions: number;
   costCny: number;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   reasoningCostCny: number;
@@ -33,11 +36,14 @@ export interface ModelRow {
   calls: number;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   hitRate: number | null;
   costCny: number;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   reasoningCostCny: number;
@@ -49,6 +55,7 @@ export interface ModelRow {
   tokensText: string;
   inputText: string;
   cacheText: string;
+  cacheCreationText: string;
   outputText: string;
   reasoningText: string;
   hitRateText: string;
@@ -65,11 +72,14 @@ export interface SessionRow {
   calls: number;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   hitRate: number | null;
   costCny: number;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   reasoningCostCny: number;
@@ -86,6 +96,7 @@ export interface SessionRow {
   callsText: string;
   inputText: string;
   cacheText: string;
+  cacheCreationText: string;
   outputText: string;
   reasoningText: string;
   hitRateText: string;
@@ -109,6 +120,7 @@ export interface CallRow {
   isMain: boolean;
   inputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   nanoAiu: number | null;
   source: string | null;
@@ -124,6 +136,8 @@ export interface CallRow {
   hitRate: number | null;
   costCny: number | null;
   cacheCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
   uncachedCostCny: number;
   outputCostCny: number;
   pricingPeriod: string | null;
@@ -132,6 +146,7 @@ export interface CallRow {
   sessionDisplay: string;
   inputText: string;
   cacheText: string;
+  cacheCreationText: string;
   outputText: string;
   hitRateText: string;
   costText: string;

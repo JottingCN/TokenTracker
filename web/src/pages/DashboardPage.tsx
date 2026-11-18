@@ -77,7 +77,7 @@ export function DashboardPage({
             dataSource={models}
             loading={!data}
             pagination={false}
-            scroll={{ x: 1030, y: modelHeight }}
+            scroll={{ x: 1130, y: modelHeight }}
           />
         )}
       </Card>
@@ -111,7 +111,7 @@ export function DashboardPage({
             )}
             loading={!data}
             pagination={false}
-            scroll={{ x: 1090, y: sessionHeight }}
+            scroll={{ x: 1190, y: sessionHeight }}
           />
         )}
       </Card>

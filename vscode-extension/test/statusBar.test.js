@@ -79,6 +79,11 @@ function session(id, workspacePath, lastSeenMs, overrides = {}) {
     inputTokens: 100,
     outputTokens: 10,
     cacheReadTokens: 50,
+    cacheCreationTokens: 0,
+    cacheCostCny: 0,
+    cacheReadCostCny: 0,
+    cacheWriteCostCny: 0,
+    uncachedCostCny: 0,
     ...overrides,
   };
 }
@@ -242,11 +247,11 @@ test('asks for a server restart after repeated failures', async () => {
   controller.dispose();
 });
 
-test('status bar keeps one scope for every metric', () => {
+test('status bar cost scope only changes the cost metric', () => {
   const money = { unit: 'cny', usdRate: 7.2, creditRate: 0.01 };
   const summary = session('session-1', root, 20, {
     model: 'session-model',
-    inputTokens: 1_000,
+    inputTokens: 999,
     cacheReadTokens: 500,
     hitRate: 0.5,
     avgTtftMs: 900,
@@ -314,25 +319,74 @@ test('status bar keeps one scope for every metric', () => {
     signalHealth: { agentRuns: 0, hookEvents: 0, metricPoints: 0, lastSignalText: '-' },
   };
 
-  const template = '{model} | {hit} | {ttft} | {speed} | {cost}';
-  // Session scope is the default: the bar and the tip then report one total.
+  const template =
+    '{model} | {hit} | {ttft} | {speed} | {cost} | {calls} | {duration} | {input} | {cache} | {output} | {reasoning}';
   assert.equal(
     renderStatusTemplate(template, summary, '全部', money, details, 'session'),
-    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
+    'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥1.50 | 4 | 200 ms | 400 | 100 | 40 | 0',
   );
-  // Model scope narrows every metric to the newest model, not just the cost.
   assert.equal(
     renderStatusTemplate(template, summary, '全部', money, details, 'model'),
-    'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥0.40',
+    'newest-model | 25.00% | 250 ms | 42.0 tok/s | ¥0.40 | 4 | 200 ms | 400 | 100 | 40 | 0',
   );
   // Without the breakdown the session aggregate is the only available source.
   assert.equal(
     renderStatusTemplate(template, summary, '全部', money, undefined, 'session'),
-    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
+    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50 | 10 | 2.00 s | 999 | 500 | 100 | 0',
   );
   assert.equal(
     renderStatusTemplate(template, summary, '全部', money, undefined, 'model'),
-    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50',
+    'session-model | 50.00% | 900 ms | 10.0 tok/s | ¥1.50 | 10 | 2.00 s | 999 | 500 | 100 | 0',
+  );
+});
+
+test('status bar separates cache-write tokens and costs', () => {
+  const money = { unit: 'cny', usdRate: 7.2, creditRate: 0.01 };
+  const summary = session('session-1', root, 20, {
+    cacheCreationTokens: 900,
+    uncachedCostCny: 0.5,
+    cacheCostCny: 0.4,
+    cacheReadCostCny: 0.3,
+    cacheWriteCostCny: 0.1,
+  });
+  const details = {
+    models: [{
+      model: 'newest-model',
+      calls: 1,
+      inputTokens: 1000,
+      cacheReadTokens: 250,
+      cacheCreationTokens: 500,
+      outputTokens: 10,
+      reasoningTokens: 0,
+      costCny: 0.07,
+      unpricedCalls: 0,
+      cacheCostCny: 0.04,
+      cacheReadCostCny: 0.025,
+      cacheWriteCostCny: 0.015,
+      uncachedCostCny: 0.03,
+      outputCostCny: 0,
+      reasoningCostCny: 0,
+      ttftMs: null,
+      tokensPerSecond: null,
+      firstSeenMs: 10,
+      lastSeenMs: 20,
+      totalDurationMs: 0,
+      durationSamples: 0,
+      ttftSamples: 0,
+      generationOutput: 0,
+      generationMs: 0,
+    }],
+    events: [],
+    tools: [],
+    agentRuns: [],
+    hooks: [],
+    signalHealth: { agentRuns: 0, hookEvents: 0, metricPoints: 0, lastSignalText: '-' },
+  };
+  const template = '{cachewrite} | {inputcost:0.000000} | {cachecost:0.000000} | {cachewritecost:0.000000}';
+
+  assert.equal(
+    renderStatusTemplate(template, summary, '全部', money, details, 'session'),
+    '500 | ¥0.070000 | ¥0.025000 | ¥0.015000',
   );
 });
 

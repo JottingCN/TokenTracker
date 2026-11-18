@@ -115,7 +115,18 @@ export function modelColumns(
       width: 100,
       align: 'right',
       render: (_, row) =>
-        tokenWithCost(row.cacheText, formatMoney(row.cacheCostCny)),
+        tokenWithCost(row.cacheText, formatMoney(row.cacheReadCostCny)),
+    },
+    {
+      title: t('cache.write'),
+      key: 'cacheWrite',
+      width: 100,
+      align: 'right',
+      render: (_, row) =>
+        tokenWithCost(
+          row.cacheCreationText,
+          formatMoney(row.cacheWriteCostCny),
+        ),
     },
     {
       title: t('hit'),
@@ -259,7 +270,18 @@ export function sessionColumns(
       width: 100,
       align: 'right',
       render: (_, row) =>
-        tokenWithCost(row.cacheText, formatMoney(row.cacheCostCny)),
+        tokenWithCost(row.cacheText, formatMoney(row.cacheReadCostCny)),
+    },
+    {
+      title: t('cache.write'),
+      key: 'cacheWrite',
+      width: 100,
+      align: 'right',
+      render: (_, row) =>
+        tokenWithCost(
+          row.cacheCreationText,
+          formatMoney(row.cacheWriteCostCny),
+        ),
     },
     {
       title: t('hit'),
@@ -450,7 +472,18 @@ export function callColumns(
       width: 110,
       align: 'right',
       render: (_, row) =>
-        tokenWithCost(row.cacheText, formatMoney(row.cacheCostCny)),
+        tokenWithCost(row.cacheText, formatMoney(row.cacheReadCostCny)),
+    },
+    {
+      title: t('cache.write'),
+      key: 'cacheWrite',
+      width: 110,
+      align: 'right',
+      render: (_, row) =>
+        tokenWithCost(
+          row.cacheCreationText,
+          formatMoney(row.cacheWriteCostCny),
+        ),
     },
     {
       title: t('output'),

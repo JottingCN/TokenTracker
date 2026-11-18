@@ -126,6 +126,8 @@ public static class ModelPricing
         decimal? CostCny,
         string Period,
         decimal? CacheCost,
+        decimal? CacheReadCost,
+        decimal? CacheWriteCost,
         decimal? UncachedCost,
         decimal? OutputCost,
         decimal? ReasoningCost) EvaluateDetailed(
@@ -139,7 +141,7 @@ public static class ModelPricing
     {
         if (price is null)
         {
-            return (null, "unknown", null, null, null, null);
+            return (null, "unknown", null, null, null, null, null, null);
         }
 
         var period = price is { PeakAware: false }
@@ -167,8 +169,10 @@ public static class ModelPricing
         var output = Math.Max(0, outputTokens);
         var reasoning = Math.Clamp(reasoningTokens, 0, Math.Max(0, outputTokens));
 
-        var cacheCost = cached / 1_000_000m * tier.CachedInput +
+        var cacheReadCost = cached / 1_000_000m * tier.CachedInput;
+        var cacheWriteCost =
             cacheWrite / 1_000_000m * tier.EffectiveCacheWrite;
+        var cacheCost = cacheReadCost + cacheWriteCost;
         var uncachedCost = uncached / 1_000_000m * tier.UncachedInput;
         var outputCost = output / 1_000_000m * tier.Output;
         var reasoningCost = reasoning / 1_000_000m * tier.Output;
@@ -177,6 +181,8 @@ public static class ModelPricing
             cacheCost + uncachedCost + outputCost,
             period,
             cacheCost,
+            cacheReadCost,
+            cacheWriteCost,
             uncachedCost,
             outputCost,
             reasoningCost);

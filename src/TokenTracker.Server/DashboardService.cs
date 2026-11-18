@@ -523,10 +523,13 @@ public sealed class DashboardService
         call.Source,
         call.InputTokens,
         call.CacheReadTokens,
+        call.CacheCreationTokens,
         call.OutputTokens,
         call.ReasoningTokens,
         call.CostCny,
         call.CacheCostCny,
+        call.CacheReadCostCny,
+        call.CacheWriteCostCny,
         call.UncachedCostCny,
         call.OutputCostCny,
         call.ReasoningCostCny,
@@ -618,11 +621,14 @@ public sealed class DashboardService
         private long _calls;
         private long _inputTokens;
         private long _cacheReadTokens;
+        private long _cacheCreationTokens;
         private long _outputTokens;
         private long _reasoningTokens;
         private long _unpricedCalls;
         private double _costCny;
         private double _cacheCostCny;
+        private double _cacheReadCostCny;
+        private double _cacheWriteCostCny;
         private double _uncachedCostCny;
         private double _outputCostCny;
         private double _reasoningCostCny;
@@ -640,10 +646,13 @@ public sealed class DashboardService
             call.Source,
             call.InputTokens,
             call.CacheReadTokens,
+            call.CacheCreationTokens,
             call.OutputTokens,
             call.ReasoningTokens,
             call.CostCny,
             call.CacheCostCny,
+            call.CacheReadCostCny,
+            call.CacheWriteCostCny,
             call.UncachedCostCny,
             call.OutputCostCny,
             call.ReasoningCostCny,
@@ -657,10 +666,13 @@ public sealed class DashboardService
             _calls++;
             _inputTokens += call.InputTokens;
             _cacheReadTokens += call.CacheReadTokens;
+            _cacheCreationTokens += call.CacheCreationTokens;
             _outputTokens += call.OutputTokens;
             _reasoningTokens += call.ReasoningTokens;
             _costCny += call.CostCny ?? 0;
             _cacheCostCny += call.CacheCostCny;
+            _cacheReadCostCny += call.CacheReadCostCny;
+            _cacheWriteCostCny += call.CacheWriteCostCny;
             _uncachedCostCny += call.UncachedCostCny;
             _outputCostCny += call.OutputCostCny;
             _reasoningCostCny += call.ReasoningCostCny;
@@ -717,11 +729,14 @@ public sealed class DashboardService
             Calls = _calls,
             InputTokens = _inputTokens,
             CacheReadTokens = _cacheReadTokens,
+            CacheCreationTokens = _cacheCreationTokens,
             OutputTokens = _outputTokens,
             ReasoningTokens = _reasoningTokens,
             Sessions = _calls > 0 ? 1 : 0,
             CostCny = _costCny,
             CacheCostCny = _cacheCostCny,
+            CacheReadCostCny = _cacheReadCostCny,
+            CacheWriteCostCny = _cacheWriteCostCny,
             UncachedCostCny = _uncachedCostCny,
             OutputCostCny = _outputCostCny,
             ReasoningCostCny = _reasoningCostCny,

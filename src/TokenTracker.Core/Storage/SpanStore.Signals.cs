@@ -1112,7 +1112,8 @@ public sealed partial class SpanStore
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT COALESCE(hook_type, ''), COALESCE(hook_decision, ''),
+            SELECT trace_id, span_id,
+                   COALESCE(hook_type, ''), COALESCE(hook_decision, ''),
                    COALESCE(hook_result_kind, ''), {SourceSql} AS source,
                    start_time_ms, end_time_ms, is_error, hook_tool_names,
                    hook_duration_ms
@@ -1133,13 +1134,23 @@ public sealed partial class SpanStore
 
         var rows = new Dictionary<string, HookAccumulator>(
             StringComparer.OrdinalIgnoreCase);
+        var seenInvocations = new HashSet<(string TraceId, string Identity)>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            var hookType = reader.GetString(0);
-            var decision = reader.GetString(1);
-            var resultKind = reader.GetString(2);
-            var hookSource = reader.GetString(3);
+            var traceId = reader.GetString(0);
+            var spanId = reader.GetString(1);
+            var hookType = reader.GetString(2);
+            var invocation = HookInvocationIdentity(spanId, hookType);
+            if (invocation is not null &&
+                !seenInvocations.Add((traceId, invocation)))
+            {
+                continue;
+            }
+
+            var decision = reader.GetString(3);
+            var resultKind = reader.GetString(4);
+            var hookSource = reader.GetString(5);
             var key = $"{hookSource}\u001f{hookType}\u001f{decision}\u001f{resultKind}";
             if (!rows.TryGetValue(key, out var row))
             {
@@ -1152,11 +1163,11 @@ public sealed partial class SpanStore
             }
 
             row.Add(
-                reader.GetInt64(4),
-                reader.IsDBNull(5) ? null : reader.GetInt64(5),
-                reader.GetInt64(6) != 0,
-                reader.IsDBNull(7) ? null : reader.GetString(7),
-                reader.IsDBNull(8) ? null : reader.GetDouble(8));
+                reader.GetInt64(6),
+                reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                reader.GetInt64(8) != 0,
+                reader.IsDBNull(9) ? null : reader.GetString(9),
+                reader.IsDBNull(10) ? null : reader.GetDouble(10));
         }
 
         return rows.Values
@@ -1961,7 +1972,7 @@ public sealed partial class SpanStore
             SELECT trace_id, span_id, parent_span_id, operation, name, tool_name,
                    {SourceSql} AS source, start_time_ms, end_time_ms, error_type,
                    is_error, permission_kind, permission_result, hook_decision,
-                   hook_result_kind
+                   hook_result_kind, hook_type
             FROM session_events
             WHERE session_id = @session_id{sourceFilter}
             ORDER BY start_time_ms, trace_id, span_id;
@@ -1973,15 +1984,32 @@ public sealed partial class SpanStore
         }
 
         var events = new List<TraceEvent>();
+        var seenHookInvocations = new HashSet<(string TraceId, string Identity)>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
             var startMs = reader.GetInt64(7);
+            var traceId = reader.GetString(0);
+            var spanId = reader.GetString(1);
+            var operation = reader.GetString(3);
+            var hookType = reader.IsDBNull(15) ? null : reader.GetString(15);
+            var invocation = string.Equals(
+                    operation,
+                    "execute_hook",
+                    StringComparison.OrdinalIgnoreCase)
+                ? HookInvocationIdentity(spanId, hookType)
+                : null;
+            if (invocation is not null &&
+                !seenHookInvocations.Add((traceId, invocation)))
+            {
+                continue;
+            }
+
             events.Add(new TraceEvent(
-                reader.GetString(0),
-                reader.GetString(1),
+                traceId,
+                spanId,
                 reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.GetString(3),
+                operation,
                 reader.IsDBNull(4) ? null : reader.GetString(4),
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6),
@@ -2177,20 +2205,34 @@ public sealed partial class SpanStore
         }
 
         long hookEvents;
-        long hookLast;
+        long hookLast = 0;
         using (var command = connection.CreateCommand())
         {
             command.CommandText =
-                "SELECT COUNT(*), COALESCE(MAX(start_time_ms), 0) " +
+                "SELECT trace_id, span_id, hook_type, start_time_ms " +
                 "FROM session_events WHERE operation = 'execute_hook'" +
                 $"{agentRangeFilter}{sessionFilter}{sourceFilter};";
             AddScopeParameters(command, sessionId, source);
             command.Parameters.AddWithValue("@from", fromMs);
             command.Parameters.AddWithValue("@to", toMs);
             using var reader = command.ExecuteReader();
-            reader.Read();
-            hookEvents = reader.GetInt64(0);
-            hookLast = reader.GetInt64(1);
+            var seenInvocations =
+                new HashSet<(string TraceId, string Identity)>();
+            hookEvents = 0;
+            while (reader.Read())
+            {
+                var startMs = reader.GetInt64(3);
+                var invocation = HookInvocationIdentity(
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2));
+                if (invocation is null ||
+                    seenInvocations.Add((reader.GetString(0), invocation)))
+                {
+                    hookEvents++;
+                }
+
+                hookLast = Math.Max(hookLast, startMs);
+            }
         }
 
         long metricPoints;
@@ -2651,6 +2693,41 @@ public sealed partial class SpanStore
         {
             command.Parameters.AddWithValue("@source", source);
         }
+    }
+
+    private static string? HookInvocationIdentity(
+        string spanId,
+        string? hookType)
+    {
+        // Legacy rows encoded the invocation id after the parent span; numeric
+        // suffixes were also used as fallback event indexes when no id existed.
+        const string marker = "#hook#";
+        if (spanId.StartsWith("hook#", StringComparison.Ordinal))
+        {
+            return spanId;
+        }
+
+        var markerIndex = spanId.LastIndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0)
+        {
+            return null;
+        }
+
+        var invocationId = spanId[(markerIndex + marker.Length)..];
+        if (invocationId.Length == 0 ||
+            long.TryParse(
+                invocationId,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out _))
+        {
+            return null;
+        }
+
+        var typeKey = string.IsNullOrWhiteSpace(hookType)
+            ? "unknown"
+            : hookType.Trim().ToLowerInvariant();
+        return $"hook#{typeKey}#{invocationId}";
     }
 
     private sealed class HookAccumulator

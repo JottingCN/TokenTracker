@@ -301,6 +301,8 @@ public static partial class OtlpTraceParser
             HitRate = hitRate,
             CostCny = (double?)breakdown.CostCny,
             CacheCostCny = (double?)breakdown.CacheCost,
+            CacheReadCostCny = (double?)breakdown.CacheReadCost,
+            CacheWriteCostCny = (double?)breakdown.CacheWriteCost,
             UncachedCostCny = (double?)breakdown.UncachedCost,
             OutputCostCny = (double?)breakdown.OutputCost,
             ReasoningCostCny = (double?)breakdown.ReasoningCost,
@@ -483,18 +485,15 @@ public static partial class OtlpTraceParser
             var invocationId =
                 GetString(attributes, "github.copilot.hook.invocation_id") ??
                 GetString(attributes, "copilot_chat.hook.invocation_id");
-            // session_events is keyed by (trace_id, span_id) and one host span can
-            // carry every hook of a run, so the id must be synthesized or
-            // INSERT OR IGNORE would keep only the first hook.
-            var key = string.IsNullOrWhiteSpace(invocationId)
-                ? index.ToString(CultureInfo.InvariantCulture)
-                : invocationId;
-
             rows ??= new List<OtlpEventRecord>(4);
             rows.Add(new OtlpEventRecord
             {
                 TraceId = traceId,
-                SpanId = $"{spanId}#hook#{key}",
+                SpanId = HookEventSpanId(
+                    spanId,
+                    hookType,
+                    invocationId,
+                    index.ToString(CultureInfo.InvariantCulture)),
                 ParentSpanId = spanId,
                 Operation = "execute_hook",
                 Name = hookType is null ? "execute_hook" : $"execute_hook {hookType}",
@@ -526,6 +525,23 @@ public static partial class OtlpTraceParser
         }
 
         return rows;
+    }
+
+    internal static string HookEventSpanId(
+        string parentSpanId,
+        string? hookType,
+        string? invocationId,
+        string fallbackKey)
+    {
+        if (!string.IsNullOrWhiteSpace(invocationId))
+        {
+            var typeKey = string.IsNullOrWhiteSpace(hookType)
+                ? "unknown"
+                : hookType.Trim().ToLowerInvariant();
+            return $"hook#{typeKey}#{invocationId.Trim()}";
+        }
+
+        return $"{parentSpanId}#hook#{fallbackKey}";
     }
 
     private static readonly HashSet<string> AgentHostServiceNames =

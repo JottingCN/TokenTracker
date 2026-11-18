@@ -26,6 +26,8 @@ public sealed class OtlpSpanRecord
     public double? HitRate { get; init; }
     public double? CostCny { get; init; }
     public double? CacheCostCny { get; init; }
+    public double? CacheReadCostCny { get; init; }
+    public double? CacheWriteCostCny { get; init; }
     public double? UncachedCostCny { get; init; }
     public double? OutputCostCny { get; init; }
     public double? ReasoningCostCny { get; init; }

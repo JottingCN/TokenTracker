@@ -318,6 +318,7 @@ public sealed partial class SpanStore
                 otel_source, model, session_id, is_main, input_tokens,
                 output_tokens, cache_read_tokens, cache_creation_tokens,
                 reasoning_tokens, ttft_ms, nano_aiu, cache_cost_cny,
+                cache_read_cost_cny, cache_write_cost_cny,
                 uncached_cost_cny, output_cost_cny, reasoning_cost_cny,
                 hit_rate, cost_cny, pricing_period, error_type,
                 provider_name, agent_name, subagent_name, finish_reasons,
@@ -328,6 +329,7 @@ public sealed partial class SpanStore
                 @model, @session_id, @is_main, @input_tokens,
                 @output_tokens, @cache_read_tokens, @cache_creation_tokens,
                 @reasoning_tokens, @ttft_ms, @nano_aiu, @cache_cost_cny,
+                @cache_read_cost_cny, @cache_write_cost_cny,
                 @uncached_cost_cny, @output_cost_cny, @reasoning_cost_cny,
                 @hit_rate, @cost_cny, @pricing_period, @error_type,
                 @provider_name, @agent_name, @subagent_name, @finish_reasons,
@@ -352,6 +354,8 @@ public sealed partial class SpanStore
         AddParameter(insert, "@ttft_ms", SqliteType.Integer);
         AddParameter(insert, "@nano_aiu", SqliteType.Integer);
         AddParameter(insert, "@cache_cost_cny", SqliteType.Real);
+        AddParameter(insert, "@cache_read_cost_cny", SqliteType.Real);
+        AddParameter(insert, "@cache_write_cost_cny", SqliteType.Real);
         AddParameter(insert, "@uncached_cost_cny", SqliteType.Real);
         AddParameter(insert, "@output_cost_cny", SqliteType.Real);
         AddParameter(insert, "@reasoning_cost_cny", SqliteType.Real);
@@ -393,6 +397,14 @@ public sealed partial class SpanStore
                 row.NanoAiu is null ? DBNull.Value : row.NanoAiu.Value;
             insert.Parameters["@cache_cost_cny"].Value =
                 row.CacheCostCny is null ? DBNull.Value : row.CacheCostCny.Value;
+            insert.Parameters["@cache_read_cost_cny"].Value =
+                row.CacheReadCostCny is null
+                    ? DBNull.Value
+                    : row.CacheReadCostCny.Value;
+            insert.Parameters["@cache_write_cost_cny"].Value =
+                row.CacheWriteCostCny is null
+                    ? DBNull.Value
+                    : row.CacheWriteCostCny.Value;
             insert.Parameters["@uncached_cost_cny"].Value =
                 row.UncachedCostCny is null
                     ? DBNull.Value
@@ -452,7 +464,8 @@ public sealed partial class SpanStore
             SELECT trace_id, span_id, name, service_name, otel_source, model,
                    session_id, is_main, input_tokens, output_tokens,
                    cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-                   ttft_ms, nano_aiu, cache_cost_cny, uncached_cost_cny,
+                   ttft_ms, nano_aiu, cache_cost_cny, cache_read_cost_cny,
+                   cache_write_cost_cny, uncached_cost_cny,
                    output_cost_cny, reasoning_cost_cny, cost_cny,
                    pricing_period, error_type, provider_name, agent_name,
                    subagent_name, finish_reasons, start_time_ms, end_time_ms,
@@ -496,15 +509,17 @@ public sealed partial class SpanStore
                 reader.IsDBNull(17) ? null : reader.GetDouble(17),
                 reader.IsDBNull(18) ? null : reader.GetDouble(18),
                 reader.IsDBNull(19) ? null : reader.GetDouble(19),
-                reader.IsDBNull(20) ? null : reader.GetString(20),
-                reader.IsDBNull(21) ? null : reader.GetString(21),
+                reader.IsDBNull(20) ? null : reader.GetDouble(20),
+                reader.IsDBNull(21) ? null : reader.GetDouble(21),
                 reader.IsDBNull(22) ? null : reader.GetString(22),
                 reader.IsDBNull(23) ? null : reader.GetString(23),
                 reader.IsDBNull(24) ? null : reader.GetString(24),
                 reader.IsDBNull(25) ? null : reader.GetString(25),
-                reader.GetInt64(26),
-                reader.IsDBNull(27) ? null : reader.GetInt64(27),
-                reader.GetInt64(28)));
+                reader.IsDBNull(26) ? null : reader.GetString(26),
+                reader.IsDBNull(27) ? null : reader.GetString(27),
+                reader.GetInt64(28),
+                reader.IsDBNull(29) ? null : reader.GetInt64(29),
+                reader.GetInt64(30)));
         }
 
         return rows;
@@ -606,6 +621,8 @@ public sealed partial class SpanStore
                     cacheCreation);
                 var cost = (double?)evaluation.CostCny;
                 var cacheCost = (double?)evaluation.CacheCost;
+                var cacheReadCost = (double?)evaluation.CacheReadCost;
+                var cacheWriteCost = (double?)evaluation.CacheWriteCost;
                 var uncachedCost = (double?)evaluation.UncachedCost;
                 var outputCost = (double?)evaluation.OutputCost;
                 var reasoningCost = (double?)evaluation.ReasoningCost;
@@ -628,6 +645,8 @@ public sealed partial class SpanStore
                     NanoAiu = nanoAiu,
                     CostCny = cost,
                     CacheCostCny = cacheCost,
+                    CacheReadCostCny = cacheReadCost,
+                    CacheWriteCostCny = cacheWriteCost,
                     UncachedCostCny = uncachedCost,
                     OutputCostCny = outputCost,
                     ReasoningCostCny = reasoningCost,
@@ -688,6 +707,8 @@ public sealed partial class SpanStore
         long? TtftMs,
         long? NanoAiu,
         double? CacheCostCny,
+        double? CacheReadCostCny,
+        double? CacheWriteCostCny,
         double? UncachedCostCny,
         double? OutputCostCny,
         double? ReasoningCostCny,

@@ -357,6 +357,13 @@ export function SessionPage({
       render: (_, row) => number.format(row.cacheReadTokens),
     },
     {
+      title: t('cache.write'),
+      key: 'cacheWrite',
+      width: 120,
+      align: 'right',
+      render: (_, row) => number.format(row.cacheCreationTokens),
+    },
+    {
       title: t('hit'),
       key: 'hitRate',
       width: 80,
@@ -612,7 +619,7 @@ export function SessionPage({
               dataSource={data?.agentRuns ?? []}
               loading={!data}
               pagination={false}
-              scroll={{ x: 1500, y: listHeight }}
+              scroll={{ x: 1620, y: listHeight }}
             />
           ))}
       </Card>
@@ -741,7 +748,7 @@ export function SessionPage({
                 dataSource={data?.tools ?? []}
                 loading={!data}
                 pagination={false}
-                scroll={{ x: 1800, y: listHeight }}
+                scroll={{ x: 1910, y: listHeight }}
               />
             )}
       </Card>

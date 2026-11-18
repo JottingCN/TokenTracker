@@ -22,10 +22,10 @@
   "config.costUnit.credit": "积分",
   "config.creditRate": "1 积分对应的人民币金额（CNY）。",
   "config.usdRate": "1 美元对应的人民币金额（CNY）。",
-  "config.statusBarFormat": "状态栏模板。可用占位符：{icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turn} {turns} {step} {hooks} {range} {model} {session}；{turn} 显示最新对话轮次与已执行步数（工具调用），没有 Agent Host 轮次标记时自动省略；冒号后可选格式，如 {hit:0.00%}、{ttft:0.0s}、{speed:0.0}、{cost:0.000000}、{calls:0}。除 {cost} 外的指标取最新主 agent 模型的值。",
+  "config.statusBarFormat": "状态栏模板。可用占位符：{icon} {hit} {ttft} {speed} {cost} {calls} {duration} {input} {cache} {cachewrite} {inputcost} {cachecost} {cachewritecost} {output} {reasoning} {events} {tools} {toolerrors} {agents} {turn} {turns} {step} {hooks} {range} {model} {session}。{input} 保持总输入 token；{cache} 和 {cachewrite} 分别表示缓存读取与写入 token；{inputcost}、{cachecost}、{cachewritecost} 分别显示输入、缓存读取和缓存写入费用。{turn} 显示最新对话轮次与已执行步数（工具调用），没有 Agent Host 轮次标记时自动省略；冒号后可选格式，如 {hit:0.00%}、{ttft:0.0s}、{speed:0.0}、{cost:0.000000}、{calls:0}。有模型明细时，调用指标取最新主 agent 模型；事件、工具、Hook 和运行次数按会话统计。金额口径设置仅影响 {cost}。",
   "config.statusBarCost": "{cost} 显示的金额口径。",
-  "config.statusBarCost.session": "整个会话合计。",
-  "config.statusBarCost.model": "仅最新主 agent 模型。",
+  "config.statusBarCost.session": "整个会话的金额。",
+  "config.statusBarCost.model": "最新主 agent 模型的金额。",
   "config.group.display": "Token Tracker: 状态栏与显示",
   "config.group.server": "Token Tracker: 服务端"
 }

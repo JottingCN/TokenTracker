@@ -85,7 +85,7 @@
 - Hook 事件是对外 span 的 **OTel `events` 数组**（`github.copilot.hook.start/end`，父 span 是 `invoke_agent`），两条管线都没有 `execute_hook` span。旧实现只解析 span 本身、忽略 `events`，所以在线数据的 Hook 面板恒为 0——**必须读 `span.events`**（`ParseSpanEvents`）。
 - 本地导入另有一条路径：Copilot Chat 库的 `span_events` 表里同样是这两类事件，`LocalTraceImporter` 读取它们。
 - **只取 `end`**（`start` 不入库否则次数翻倍，实测 1988 start vs 1976 end）。
-- `session_events` 主键是 `(trace_id, span_id)`，一条 span 只能占一行，所以 hook 行 `span_id` 用 `{spanId}#hook#{hook.invocation_id}` 合成（缺 id 用事件序号），**不要用真实 span_id**，否则同一条 invoke_agent 上多个 hook 会被 `INSERT OR IGNORE` 吃掉。
+- `session_events` 主键是 `(trace_id, span_id)`。有 `hook.invocation_id` 时，hook 行 `span_id` 按 `hook type + invocation_id` 合成，使同一 trace 中重复挂在不同父 span 的同一次 hook 只计一次；读取时也兼容旧的 `{parentSpanId}#hook#{invocationId}` 行。缺 ID 时回退到 `{parentSpanId}#hook#{eventIndex}`，保留独立事件。**不要用真实 span_id**，否则同一条 invoke_agent 上多个 hook 会被 `INSERT OR IGNORE` 吃掉。
 - 耗时只认 `end` 上的 `hook.duration`（单位**秒浮点**，解析时 ×1000），不要用 start/end 时间差配对（实测只差 0~1 ms）。
 - 历史行补不回来：OTLP 原始报文不落库，`events` 在入库时被丢弃后就只剩聚合结果，修好解析只对之后收到的数据生效。
 

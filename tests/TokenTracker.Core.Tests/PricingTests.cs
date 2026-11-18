@@ -143,13 +143,29 @@ public sealed class PricingTests
         var fallbackDetail = ModelPricing.EvaluateDetailed(
             fallback, 1_000_000, 0, 0, 0, idle, cacheCreationTokens: 1_000_000);
         Assert.Equal(10m, fallbackDetail.CacheCost);
+        Assert.Equal(0m, fallbackDetail.CacheReadCost);
+        Assert.Equal(10m, fallbackDetail.CacheWriteCost);
         Assert.Equal(0m, fallbackDetail.UncachedCost);
         Assert.Equal(10m, fallbackDetail.CostCny);
 
         var explicitDetail = ModelPricing.EvaluateDetailed(
             explicitRate, 1_000_000, 0, 0, 0, idle, cacheCreationTokens: 1_000_000);
         Assert.Equal(12.5m, explicitDetail.CacheCost);
+        Assert.Equal(0m, explicitDetail.CacheReadCost);
+        Assert.Equal(12.5m, explicitDetail.CacheWriteCost);
         Assert.Equal(12.5m, explicitDetail.CostCny);
+
+        var mixedDetail = ModelPricing.EvaluateDetailed(
+            explicitRate,
+            1_000_000,
+            200_000,
+            0,
+            0,
+            idle,
+            cacheCreationTokens: 300_000);
+        Assert.Equal(0.2m, mixedDetail.CacheReadCost);
+        Assert.Equal(3.75m, mixedDetail.CacheWriteCost);
+        Assert.Equal(3.95m, mixedDetail.CacheCost);
     }
 
     [Fact]

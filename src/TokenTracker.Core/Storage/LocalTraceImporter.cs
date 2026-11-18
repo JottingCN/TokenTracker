@@ -348,9 +348,8 @@ public static class LocalTraceImporter
         var invocationId = TrimToNull(
             ReadJsonField(payload, "github.copilot.hook.invocation_id") ??
             ReadJsonField(payload, "copilot_chat.hook.invocation_id"));
-        var eventKey = invocationId ??
-            reader.GetInt64(0).ToString(
-                System.Globalization.CultureInfo.InvariantCulture);
+        var fallbackKey = reader.GetInt64(0).ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
         // The decision and the affected tools live on the same hook.end event; the
         // span-based path reads them from span_attributes, so the span_events path
         // must read them from the payload or the hook row loses both.
@@ -368,7 +367,11 @@ public static class LocalTraceImporter
         return new OtlpEventRecord
         {
             TraceId = traceId,
-            SpanId = $"{spanId}#hook#{eventKey}",
+            SpanId = OtlpTraceParser.HookEventSpanId(
+                spanId,
+                hookType,
+                invocationId,
+                fallbackKey),
             ParentSpanId = spanId,
             Operation = "execute_hook",
             Name = hookType is null ? "execute_hook" : $"execute_hook {hookType}",
@@ -751,6 +754,8 @@ public static class LocalTraceImporter
                 : null,
             CostCny = (double?)breakdown.CostCny,
             CacheCostCny = (double?)breakdown.CacheCost,
+            CacheReadCostCny = (double?)breakdown.CacheReadCost,
+            CacheWriteCostCny = (double?)breakdown.CacheWriteCost,
             UncachedCostCny = (double?)breakdown.UncachedCost,
             OutputCostCny = (double?)breakdown.OutputCost,
             ReasoningCostCny = (double?)breakdown.ReasoningCost,

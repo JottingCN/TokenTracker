@@ -117,14 +117,14 @@ public sealed class SpanStoreTests
         var databasePath = Path.Combine(directory, "tokentracker.db");
         var model = "breakdown-model";
 
-        // Per 1M tokens: 1 cached input, 2 uncached input, 4 output.
+        // Per 1M tokens: 1 cache-read, 3 cache-write, 2 uncached input, 4 output.
         ModelPricing.SetOverrides(new[]
         {
             new KeyValuePair<string, ModelPrice>(
                 model,
                 new ModelPrice(
-                    new PriceTier(1m, 2m, 4m),
-                    new PriceTier(1m, 2m, 4m),
+                    new PriceTier(1m, 2m, 4m, 3m),
+                    new PriceTier(1m, 2m, 4m, 3m),
                     PeakAware: false)),
         });
 
@@ -143,7 +143,8 @@ public sealed class SpanStoreTests
                     400,
                     500,
                     cost: null,
-                    reasoningTokens: 120),
+                    reasoningTokens: 120,
+                    cacheCreationTokens: 200),
                 Span(
                     "t2",
                     "s2",
@@ -162,19 +163,44 @@ public sealed class SpanStoreTests
             Assert.Equal(2, row.Calls);
             Assert.Equal(3_000, row.InputTokens);
             Assert.Equal(400, row.CacheReadTokens);
+            Assert.Equal(200, row.CacheCreationTokens);
             Assert.Equal(800, row.OutputTokens);
             Assert.Equal(200, row.ReasoningTokens);
             Assert.Equal("200", row.ReasoningText);
 
             // The dashboard shows these buckets next to the token counts, so the
             // aggregate must be split exactly like the session rows.
-            Assert.Equal(400d * 1 / 1_000_000, row.CacheCostCny, 10);
-            Assert.Equal(2_600d * 2 / 1_000_000, row.UncachedCostCny, 10);
+            Assert.Equal(400d * 1 / 1_000_000, row.CacheReadCostCny, 10);
+            Assert.Equal(200d * 3 / 1_000_000, row.CacheWriteCostCny, 10);
+            Assert.Equal(
+                row.CacheReadCostCny + row.CacheWriteCostCny,
+                row.CacheCostCny,
+                10);
+            Assert.Equal(2_400d * 2 / 1_000_000, row.UncachedCostCny, 10);
             Assert.Equal(800d * 4 / 1_000_000, row.OutputCostCny, 10);
             Assert.Equal(
                 row.CacheCostCny + row.UncachedCostCny + row.OutputCostCny,
                 row.CostCny,
                 10);
+
+            var sample = Assert.Single(
+                store.GetSessionCallSamples("session-1", 0, long.MaxValue, null)
+                    .Where(call => call.CacheCreationTokens > 0));
+            Assert.Equal(200, sample.CacheCreationTokens);
+            Assert.Equal(row.CacheWriteCostCny, sample.CacheWriteCostCny, 10);
+
+            var summary = store.GetSummary(0);
+            Assert.Equal(200, summary.CacheCreationTokens);
+            Assert.Equal(row.CacheReadCostCny, summary.CacheReadCostCny, 10);
+            Assert.Equal(row.CacheWriteCostCny, summary.CacheWriteCostCny, 10);
+            var session = Assert.Single(store.GetSessions(0));
+            Assert.Equal(200, session.CacheCreationTokens);
+            Assert.Equal(row.CacheWriteCostCny, session.CacheWriteCostCny, 10);
+            var call = Assert.Single(
+                store.GetCallsForSession("session-1")
+                    .Where(call => call.CacheCreationTokens > 0));
+            Assert.Equal(200, call.CacheCreationTokens);
+            Assert.Equal(row.CacheWriteCostCny, call.CacheWriteCostCny, 10);
         }
         finally
         {
@@ -580,6 +606,8 @@ public sealed class SpanStoreTests
                 Assert.Contains("ttft_ms", columns);
                 Assert.Contains("window_session_id", columns);
                 Assert.Contains("uncached_cost_cny", columns);
+                Assert.Contains("cache_read_cost_cny", columns);
+                Assert.Contains("cache_write_cost_cny", columns);
             }
 
             // Reopening an already-upgraded database must not touch the rows.
@@ -2025,7 +2053,7 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
-    public void TraceTopologyLabelsImportedHooksWithTheirType()
+    public void TraceTopologyDeduplicatesHookInvocationsAndLabelsThemWithTheirType()
     {
         var directory = Path.Combine(
             Path.GetTempPath(),
@@ -2055,8 +2083,25 @@ public sealed class SpanStoreTests
                 new OtlpEventRecord
                 {
                     TraceId = "hook-trace",
-                    SpanId = "hook-parent#hook#1",
+                    SpanId = "hook-parent#hook#inv-1",
                     ParentSpanId = "hook-parent",
+                    Operation = "execute_hook",
+                    Name = "execute_hook preToolUse",
+                    ToolName = "powershell",
+                    HookType = "preToolUse",
+                    HookDurationMs = 12,
+                    SessionId = "session-1",
+                    ServiceName = "github-copilot",
+                    Source = "agent-host",
+                    StartTimeMs = 2_000,
+                    EndTimeMs = 2_012,
+                    ReceivedAtMs = 9_000,
+                },
+                new OtlpEventRecord
+                {
+                    TraceId = "hook-trace",
+                    SpanId = "another-parent#hook#inv-1",
+                    ParentSpanId = "another-parent",
                     Operation = "execute_hook",
                     Name = "execute_hook preToolUse",
                     ToolName = "powershell",
@@ -2077,7 +2122,8 @@ public sealed class SpanStoreTests
                 node => node.Operation == "execute_hook");
             // The operation tag already says "Hook", so the label is the type.
             Assert.Equal("preToolUse", hook.Label);
-            Assert.Equal("hook-parent", hook.ParentId?.Split(':').Last());
+            Assert.Equal(1, Assert.Single(store.GetHookSummaries("session-1")).Count);
+            Assert.Equal(1, store.GetSignalHealth("session-1").HookEvents);
         }
         finally
         {
@@ -2935,7 +2981,8 @@ public sealed class SpanStoreTests
         long durationMs = 100,
         string? parentSpanId = null,
         string? windowSessionId = null,
-        string? errorType = null) =>
+        string? errorType = null,
+        long cacheCreationTokens = 0) =>
         new()
         {
             TraceId = traceId,
@@ -2952,6 +2999,7 @@ public sealed class SpanStoreTests
             IsMain = sessionId is not null,
             InputTokens = inputTokens,
             CacheReadTokens = cacheReadTokens,
+            CacheCreationTokens = cacheCreationTokens,
             OutputTokens = outputTokens,
             ReasoningTokens = reasoningTokens,
             TtftMs = ttftMs,

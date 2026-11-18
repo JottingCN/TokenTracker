@@ -271,7 +271,7 @@ sessions VIEW                                 -- 见下
 > 结论：若需要 Hook 次数/耗时/类型，查询入口是 `span_events`（离线库）或 OTLP 推送的 span event，
 > **不是** `spans WHERE operation_name='execute_hook'`。本项目 `LocalTraceImporter` 除 `spans` 外还会读 `span_events` 的 `hook.end`
 > （`hook.start` 不入库，避免次数翻倍），把它写成 `operation='execute_hook'` 的 `session_events` 行；
-> 因为 `session_events` 主键是 `(trace_id, span_id)`，hook 行的 `span_id` 是 `{spanId}#hook#{invocation_id}` 合成值。
+> 有 `invocation_id` 时 `span_id` 按 Hook 类型与 invocation ID 合成，在同一 trace 内去重；缺 ID 时用父 span 与事件序号合成。
 
 ---
 
