@@ -860,12 +860,13 @@ export function selectLatestSession(
     return { session: pickLatest(sessions) };
   }
 
+  const roots = workspaceRoots.map(normalizePath);
   const matching = sessions.filter((session) => {
     if (!session.workspacePath) {
       return false;
     }
     const path = normalizePath(session.workspacePath);
-    return workspaceRoots.some((root) => isPathWithin(path, root));
+    return roots.some((root) => isPathWithin(path, root));
   });
 
   return matching.length > 0 ? { session: pickLatest(matching) } : {};
