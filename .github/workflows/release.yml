@@ -72,11 +72,11 @@ jobs:
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
 
-      - name: Build extension
+      - name: Test and build extension
         working-directory: vscode-extension
         run: |
           npm ci
-          npm run compile
+          npm test
 
       - name: Package VSIX
         working-directory: vscode-extension
