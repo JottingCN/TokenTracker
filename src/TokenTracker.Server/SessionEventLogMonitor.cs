@@ -133,10 +133,8 @@ public sealed class SessionEventLogMonitor
             info);
 
         var length = info.Length;
-        var createdTicks = info.CreationTimeUtc.Ticks;
         var lastWriteTicks = info.LastWriteTimeUtc.Ticks;
         var changedIdentity =
-            state.CreatedTicks != createdTicks ||
             length < state.Offset ||
             (length == state.Offset &&
              state.LastWriteTicks != 0 &&
@@ -146,7 +144,6 @@ public sealed class SessionEventLogMonitor
         {
             state.Offset = 0;
             state.Pending.Clear();
-            state.CreatedTicks = createdTicks;
         }
         state.LastWriteTicks = lastWriteTicks;
 
@@ -337,7 +334,6 @@ public sealed class SessionEventLogMonitor
 
         public string Path { get; }
         public long Offset { get; set; }
-        public long CreatedTicks { get; set; }
         public long LastWriteTicks { get; set; }
         public List<byte> Pending { get; }
     }
