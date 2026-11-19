@@ -907,6 +907,38 @@ public sealed partial class SpanStore
             AddParameter(command, "@is_error", SqliteType.Integer);
             AddParameter(command, "@received_at_ms", SqliteType.Integer);
 
+            using var hookToolsCommand = connection.CreateCommand();
+            hookToolsCommand.Transaction = transaction;
+            hookToolsCommand.CommandText = """
+                UPDATE session_events
+                SET hook_tool_names = @hook_tool_names
+                WHERE trace_id = @trace_id
+                  AND span_id = @span_id
+                  AND operation = 'execute_hook'
+                  AND (hook_tool_names IS NULL OR hook_tool_names = '');
+                """;
+            AddParameter(hookToolsCommand, "@trace_id", SqliteType.Text);
+            AddParameter(hookToolsCommand, "@span_id", SqliteType.Text);
+            AddParameter(hookToolsCommand, "@hook_tool_names", SqliteType.Text);
+
+            void BackfillHookToolsIfMissing(OtlpEventRecord item)
+            {
+                if (!string.Equals(
+                        item.Operation,
+                        "execute_hook",
+                        StringComparison.Ordinal) ||
+                    string.IsNullOrWhiteSpace(item.HookToolNames))
+                {
+                    return;
+                }
+
+                hookToolsCommand.Parameters["@trace_id"].Value = item.TraceId;
+                hookToolsCommand.Parameters["@span_id"].Value = item.SpanId;
+                hookToolsCommand.Parameters["@hook_tool_names"].Value =
+                    item.HookToolNames;
+                hookToolsCommand.ExecuteNonQuery();
+            }
+
             var inserted = 0;
             foreach (var item in events)
             {
@@ -914,6 +946,7 @@ public sealed partial class SpanStore
                     !string.IsNullOrWhiteSpace(item.SessionId) &&
                     EventExists(connection, transaction, item))
                 {
+                    BackfillHookToolsIfMissing(item);
                     continue;
                 }
 
@@ -980,6 +1013,7 @@ public sealed partial class SpanStore
                 command.Parameters["@is_error"].Value = item.IsError ? 1 : 0;
                 command.Parameters["@received_at_ms"].Value = item.ReceivedAtMs;
                 inserted += command.ExecuteNonQuery();
+                BackfillHookToolsIfMissing(item);
             }
 
             var resolveTraceIds = events

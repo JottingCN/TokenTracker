@@ -2802,33 +2802,75 @@ public sealed partial class SpanStore
         }
 
         /// <summary>
-        /// The attribute is an OTLP array, which the parser joins with commas, and a
-        /// hook event carries one array per tool — so a group's stored value looks
-        /// like <c>["8e6a…"], ["edit"]</c>. Splitting on commas alone leaves the
-        /// brackets and quotes in the list.
+        /// Accepts OTLP's comma-flattened arrays, JSON arrays from local imports,
+        /// and the legacy grouped-array representation stored by earlier versions.
         /// </summary>
         private static IEnumerable<string> ToolNamesFromHook(string raw)
         {
             var trimmed = raw.Trim();
-            if (trimmed.StartsWith('['))
+            if (TryParseJsonArray(trimmed, out var names))
             {
-                var parts = new List<string>();
-                foreach (var chunk in trimmed.Split(']'))
-                {
-                    var value = chunk.Trim().TrimStart('[').Trim().Trim('"');
-                    if (value.Length > 0)
-                    {
-                        parts.Add(value);
-                    }
-                }
+                return names;
+            }
 
-                return parts;
+            var groupedParts = new List<string>();
+            foreach (var chunk in trimmed.Split(']'))
+            {
+                var part = chunk.Trim().TrimStart(',');
+                if (part.StartsWith('[') &&
+                    TryParseJsonArray($"{part}]", out var group))
+                {
+                    groupedParts.AddRange(group);
+                }
+            }
+
+            if (groupedParts.Count > 0)
+            {
+                return groupedParts;
             }
 
             return trimmed.Split(
                 ',',
                 StringSplitOptions.RemoveEmptyEntries |
-                StringSplitOptions.TrimEntries);
+                StringSplitOptions.TrimEntries)
+                .Select(value => value.Trim('[', ']', '"'));
+        }
+
+        private static bool TryParseJsonArray(
+            string value,
+            out List<string> names)
+        {
+            names = new List<string>();
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(value);
+                if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+                {
+                    return false;
+                }
+
+                foreach (var item in document.RootElement.EnumerateArray())
+                {
+                    var name = item.ValueKind switch
+                    {
+                        System.Text.Json.JsonValueKind.String => item.GetString(),
+                        System.Text.Json.JsonValueKind.Number or
+                        System.Text.Json.JsonValueKind.True or
+                        System.Text.Json.JsonValueKind.False => item.GetRawText(),
+                        _ => null,
+                    };
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        names.Add(name);
+                    }
+                }
+
+                return true;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return false;
+            }
         }
 
         public HookSummaryRow Build() => new()

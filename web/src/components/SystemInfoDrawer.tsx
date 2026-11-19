@@ -13,6 +13,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import type {
   StorageTableInfo,
+  SessionEventLogStatus,
   SystemAccessInfo,
   SystemInfo,
   SystemPathInfo,
@@ -35,6 +36,10 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
   const { t } = useUi();
   const [data, setData] = useState<SystemInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [eventLogStatus, setEventLogStatus] =
+    useState<SessionEventLogStatus | null>(null);
+  const [eventLogLoading, setEventLogLoading] = useState(false);
+  const [eventLogError, setEventLogError] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -43,8 +48,16 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
 
     let cancelled = false;
     setLoading(true);
+    setEventLogStatus(null);
+    setEventLogLoading(true);
+    setEventLogError(false);
     fetch('/api/system', { cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : null))
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`System info request failed: ${response.status}`);
+        }
+        return response.json();
+      })
       .then((payload: SystemInfo | null) => {
         if (!cancelled) {
           setData(payload);
@@ -58,6 +71,31 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
+        }
+      });
+
+    fetch('/api/session-events/status', { cache: 'no-store' })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(
+            `Session event status request failed: ${response.status}`,
+          );
+        }
+        return response.json();
+      })
+      .then((payload: SessionEventLogStatus) => {
+        if (!cancelled) {
+          setEventLogStatus(payload);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEventLogError(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setEventLogLoading(false);
         }
       });
 
@@ -120,7 +158,7 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               },
               {
                 key: 'build',
-                label: 'Build',
+                label: t('build'),
                 children: data.server.buildId ?? '-',
               },
               {
@@ -365,6 +403,81 @@ export function SystemInfoDrawer({ open, onClose }: SystemInfoDrawerProps) {
               ]}
               dataSource={data.accesses}
             />
+          </div>
+
+          <div>
+            <Typography.Title level={5} style={{ marginTop: 0 }}>
+              {t('session.event.log.monitor')}
+            </Typography.Title>
+            {eventLogLoading ? (
+              <Spin size="small" />
+            ) : eventLogError || !eventLogStatus ? (
+              <Alert
+                type="warning"
+                showIcon
+                message={t('session.event.log.status.unavailable')}
+              />
+            ) : (
+              <Descriptions
+                size="small"
+                column={1}
+                bordered
+                styles={{ label: { width: 140, whiteSpace: 'nowrap' } }}
+                items={[
+                  {
+                    key: 'root',
+                    label: t('path'),
+                    children: (
+                      <Typography.Text copyable>
+                        {eventLogStatus.root || '-'}
+                      </Typography.Text>
+                    ),
+                  },
+                  {
+                    key: 'running',
+                    label: t('status'),
+                    children: (
+                      <Tag color={eventLogStatus.running ? 'green' : 'default'}>
+                        {eventLogStatus.running
+                          ? t('running')
+                          : t('not.running')}
+                      </Tag>
+                    ),
+                  },
+                  {
+                    key: 'sessions',
+                    label: t('monitored.sessions'),
+                    children: formatNumber(eventLogStatus.monitoredSessions),
+                  },
+                  {
+                    key: 'eventsRead',
+                    label: t('events.read'),
+                    children: formatNumber(eventLogStatus.eventsRead),
+                  },
+                  {
+                    key: 'uniqueEvents',
+                    label: t('unique.events'),
+                    children: formatNumber(eventLogStatus.uniqueEvents),
+                  },
+                  {
+                    key: 'lastRead',
+                    label: t('last.read'),
+                    children: eventLogStatus.lastReadText ?? '-',
+                  },
+                  {
+                    key: 'lastError',
+                    label: t('last.error'),
+                    children: eventLogStatus.lastError ? (
+                      <Typography.Text type="danger">
+                        {eventLogStatus.lastError}
+                      </Typography.Text>
+                    ) : (
+                      '-'
+                    ),
+                  },
+                ]}
+              />
+            )}
           </div>
 
           <Descriptions

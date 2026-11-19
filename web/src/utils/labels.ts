@@ -77,6 +77,7 @@ const SYSTEM_ACCESS_LABELS: Record<string, MessageKey> = {
   'holiday-api': 'holiday.api',
   'otlp-endpoint': 'otlp.receiver.endpoint',
   'ahp-title-sync': 'ahp.title.sync',
+  'session-event-log': 'session.event.log',
 };
 
 const AHP_STATE_LABELS: Record<string, MessageKey> = {

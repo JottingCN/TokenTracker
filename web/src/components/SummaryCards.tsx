@@ -1,4 +1,6 @@
-import { Card, theme, Tooltip } from 'antd';
+import { useState } from 'react';
+import { Button, Card, theme, Tooltip } from 'antd';
+import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import type { Summary } from '../types';
 import { useUi } from '../ui';
 import { intlLocale } from '../i18n';
@@ -7,97 +9,136 @@ import { useGridColumns } from '../utils/useGridColumns';
 
 interface SummaryCardsProps {
   summary: Summary | null;
-  lastCard?: { label: string; value: string | number } | null;
+  turnCount?: number | null;
 }
 
-interface CardDefinition {
-  label: string;
-  value: string | number;
-}
-
-export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
+export function SummaryCards({ summary, turnCount }: SummaryCardsProps) {
   const { locale, t } = useUi();
   const { token } = theme.useToken();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   useMoney();
   const number = new Intl.NumberFormat(intlLocale(locale));
+  const [gridRef, columns] = useGridColumns(4, 170);
 
-  const cards: CardDefinition[] = [
+  const cards = [
+    {
+      label: t('total.tokens'),
+      value: summary
+        ? number.format(summary.inputTokens + summary.outputTokens)
+        : '-',
+    },
     {
       label: t('calls'),
       value: summary ? number.format(summary.calls) : '-',
     },
     {
+      label: t('ahp.turns'),
+      value: turnCount == null ? '-' : number.format(turnCount),
+    },
+    {
       label: t('estimated.cost'),
       value: summary ? formatMoney(summary.costCny) : '-',
-    },
-    ...(lastCard === null
-      ? []
-      : [
-          lastCard ?? {
-            label: t('sessions'),
-            value: summary ? number.format(summary.sessions) : '-',
-          },
-        ]),
-    {
-      label: t('unpriced.calls'),
-      value: summary ? number.format(summary.unpricedCalls) : '-',
+      note: summary
+        ? t('unpriced.calls.count', {
+            count: number.format(summary.unpricedCalls),
+          })
+        : '-',
     },
   ];
-  const [primaryGridRef, primaryColumns] = useGridColumns(2, 320);
-  const [gridRef, columns] = useGridColumns(cards.length);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div
-        ref={primaryGridRef}
+        ref={gridRef}
         style={{
           display: 'grid',
-          gridTemplateColumns: `repeat(${primaryColumns}, minmax(0, 1fr))`,
+          gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
           gap: 12,
         }}
       >
-        <Card
-          size="small"
-          title={
-            <Tooltip title={t('input.tokens.and.the.cost.shown.are.totals.including')}>
-              <span>{t('input.tokens')}</span>
-            </Tooltip>
-          }
-          style={{ minWidth: 0 }}
-          styles={{ body: { minHeight: 118 } }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              flexWrap: 'wrap',
-              gap: 12,
-              lineHeight: 1.3,
-            }}
+        {cards.map((card) => (
+          <Card
+            key={card.label}
+            size="small"
+            style={{ height: '100%', minWidth: 0 }}
+            title={
+              card.label === t('ahp.turns') ? (
+                <Tooltip title={t('turns.only.available.for.sessions')}>
+                  <span>{card.label}</span>
+                </Tooltip>
+              ) : card.label === t('total.tokens') ? (
+                <Tooltip title={t('total.tokens.includes.input.and.output')}>
+                  <span>{card.label}</span>
+                </Tooltip>
+              ) : card.label === t('estimated.cost') ? (
+                <Tooltip title={t('unpriced.calls.included.as.count')}>
+                  <span>{card.label}</span>
+                </Tooltip>
+              ) : (
+                card.label
+              )
+            }
           >
-            <span
+            <div
               style={{
-                fontSize: 'clamp(24px, 2.4vw, 36px)',
+                fontSize: 'clamp(20px, 2vw, 30px)',
                 fontWeight: 600,
                 fontVariantNumeric: 'tabular-nums',
+                overflowWrap: 'anywhere',
+                lineHeight: 1.3,
               }}
             >
-              {summary ? number.format(summary.inputTokens) : '-'}
-            </span>
-            <span style={{ color: token.colorTextSecondary }}>
-              {summary
-                ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
-                : '-'}
-            </span>
-          </div>
+              {card.value}
+            </div>
+            {'note' in card && (
+              <div
+                style={{
+                  marginTop: 6,
+                  fontSize: 11,
+                  color: token.colorTextSecondary,
+                }}
+              >
+                {card.note}
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
+
+      <Card
+        size="small"
+        title={t('token.breakdown')}
+        extra={
+          <Button
+            size="small"
+            type="text"
+            aria-expanded={detailsOpen}
+            aria-label={detailsOpen ? t('collapse') : t('expand')}
+            icon={detailsOpen ? <UpOutlined /> : <DownOutlined />}
+            onClick={() => setDetailsOpen((open) => !open)}
+          >
+            {detailsOpen ? t('collapse') : t('expand')}
+          </Button>
+        }
+        styles={detailsOpen ? undefined : { body: { display: 'none' } }}
+      >
+        {detailsOpen && (
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-              gap: 8,
-              marginTop: 16,
+              gridTemplateColumns: `repeat(${Math.min(columns, 6)}, minmax(0, 1fr))`,
+              gap: 12,
             }}
           >
+            <BreakdownMetric
+              label={t('input.tokens')}
+              value={summary ? number.format(summary.inputTokens) : '-'}
+              detail={
+                summary
+                  ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
+                  : '-'
+              }
+            />
             <BreakdownMetric
               label={t('cached.tokens')}
               value={summary ? number.format(summary.cacheReadTokens) : '-'}
@@ -116,41 +157,11 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
                   : '-'
               }
             />
-          </div>
-        </Card>
-        <Card
-          size="small"
-          title={
-            <Tooltip title={t('output.tokens.include.reasoning.tokens.and.are.priced')}>
-              <span>{t('output.tokens')}</span>
-            </Tooltip>
-          }
-          style={{ minWidth: 0 }}
-          styles={{ body: { minHeight: 118 } }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              flexWrap: 'wrap',
-              gap: 12,
-              lineHeight: 1.3,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 'clamp(24px, 2.4vw, 36px)',
-                fontWeight: 600,
-                fontVariantNumeric: 'tabular-nums',
-              }}
-            >
-              {summary ? number.format(summary.outputTokens) : '-'}
-            </span>
-            <span style={{ color: token.colorTextSecondary }}>
-              {summary ? formatMoney(summary.outputCostCny) : '-'}
-            </span>
-          </div>
-          <div style={{ marginTop: 16 }}>
+            <BreakdownMetric
+              label={t('output.tokens')}
+              value={summary ? number.format(summary.outputTokens) : '-'}
+              detail={summary ? formatMoney(summary.outputCostCny) : '-'}
+            />
             <BreakdownMetric
               label={t('reasoning.tokens')}
               value={summary ? summary.reasoningTokensText : '-'}
@@ -161,52 +172,8 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
               }
             />
           </div>
-        </Card>
-      </div>
-      <div
-        ref={gridRef}
-        style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-          gap: 12,
-        }}
-      >
-        {cards.map((card) => (
-          <Card
-            key={card.label}
-            size="small"
-            style={{ height: '100%', minWidth: 0 }}
-            title={card.label}
-            styles={{ body: { minHeight: 28 } }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'baseline',
-                flexWrap: 'wrap',
-                columnGap: 8,
-                rowGap: 2,
-                lineHeight: 1.3,
-                minWidth: 0,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 'clamp(16px, 1.5vw, 22px)',
-                  fontWeight: 500,
-                  fontVariantNumeric: 'tabular-nums',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  maxWidth: '100%',
-                }}
-              >
-                {card.value}
-              </span>
-            </div>
-          </Card>
-        ))}
-      </div>
+        )}
+      </Card>
     </div>
   );
 }

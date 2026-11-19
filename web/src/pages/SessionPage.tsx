@@ -20,7 +20,6 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { OutcomeCard } from '../components/OutcomeCard';
-import { SignalCard } from '../components/SignalCard';
 import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
 import { TraceTree } from '../components/TraceTree';
@@ -85,6 +84,12 @@ export function SessionPage({
     data?.events.reduce((total, row) => total + row.count, 0) ?? 0;
   const toolTotal =
     data?.tools.reduce((total, row) => total + row.calls, 0) ?? 0;
+  const eventErrors =
+    data?.events.reduce((total, row) => total + row.errorCount, 0) ?? 0;
+  const toolErrors =
+    data?.tools.reduce((total, row) => total + row.errorCount, 0) ?? 0;
+  const hookErrors =
+    data?.hooks.reduce((total, row) => total + row.errorCount, 0) ?? 0;
   // The hook card lists groups, but the header has to show the runs: the tools
   // card shows total calls, so a group count here reads as a wrong statistic.
   const hookTotal =
@@ -601,12 +606,8 @@ export function SessionPage({
 
       <SummaryCards
         summary={summary ?? null}
-        lastCard={null}
+        turnCount={data?.ahpUsage?.turnCount}
       />
-
-      <OutcomeCard outcomes={data?.outcomes} />
-
-      <SignalCard signalHealth={data?.signalHealth} />
 
       <LatencyCards summary={summary} />
 
@@ -617,6 +618,9 @@ export function SessionPage({
           title={t('ahp.session.usage')}
           extra={
             <Space size={8}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {`${t('turns.with.usage')}: ${number.format(data.ahpUsage.turnsWithUsage)}`}
+              </Typography.Text>
               {!data.ahpUsage.historyComplete && (
                 <Tooltip title={t('ahp.history.may.be.incomplete')}>
                   <Tag color="warning">{t('partial')}</Tag>
@@ -631,128 +635,17 @@ export function SessionPage({
           }
         >
           {openPanels.includes('ahpUsage') && (
-            <>
-              <Space wrap size={[20, 8]} style={{ marginBottom: 12 }}>
-                <Typography.Text>
-                  {t('turns')}: {number.format(data.ahpUsage.turnCount)}
-                </Typography.Text>
-                <Typography.Text>
-                  {t('turns.with.usage')}:{' '}
-                  {number.format(data.ahpUsage.turnsWithUsage)}
-                </Typography.Text>
-                <Typography.Text>
-                  {t('input.tokens')}:{' '}
-                  {data.ahpUsage.inputTokens === null
-                    ? '—'
-                    : number.format(data.ahpUsage.inputTokens)}
-                </Typography.Text>
-                <Typography.Text>
-                  {t('cached.tokens')}:{' '}
-                  {data.ahpUsage.cacheReadTokens === null
-                    ? '—'
-                    : number.format(data.ahpUsage.cacheReadTokens)}
-                </Typography.Text>
-                <Typography.Text>
-                  {t('output.tokens')}:{' '}
-                  {data.ahpUsage.outputTokens === null
-                    ? '—'
-                    : number.format(data.ahpUsage.outputTokens)}
-                </Typography.Text>
-              </Space>
-              {!data.ahpUsage.historyComplete && (
-                <Typography.Paragraph type="secondary">
-                  {t('ahp.history.may.be.incomplete')}
-                </Typography.Paragraph>
-              )}
-              <Table
-                size="small"
-                rowKey={(row) => `${row.chatResource}:${row.turnId}`}
-                columns={ahpTurnColumns}
-                dataSource={data.ahpUsage.recentTurns}
-                pagination={false}
-                scroll={{ x: 1050, y: listHeight }}
-              />
-            </>
+            <Table
+              size="small"
+              rowKey={(row) => `${row.chatResource}:${row.turnId}`}
+              columns={ahpTurnColumns}
+              dataSource={data.ahpUsage.recentTurns}
+              pagination={false}
+              scroll={{ x: 1050, y: listHeight }}
+            />
           )}
         </Card>
       )}
-
-      <Card
-        size="small"
-        styles={collapsedBodyStyle(openPanels.includes('agents'))}
-        title={`${t('agent.runs')}(${data?.agentRuns.length ?? 0})`}
-        extra={
-          <Space size={8}>
-            {data && data.agentRuns.length > 0 && (
-              // One root run per turn, plus the subagent runs below their tools:
-              // the counts differ from 「对话轮次」 by exactly these subagents and
-              // by turns that did no work. The tooltip keeps the old caveat about
-              // root tokens not being part of the totals.
-              <Tooltip title={t('root.tokens.excluded.from.totals')}>
-                <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
-                  {`${t('main.agent')} ${number.format(agentRunScopes.root)} · ${t('subagent')} ${number.format(agentRunScopes.sub)}`}
-                </Typography.Text>
-              </Tooltip>
-            )}
-            <CollapseToggle
-              panel="agents"
-              open={openPanels.includes('agents')}
-              onToggle={togglePanel}
-            />
-          </Space>
-        }
-      >
-        {openPanels.includes('agents') &&
-          (data && data.agentRuns.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={t('no.agent.runs.yet')}
-            />
-          ) : (
-            <Table
-              size="small"
-              rowKey={(row) => `${row.traceId}:${row.spanId}`}
-              columns={agentRunColumns}
-              dataSource={data?.agentRuns ?? []}
-              loading={!data}
-              pagination={false}
-              scroll={{ x: 1620, y: listHeight }}
-            />
-          ))}
-      </Card>
-
-      <Card
-        size="small"
-        styles={collapsedBodyStyle(openPanels.includes('hooks'))}
-        title={`${t('hook.executions')}(${hookTotal})`}
-        extra={
-          <CollapseToggle
-            panel="hooks"
-            open={openPanels.includes('hooks')}
-            onToggle={togglePanel}
-          />
-        }
-      >
-        {openPanels.includes('hooks') &&
-          (data && data.hooks.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={t('no.hook.data.yet')}
-            />
-          ) : (
-            <Table
-              size="small"
-              rowKey={(row) =>
-                `${row.hookType}:${row.decision}:${row.resultKind}`
-              }
-              columns={hookColumns}
-              dataSource={data?.hooks ?? []}
-              loading={!data}
-              pagination={false}
-              scroll={{ x: 1200, y: listHeight }}
-            />
-          ))}
-      </Card>
 
       <Card
         size="small"
@@ -806,11 +699,108 @@ export function SessionPage({
         />
       </Modal>
 
+      <OutcomeCard outcomes={data?.outcomes} />
+
       <Card
         size="small"
-        title={`${t('event.statistics')}(${eventTotal})`}
+        styles={collapsedBodyStyle(openPanels.includes('agents'))}
+        title={`${t('agent.runs')}(${data?.agentRuns.length ?? 0})`}
+        extra={
+          <Space size={8}>
+            {data && data.agentRuns.length > 0 && (
+              // One root run per turn, plus the subagent runs below their tools:
+              // the counts differ from 「对话轮次」 by exactly these subagents and
+              // by turns that did no work. The tooltip keeps the old caveat about
+              // root tokens not being part of the totals.
+              <Tooltip title={t('root.tokens.excluded.from.totals')}>
+                <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
+                  {`${t('main.agent')} ${number.format(agentRunScopes.root)} · ${t('subagent')} ${number.format(agentRunScopes.sub)}`}
+                </Typography.Text>
+              </Tooltip>
+            )}
+            <CollapseToggle
+              panel="agents"
+              open={openPanels.includes('agents')}
+              onToggle={togglePanel}
+            />
+          </Space>
+        }
       >
-            {data && data.events.length === 0 ? (
+        {openPanels.includes('agents') &&
+          (data && data.agentRuns.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t('no.agent.runs.yet')}
+            />
+          ) : (
+            <Table
+              size="small"
+              rowKey={(row) => `${row.traceId}:${row.spanId}`}
+              columns={agentRunColumns}
+              dataSource={data?.agentRuns ?? []}
+              loading={!data}
+              pagination={false}
+              scroll={{ x: 1620, y: listHeight }}
+            />
+          ))}
+      </Card>
+
+      <Card
+        size="small"
+        styles={collapsedBodyStyle(openPanels.includes('hooks'))}
+        title={`${t('hook.executions')}(${hookTotal})`}
+        extra={
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${t('distinct.types')}: ${number.format(data?.hooks.length ?? 0)} · ${t('errors')}: ${number.format(hookErrors)}`}
+            </Typography.Text>
+            <CollapseToggle
+              panel="hooks"
+              open={openPanels.includes('hooks')}
+              onToggle={togglePanel}
+            />
+          </Space>
+        }
+      >
+        {openPanels.includes('hooks') &&
+          (data && data.hooks.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t('no.hook.data.yet')}
+            />
+          ) : (
+            <Table
+              size="small"
+              rowKey={(row) =>
+                `${row.hookType}:${row.decision}:${row.resultKind}`
+              }
+              columns={hookColumns}
+              dataSource={data?.hooks ?? []}
+              loading={!data}
+              pagination={false}
+              scroll={{ x: 1200, y: listHeight }}
+            />
+          ))}
+      </Card>
+
+      <Card
+        size="small"
+        styles={collapsedBodyStyle(openPanels.includes('events'))}
+        title={`${t('event.statistics')}(${eventTotal})`}
+        extra={
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${t('distinct.types')}: ${number.format(data?.events.length ?? 0)} · ${t('errors')}: ${number.format(eventErrors)}`}
+            </Typography.Text>
+            <CollapseToggle
+              panel="events"
+              open={openPanels.includes('events')}
+              onToggle={togglePanel}
+            />
+          </Space>
+        }
+      >
+        {openPanels.includes('events') && (data && data.events.length === 0 ? (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={t('no.data')}
@@ -825,14 +815,27 @@ export function SessionPage({
                 pagination={false}
                 scroll={{ x: 630, y: listHeight }}
               />
-            )}
+            ))}
       </Card>
 
       <Card
         size="small"
+        styles={collapsedBodyStyle(openPanels.includes('tools'))}
         title={`${t('tool.call.statistics')}(${toolTotal})`}
+        extra={
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${t('tools')}: ${number.format(data?.tools.length ?? 0)} · ${t('errors')}: ${number.format(toolErrors)}`}
+            </Typography.Text>
+            <CollapseToggle
+              panel="tools"
+              open={openPanels.includes('tools')}
+              onToggle={togglePanel}
+            />
+          </Space>
+        }
       >
-            {data && data.tools.length === 0 ? (
+        {openPanels.includes('tools') && (data && data.tools.length === 0 ? (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={t('no.tool.call.data.yet.requires.execute.tool.spans')}
@@ -847,7 +850,7 @@ export function SessionPage({
                 pagination={false}
                 scroll={{ x: 1910, y: listHeight }}
               />
-            )}
+            ))}
       </Card>
     </Space>
   );

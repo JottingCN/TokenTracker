@@ -87,6 +87,7 @@
 - **只取 `end`**（`start` 不入库否则次数翻倍，实测 1988 start vs 1976 end）。
 - `session_events` 主键是 `(trace_id, span_id)`。有 `hook.invocation_id` 时，hook 行 `span_id` 按 `hook type + invocation_id` 合成，使同一 trace 中重复挂在不同父 span 的同一次 hook 只计一次；读取时也兼容旧的 `{parentSpanId}#hook#{invocationId}` 行。缺 ID 时回退到 `{parentSpanId}#hook#{eventIndex}`，保留独立事件。**不要用真实 span_id**，否则同一条 invoke_agent 上多个 hook 会被 `INSERT OR IGNORE` 吃掉。
 - 耗时只认 `end` 上的 `hook.duration`（单位**秒浮点**，解析时 ×1000），不要用 start/end 时间差配对（实测只差 0~1 ms）。
+- 若 `hook.tool_names` 存在，按 JSON 数组逐项读取；本地导入与在线解析都将哈希工具名交给 `ToolNameResolver`，显示后按名称去重。重复导入会补齐旧 Hook 行中为空的工具名。已知工具名或 AHP 已发现的名称可以解开哈希，未知 SHA-256 本身无法逆向。
 - 历史行补不回来：OTLP 原始报文不落库，`events` 在入库时被丢弃后就只剩聚合结果，修好解析只对之后收到的数据生效。
 
 ## 5. 本地导入（`POST /api/import-local`）

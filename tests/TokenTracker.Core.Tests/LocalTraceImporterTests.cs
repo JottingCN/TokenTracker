@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using TokenTracker.Core.Storage;
 
@@ -25,6 +27,8 @@ public sealed class LocalTraceImporterTests
                     CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeUniversal)
                 .ToUnixTimeMilliseconds();
+            var readFileHash = Hash("read_file");
+            var powershellHash = Hash("powershell");
             CreateSourceDatabase(sourcePath, startMs);
             var store = new SpanStore(storePath);
 
@@ -80,10 +84,12 @@ public sealed class LocalTraceImporterTests
             var pre = Assert.Single(hooks, row => row.HookType == "preToolUse");
             Assert.Equal(1, pre.Count);
             Assert.Equal(500d, pre.AvgDurationMs);
+            Assert.Empty(pre.ToolNames);
             var post = Assert.Single(hooks, row => row.HookType == "postToolUse");
             Assert.Equal(1, post.Count);
             Assert.Equal(1_500d, post.AvgDurationMs);
 
+            AddPreHookTools(sourcePath, readFileHash, powershellHash);
             var second = LocalTraceImporter.Import(store, new[] { sourcePath });
 
             Assert.Equal(6, second.Scanned);
@@ -93,6 +99,11 @@ public sealed class LocalTraceImporterTests
             Assert.Equal(4, second.EventsMatched);
             Assert.Equal(0, second.EventsInserted);
             Assert.Equal(2, store.GetHookSummaries("session-import").Count);
+            Assert.Equal(
+                new[] { "powershell", "read_file" },
+                Assert.Single(
+                    store.GetHookSummaries("session-import"),
+                    row => row.HookType == "preToolUse").ToolNames);
         }
         finally
         {
@@ -222,4 +233,27 @@ public sealed class LocalTraceImporterTests
             """;
         command.ExecuteNonQuery();
     }
+
+    private static void AddPreHookTools(
+        string path,
+        string readFileHash,
+        string powershellHash)
+    {
+        using var connection = new SqliteConnection($"Data Source={path}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE span_events
+            SET attributes = @attributes
+            WHERE id = 2;
+            """;
+        command.Parameters.AddWithValue(
+            "@attributes",
+            $$"""{"github.copilot.hook.type":"preToolUse","github.copilot.hook.invocation_id":"hook-1","github.copilot.hook.duration":0.5,"github.copilot.hook.tool_names":["{{readFileHash}}","{{readFileHash}}","{{powershellHash}}","read_file"]}""");
+        command.ExecuteNonQuery();
+    }
+
+    private static string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
 }

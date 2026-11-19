@@ -1,4 +1,6 @@
-import { Card, Space, Typography } from 'antd';
+import { useState } from 'react';
+import { Button, Card, Space, Tooltip, Typography } from 'antd';
+import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import type { OutcomeSummary } from '../types';
 import { useUi } from '../ui';
 import { formatLatency } from '../utils/labels';
@@ -9,6 +11,7 @@ export function OutcomeCard({
   outcomes: OutcomeSummary | null | undefined;
 }) {
   const { t } = useUi();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   if (!outcomes?.hasData) {
     return null;
   }
@@ -22,12 +25,33 @@ export function OutcomeCard({
       size="small"
       title={t('edits.outcomes')}
       extra={
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('only.received.metrics.are.shown')}
-        </Typography.Text>
+        <Space size={8}>
+          {outcomes.editAccepted + outcomes.editRejected > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${t('edit.acceptance')}: ${outcomes.editAcceptRateText}`}
+            </Typography.Text>
+          )}
+          <Tooltip title={t('outcomes.copilot.chat.only')}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('copilot.chat.otel')}
+            </Typography.Text>
+          </Tooltip>
+          <Button
+            size="small"
+            type="text"
+            aria-expanded={detailsOpen}
+            aria-label={detailsOpen ? t('collapse') : t('expand')}
+            icon={detailsOpen ? <UpOutlined /> : <DownOutlined />}
+            onClick={() => setDetailsOpen((open) => !open)}
+          >
+            {detailsOpen ? t('collapse') : t('expand')}
+          </Button>
+        </Space>
       }
+      styles={detailsOpen ? undefined : { body: { display: 'none' } }}
     >
-      <Space wrap size="large">
+      {detailsOpen && (
+        <Space wrap size="large">
         {outcomes.editAccepted + outcomes.editRejected > 0 && (
           <Typography.Text>
             {t('edit.acceptance')}
@@ -127,7 +151,8 @@ export function OutcomeCard({
             {outcomes.toolMetricCalls} · {outcomes.toolMetricAvgText}
           </Typography.Text>
         )}
-      </Space>
+        </Space>
+      )}
     </Card>
   );
 }

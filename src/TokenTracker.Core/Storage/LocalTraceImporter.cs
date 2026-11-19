@@ -417,6 +417,7 @@ public static class LocalTraceImporter
                 JsonValueKind.String => value.GetString(),
                 JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False
                     => value.GetRawText(),
+                JsonValueKind.Array => value.GetRawText(),
                 _ => null,
             };
         }

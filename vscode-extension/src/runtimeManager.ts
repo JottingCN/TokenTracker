@@ -169,7 +169,9 @@ export async function prepareRuntime(
       buildId,
       rid,
       releaseTag: asset.releaseTag,
-      serverVersion: build.serverVersion ?? asset.serverVersion,
+      serverVersion: /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(asset.serverVersion)
+        ? asset.serverVersion
+        : build.serverVersion ?? 'unknown',
       runtimeDirectory,
       executablePath,
       dataDirectory,

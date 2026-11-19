@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readServerVersion } from './server-version.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(here, '..');
 const repoRoot = path.resolve(extensionRoot, '..');
 const project = path.join(repoRoot, 'src', 'TokenTracker.Server', 'TokenTracker.Server.csproj');
+const serverProgram = path.join(repoRoot, 'src', 'TokenTracker.Server', 'Program.cs');
 const target = path.join(extensionRoot, 'server');
 const rid = (process.env.TOKENTRACKER_TARGET_RID ?? 'win-x64').trim();
 const executableName = rid.startsWith('win-')
@@ -40,13 +42,14 @@ const assetHash = createHash('sha256')
   .digest('hex')
   .slice(0, 8);
 const buildId = `${Math.round(stat.mtimeMs)}-${stat.size}-${assetHash}`;
+const serverVersion = readServerVersion(readFileSync(serverProgram, 'utf8'));
 writeFileSync(
   path.join(target, 'build.json'),
   JSON.stringify(
     {
       buildId,
       rid,
-      serverVersion: '1.0.23',
+      serverVersion,
       createdAt: new Date().toISOString(),
     },
     null,

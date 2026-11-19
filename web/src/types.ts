@@ -575,3 +575,13 @@ export interface SystemAccessInfo {
   target: string;
   kind: string;
 }
+
+export interface SessionEventLogStatus {
+  root: string;
+  running: boolean;
+  monitoredSessions: number;
+  eventsRead: number;
+  uniqueEvents: number;
+  lastReadText: string | null;
+  lastError: string | null;
+}
