@@ -31,6 +31,25 @@ export interface Summary {
   tokensPerSecondText: string;
 }
 
+export interface SummaryChartBucket {
+  key: string;
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  uncachedCostCny: number;
+  cacheReadCostCny: number;
+  cacheWriteCostCny: number;
+  outputCostCny: number;
+  reasoningCostCny: number;
+  unpricedCalls: number;
+}
+
+export interface SummaryChartPayload {
+  buckets: SummaryChartBucket[];
+}
+
 export interface ModelRow {
   model: string;
   calls: number;

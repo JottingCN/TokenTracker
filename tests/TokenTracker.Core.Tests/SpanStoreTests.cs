@@ -108,6 +108,166 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void SummaryChartGroupsByBeijingDayWeekdayAndHourAndAppliesFilters()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            ModelPricing.SetOverrides(new[]
+            {
+                new KeyValuePair<string, ModelPrice>(
+                    "alpha",
+                    new ModelPrice(
+                        new PriceTier(1m, 2m, 4m, 3m),
+                        new PriceTier(1m, 2m, 4m, 3m),
+                        PeakAware: false)),
+                new KeyValuePair<string, ModelPrice>(
+                    "beta",
+                    new ModelPrice(
+                        new PriceTier(2m, 3m, 5m, 4m),
+                        new PriceTier(2m, 3m, 5m, 4m),
+                        PeakAware: false)),
+            });
+            var store = new SpanStore(databasePath);
+            var midnightBeijing = DateTimeOffset
+                .Parse("2025-01-06T16:00:00Z")
+                .ToUnixTimeMilliseconds();
+            var lateBeijing = DateTimeOffset
+                .Parse("2025-01-07T14:00:00Z")
+                .ToUnixTimeMilliseconds();
+            var nextDayBeijing = DateTimeOffset
+                .Parse("2025-01-07T16:00:00Z")
+                .ToUnixTimeMilliseconds();
+            store.InsertMany(new[]
+            {
+                Span(
+                    "chart-1", "span-1", "session-1", "alpha",
+                    midnightBeijing, 10, 4, 2, cost: null,
+                    cacheCreationTokens: 1,
+                    reasoningTokens: 1),
+                Span(
+                    "chart-2", "span-2", "session-1", "alpha",
+                    lateBeijing, 20, 0, 3, cost: null),
+                Span(
+                    "chart-3", "span-3", "session-1", "beta",
+                    nextDayBeijing, 30, 6, 4, cost: null),
+                Span(
+                    "chart-4", "span-4", "session-2", "alpha",
+                    midnightBeijing, 40, 8, 5, cost: null),
+                Span(
+                    "chart-5", "span-5", "session-2", "gamma",
+                    midnightBeijing, 50, 0, 6, cost: null),
+            });
+            Assert.Equal(3, store.RecomputeCosts("alpha"));
+            Assert.Equal(1, store.RecomputeCosts("beta"));
+
+            var fromMs = midnightBeijing;
+            var toMs = nextDayBeijing + 1;
+            var byDay = Assert.Single(store.GetSummaryChart(
+                fromMs,
+                toMs,
+                "day",
+                model: "alpha",
+                sessionId: "session-1",
+                mainOnly: true,
+                source: "copilot-chat"));
+            Assert.Equal("2025-01-07", byDay.Key);
+            Assert.Equal(30, byDay.InputTokens);
+            Assert.Equal(4, byDay.CacheReadTokens);
+            Assert.Equal(1, byDay.CacheCreationTokens);
+            Assert.Equal(5, byDay.OutputTokens);
+            Assert.Equal(1, byDay.ReasoningTokens);
+            Assert.Equal(0, byDay.UnpricedCalls);
+
+            var byWeekday = Assert.Single(store.GetSummaryChart(
+                fromMs,
+                toMs,
+                "weekday",
+                model: "alpha",
+                source: "copilot-chat"));
+            Assert.Equal("2", byWeekday.Key);
+            Assert.Equal(70, byWeekday.InputTokens);
+            Assert.Equal(12, byWeekday.CacheReadTokens);
+            Assert.Equal(1, byWeekday.ReasoningTokens);
+
+            var total = Assert.Single(store.GetSummaryChart(
+                fromMs,
+                toMs,
+                "all",
+                source: "copilot-chat"));
+            Assert.Equal(1, total.UnpricedCalls);
+            // The chart splits the estimate into uncached input, cache, output
+            // and reasoning; the four slices must add up to the same summary the
+            // cards above the chart show, with no double counting.
+            var summary = store.GetSummary(
+                fromMs,
+                includeUtility: true,
+                toMs,
+                source: "copilot-chat");
+            Assert.Equal(
+                summary.CostCny,
+                total.UncachedCostCny +
+                    total.CacheReadCostCny +
+                    total.CacheWriteCostCny +
+                    total.OutputCostCny,
+                10);
+            Assert.True(total.ReasoningCostCny > 0);
+            Assert.Equal(150, total.InputTokens);
+            Assert.Equal(18, total.CacheReadTokens);
+            Assert.Equal(1, total.CacheCreationTokens);
+            Assert.Equal(20, total.OutputTokens);
+            Assert.Equal(1, total.ReasoningTokens);
+            Assert.Empty(store.GetSummaryChart(
+                toMs,
+                toMs + 1,
+                "all",
+                source: "copilot-chat"));
+
+            var byHour = store.GetSummaryChart(
+                fromMs,
+                toMs,
+                "hour",
+                model: "alpha",
+                source: "copilot-chat");
+            Assert.Equal(new[] { "00", "22" }, byHour.Select(row => row.Key));
+            Assert.Equal(new long[] { 50, 20 }, byHour.Select(row => row.InputTokens));
+
+            // Weeks start on Monday in Beijing time, so both days of this sample
+            // belong to the week beginning 2025-01-06.
+            var byWeek = Assert.Single(store.GetSummaryChart(
+                fromMs,
+                toMs,
+                "week",
+                source: "copilot-chat"));
+            Assert.Equal("2025-01-06", byWeek.Key);
+            Assert.Equal(150, byWeek.InputTokens);
+
+            var byMonth = Assert.Single(store.GetSummaryChart(
+                fromMs,
+                toMs,
+                "month",
+                source: "copilot-chat"));
+            Assert.Equal("2025-01", byMonth.Key);
+            Assert.Equal(150, byMonth.InputTokens);
+        }
+        finally
+        {
+            ModelPricing.SetOverrides(
+                Array.Empty<KeyValuePair<string, ModelPrice>>());
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void ModelRowsCarryReasoningTokensAndCostBreakdown()
     {
         var directory = Path.Combine(

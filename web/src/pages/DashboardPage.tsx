@@ -3,6 +3,7 @@ import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import { Button, Card, Empty, Space, Table, Typography } from 'antd';
 import { CardPagination } from '../components/CardPagination';
 import { OutcomeCard } from '../components/OutcomeCard';
+import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
 import { modelColumns, sessionColumns } from '../components/columns';
 import type { DashboardPayload } from '../types';
@@ -16,12 +17,18 @@ import { useViewportHeight } from '../utils/useViewportHeight';
 
 interface DashboardPageProps {
   data: DashboardPayload | null;
+  range: number;
+  fromMs?: number;
+  toMs?: number;
   onOpenSession: (sessionId: string) => void;
   onOpenModel?: (model: string) => void;
 }
 
 export function DashboardPage({
   data,
+  range,
+  fromMs,
+  toMs,
   onOpenSession,
   onOpenModel,
 }: DashboardPageProps) {
@@ -67,7 +74,14 @@ export function DashboardPage({
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <SummaryCards summary={data?.summary ?? null} />
+      <SummaryCards
+        summary={data?.summary ?? null}
+        range={range}
+        fromMs={fromMs}
+        toMs={toMs}
+      />
+
+      <LatencyCards summary={data?.summary} />
 
       <OutcomeCard outcomes={data?.outcomes} />
 

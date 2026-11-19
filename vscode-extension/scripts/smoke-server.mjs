@@ -720,6 +720,34 @@ try {
     400,
   );
 
+  const chart = await request(`${base}/api/summary-chart?range=2&groupBy=day`);
+  check('GET /api/summary-chart', chart.status, 200);
+  check(
+    'GET /api/summary-chart payload',
+    Array.isArray(JSON.parse(chart.body).buckets),
+    true,
+  );
+  check(
+    'GET /api/summary-chart invalid groupBy',
+    (await request(`${base}/api/summary-chart?range=2&groupBy=year`)).status,
+    400,
+  );
+  check(
+    'GET /api/summary-chart groupBy week',
+    (await request(`${base}/api/summary-chart?range=4&groupBy=week`)).status,
+    200,
+  );
+  check(
+    'GET /api/summary-chart groupBy month',
+    (await request(`${base}/api/summary-chart?range=4&groupBy=month`)).status,
+    200,
+  );
+  check(
+    'GET /api/summary-chart from only',
+    (await request(`${base}/api/summary-chart?from=1700000000000`)).status,
+    400,
+  );
+
   const ingest = await request(`${base}/v1/metrics`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

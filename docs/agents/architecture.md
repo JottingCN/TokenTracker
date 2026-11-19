@@ -46,6 +46,7 @@ VS Code 扩展（状态栏、Tip、命令、AHP 标题通道）  浏览器 / AHP
 | GET | `/healthz`、`/api/version` | 健康检查；名称、版本、buildId、features 列表 |
 | GET | `/api/system` | 数据库路径/大小/表行数、原始与综合 span、outcome 指标、schema 版本、监听与 AHP 状态 |
 | GET | `/api/dashboard` | `range=0..4` 或 `from`/`to`、`source`；汇总、按模型（含辅助调用）、会话（主调用） |
+| GET | `/api/summary-chart` | `range` 或 `from`/`to`、`groupBy=all/day/week/month/hour`，可选 `model` / `sessionId`；按北京时间聚合输入/缓存/输出/推理的 tokens 与费用及未定价调用数（周从周一开始） |
 | GET | `/api/model/{model}` | `range` 或 `from`/`to`、`source`；模型详情、TTFT、平均生成速度、会话列表 |
 | GET | `/api/session/{sessionId}` | 汇总、`models`（按模型同口径）、`calls`、`events`、`tools`、`agentRuns`、`hooks`、`signalHealth`、`outcomes`；`range` 或 `from`/`to`、`source`、`includeCalls`（默认 true；**Web 会话页传 false**） |
 | GET | `/api/session/{sessionId}/trace` | 拓扑节点：时间游标 FIFO 分块，`budget` 默认 400，`cursor` 向后取更新块；`range` 或 `from`/`to` 与其它会话接口同口径；响应 `nodes/hasMore/nextCursor/total` |

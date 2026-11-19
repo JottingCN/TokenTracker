@@ -1259,6 +1259,101 @@ public sealed partial class SpanStore
             source);
     }
 
+    public IReadOnlyList<SummaryChartBucket> GetSummaryChart(
+        long fromMs,
+        long toMs,
+        string groupBy,
+        string? model = null,
+        string? sessionId = null,
+        bool mainOnly = false,
+        string? source = null)
+    {
+        var timeExpression = "start_time_ms / 1000, 'unixepoch', '+8 hours'";
+        var bucketExpression = groupBy switch
+        {
+            "all" => "'all'",
+            "day" => $"strftime('%Y-%m-%d', {timeExpression})",
+            // 'weekday 0' moves forward to the next Sunday (a Sunday stays put),
+            // so '-6 days' always lands on that week's Monday.
+            "week" => $"strftime('%Y-%m-%d', {timeExpression}, 'weekday 0', '-6 days')",
+            "month" => $"strftime('%Y-%m', {timeExpression})",
+            "weekday" => $"strftime('%w', {timeExpression})",
+            "hour" => $"strftime('%H', {timeExpression})",
+            _ => throw new ArgumentOutOfRangeException(nameof(groupBy)),
+        };
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        var modelFilter = string.IsNullOrWhiteSpace(model)
+            ? string.Empty
+            : " AND model = @model";
+        var sessionFilter = string.IsNullOrWhiteSpace(sessionId)
+            ? string.Empty
+            : " AND session_id = @session";
+        var mainFilter = mainOnly ? " AND is_main = 1" : string.Empty;
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT
+                {bucketExpression} AS bucket_key,
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(reasoning_tokens), 0),
+                COALESCE(SUM(uncached_cost_cny), 0),
+                COALESCE(SUM(cache_read_cost_cny), 0),
+                COALESCE(SUM(cache_write_cost_cny), 0),
+                COALESCE(SUM(output_cost_cny), 0),
+                COALESCE(SUM(reasoning_cost_cny), 0),
+                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0)
+            FROM spans
+            WHERE start_time_ms >= @from
+              AND start_time_ms < @to{sourceFilter}{modelFilter}{sessionFilter}{mainFilter}
+            GROUP BY bucket_key
+            HAVING COUNT(*) > 0
+            ORDER BY bucket_key;
+            """;
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            command.Parameters.AddWithValue("@model", model);
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            command.Parameters.AddWithValue("@session", sessionId);
+        }
+
+        var rows = new List<SummaryChartBucket>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new SummaryChartBucket(
+                reader.GetString(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3),
+                reader.GetInt64(4),
+                reader.GetInt64(5),
+                reader.GetDouble(6),
+                reader.GetDouble(7),
+                reader.GetDouble(8),
+                reader.GetDouble(9),
+                reader.GetDouble(10),
+                reader.GetInt64(11)));
+        }
+
+        return rows;
+    }
+
     private SummaryDto ReadSummary(
         long fromMs,
         long toMs,

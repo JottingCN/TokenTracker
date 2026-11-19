@@ -44,7 +44,7 @@ var serverInfo = new ServerInfoPayload(
     port,
     startedAt,
     string.IsNullOrWhiteSpace(buildId) ? null : buildId,
-    ["dashboard", "calls", "events", "tools", "prices", "settings", "holidays", "breakdown", "source-paths", "source-copilot-chat", "otel-metrics", "agent-runs", "trace-tree", "otel-metrics-store", "session-event-log", "ws"]);
+    ["dashboard", "calls", "events", "tools", "prices", "settings", "holidays", "breakdown", "summary-chart", "source-paths", "source-copilot-chat", "otel-metrics", "agent-runs", "trace-tree", "otel-metrics-store", "session-event-log", "ws"]);
 
 var dataDirectory = Environment.GetEnvironmentVariable("TOKENTRACKER_DATA_DIR");
 if (string.IsNullOrWhiteSpace(dataDirectory))
@@ -337,6 +337,42 @@ app.MapGet("/api/dashboard", (
                 utility ?? false,
                 source),
         AppJsonContext.Default.DashboardPayload);
+});
+
+app.MapGet("/api/summary-chart", (
+    int? range,
+    long? from,
+    long? to,
+    string? groupBy,
+    string? model,
+    string? sessionId,
+    string? source) =>
+{
+    if (InvalidRange(from, to) is { } invalid)
+    {
+        return invalid;
+    }
+
+    var grouping = groupBy?.Trim().ToLowerInvariant();
+    if (grouping is not ("all" or "day" or "week" or "month" or "weekday" or "hour"))
+    {
+        return Fail(
+            "groupBy must be all, day, week, month, weekday, or hour",
+            StatusCodes.Status400BadRequest);
+    }
+
+    var (fromMs, toMs) = from is > 0
+        ? (from.Value, to!.Value)
+        : RangeTime.Resolve(range ?? DefaultDashboardRange, DateTimeOffset.UtcNow);
+    return Results.Json(
+        service.GetSummaryChart(
+            fromMs,
+            toMs,
+            grouping,
+            model,
+            sessionId,
+            source),
+        AppJsonContext.Default.SummaryChartPayload);
 });
 
 app.MapGet("/api/model/{model}", (

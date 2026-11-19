@@ -2,23 +2,46 @@ import { Card, Col, Row, theme, Tooltip, Typography } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';
 import type { Summary } from '../types';
 import { useUi } from '../ui';
+import { intlLocale } from '../i18n';
 import { formatLatency, formatSpeed } from '../utils/labels';
 
 interface LatencyCardsProps {
   summary: Summary | null | undefined;
+  turnCount?: number | null;
   // Rendered as an extra card after the latency cards (session page only).
   extra?: ReactNode;
 }
 
 // Shared by the session and model pages so both report identical latency
 // figures; extremes only consider successful calls, which the server filters.
-export function LatencyCards({ summary, extra }: LatencyCardsProps) {
-  const { t } = useUi();
+export function LatencyCards({ summary, turnCount, extra }: LatencyCardsProps) {
+  const { locale, t } = useUi();
+  const number = new Intl.NumberFormat(intlLocale(locale));
+  const metricCount = 3 + (turnCount === undefined ? 0 : 1) + (extra ? 1 : 0);
+  const columns = Math.floor(24 / metricCount);
 
   return (
-    <Card size="small" title={t('latency.and.speed')}>
+    <Card size="small" title={t('usage.and.performance')}>
       <Row gutter={[12, 12]}>
-        <Col xs={24} md={extra ? 8 : 12}>
+        <Col xs={24} sm={12} md={columns}>
+          <CountCard
+            label={t('calls')}
+            value={summary ? number.format(summary.calls) : '-'}
+          />
+        </Col>
+        {turnCount !== undefined && (
+          <Col xs={24} sm={12} md={columns}>
+            <CountCard
+              label={
+                <Tooltip title={t('turns.only.available.for.sessions')}>
+                  <span>{t('ahp.turns')}</span>
+                </Tooltip>
+              }
+              value={turnCount === null ? '-' : number.format(turnCount)}
+            />
+          </Col>
+        )}
+        <Col xs={24} sm={12} md={columns}>
           <MetricCard
             label={t('average.ttft')}
             tooltip={t('average.time.from.request.to.the.first.output.token')}
@@ -33,7 +56,7 @@ export function LatencyCards({ summary, extra }: LatencyCardsProps) {
             slowest={formatLatency(summary?.maxTtftMs)}
           />
         </Col>
-        <Col xs={24} md={extra ? 8 : 12}>
+        <Col xs={24} sm={12} md={columns}>
           <MetricCard
             label={t('average.generation.speed')}
             tooltip={t('generation.speed.total.output.tokens.generation.time')}
@@ -44,7 +67,7 @@ export function LatencyCards({ summary, extra }: LatencyCardsProps) {
             slowest={formatSpeed(summary?.minTokensPerSecond)}
           />
         </Col>
-        {extra && <Col xs={24} md={8}>{extra}</Col>}
+        {extra && <Col xs={24} sm={12} md={columns}>{extra}</Col>}
       </Row>
     </Card>
   );
@@ -56,6 +79,17 @@ const VALUE_STYLE: CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
   lineHeight: 1.3,
 };
+
+function CountCard({ label, value }: { label: ReactNode; value: string }) {
+  return (
+    <Card size="small" style={{ height: '100%' }}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {label}
+      </Typography.Text>
+      <div style={VALUE_STYLE}>{value}</div>
+    </Card>
+  );
+}
 
 function MetricCard({
   label,

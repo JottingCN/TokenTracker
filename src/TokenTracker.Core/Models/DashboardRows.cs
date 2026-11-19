@@ -46,6 +46,20 @@ public sealed class SummaryDto
         DisplayFormat.Speed(MaxTokensPerSecond);
 }
 
+public sealed record SummaryChartBucket(
+    string Key,
+    long InputTokens,
+    long CacheReadTokens,
+    long CacheCreationTokens,
+    long OutputTokens,
+    long ReasoningTokens,
+    double UncachedCostCny,
+    double CacheReadCostCny,
+    double CacheWriteCostCny,
+    double OutputCostCny,
+    double ReasoningCostCny,
+    long UnpricedCalls);
+
 public sealed partial record SessionRow
 {
     public required string SessionId { get; init; }

@@ -46,6 +46,9 @@ public sealed record DashboardPayload(
     OutcomeSummary Outcomes,
     AhpStatusPayload Ahp);
 
+public sealed record SummaryChartPayload(
+    List<SummaryChartBucket> Buckets);
+
 public sealed record SettingsPayload(int RetentionDays);
 
 public sealed record SettingsUpdateRequest(int? RetentionDays);
@@ -262,6 +265,7 @@ public sealed record ErrorPayload(string Error);
 [JsonSerializable(typeof(SessionMessage))]
 [JsonSerializable(typeof(CallsMessage))]
 [JsonSerializable(typeof(CallsPayload))]
+[JsonSerializable(typeof(SummaryChartPayload))]
 [JsonSerializable(typeof(TracePayload))]
 [JsonSerializable(typeof(AhpSessionUsagePayload))]
 [JsonSerializable(typeof(AhpTurnUsagePayload))]

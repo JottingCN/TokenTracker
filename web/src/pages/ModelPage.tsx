@@ -67,7 +67,13 @@ export function ModelPage({
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <SummaryCards summary={summary ?? null} />
+      <SummaryCards
+        summary={summary ?? null}
+        range={range}
+        fromMs={fromMs}
+        toMs={toMs}
+        model={modelId}
+      />
 
       <LatencyCards summary={summary} />
 

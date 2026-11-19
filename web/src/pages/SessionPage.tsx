@@ -606,10 +606,17 @@ export function SessionPage({
 
       <SummaryCards
         summary={summary ?? null}
-        turnCount={data?.ahpUsage?.turnCount}
+        range={range}
+        fromMs={fromMs}
+        toMs={toMs}
+        model={activeScope === 'all' ? undefined : activeScope}
+        sessionId={sessionId}
       />
 
-      <LatencyCards summary={summary} />
+      <LatencyCards
+        summary={summary}
+        turnCount={data?.ahpUsage?.turnCount ?? null}
+      />
 
       {data?.ahpUsage && (
         <Card

@@ -143,6 +143,27 @@ public sealed class DashboardService
         return GetDashboard(fromMs, toMs, includeUtility, source);
     }
 
+    public SummaryChartPayload GetSummaryChart(
+        long fromMs,
+        long toMs,
+        string groupBy,
+        string? model = null,
+        string? sessionId = null,
+        string? source = null)
+    {
+        source = NormalizeSource(source);
+        EnsureCombined(source);
+        return new SummaryChartPayload(
+            _store.GetSummaryChart(
+                fromMs,
+                toMs,
+                groupBy,
+                model,
+                sessionId,
+                mainOnly: !string.IsNullOrWhiteSpace(sessionId),
+                source: source).ToList());
+    }
+
     public DashboardPayload GetDashboard(
         long fromMs,
         long toMs,

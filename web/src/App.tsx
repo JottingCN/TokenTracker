@@ -713,6 +713,9 @@ export default function App() {
               {route.view === 'dashboard' && (
                 <DashboardPage
                   data={dashboard}
+                  range={numericRange}
+                  fromMs={customFrom}
+                  toMs={customTo}
                   onOpenSession={openSessionFromDashboard}
                   onOpenModel={openModelPage}
                 />
