@@ -44,6 +44,7 @@ import { useModelProfiles } from './utils/modelProfiles';
 
 const { Header, Sider, Content } = Layout;
 const SIDER_KEY = 'tokentracker.siderCollapsed';
+const RANGE_KEY = 'tokentracker.range';
 
 function loadSiderCollapsed(): boolean {
   try {
@@ -51,6 +52,23 @@ function loadSiderCollapsed(): boolean {
     return value === null ? true : value === '1';
   } catch {
     return true;
+  }
+}
+
+// RangeTime: 0 today, 1 yesterday, 2 last 7 days, 3 last 30 days, 4 all time.
+// Custom ranges are deliberately not remembered: they pin absolute timestamps
+// that would silently describe a different window the next day.
+function loadRangeMode(): number | 'custom' {
+  try {
+    const stored = localStorage.getItem(RANGE_KEY);
+    if (stored === null) {
+      return 2;
+    }
+
+    const value = Number(stored);
+    return Number.isInteger(value) && value >= 0 && value <= 4 ? value : 2;
+  } catch {
+    return 2;
   }
 }
 
@@ -154,7 +172,7 @@ export default function App() {
   const { locale, themeMode, setThemeMode, languageMode, setLanguageMode, t } =
     useUi();
   const [route, setRoute] = useState<Route>(parseRoute);
-  const [rangeMode, setRangeMode] = useState<RangeMode>(2);
+  const [rangeMode, setRangeMode] = useState<RangeMode>(loadRangeMode);
   const [siderCollapsed, setSiderCollapsed] =
     useState<boolean>(loadSiderCollapsed);
   const [customRange, setCustomRange] = useState<[number, number] | null>(null);
@@ -342,9 +360,18 @@ export default function App() {
 
   const onRangeChange = (value: number | 'custom') => {
     setRangeMode(value);
-    if (value === 'custom' && !customRange) {
-      const now = Date.now();
-      setCustomRange([now - 7 * 24 * 3600 * 1000, now]);
+    if (value === 'custom') {
+      if (!customRange) {
+        const now = Date.now();
+        setCustomRange([now - 7 * 24 * 3600 * 1000, now]);
+      }
+      return;
+    }
+
+    try {
+      localStorage.setItem(RANGE_KEY, String(value));
+    } catch {
+      // Storage is best-effort.
     }
   };
 

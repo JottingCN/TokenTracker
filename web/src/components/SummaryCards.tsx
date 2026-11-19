@@ -5,6 +5,7 @@ import type { Summary } from '../types';
 import { useUi } from '../ui';
 import { intlLocale } from '../i18n';
 import { formatMoney, useMoney } from '../utils/money';
+import { accentBarStyle } from '../utils/modelColors';
 import { useGridColumns } from '../utils/useGridColumns';
 import { SummaryUsageChart, SERIES_COLORS } from './SummaryUsageChart';
 
@@ -15,6 +16,9 @@ interface SummaryCardsProps {
   toMs?: number;
   model?: string;
   sessionId?: string;
+  // Model accent: paints the card's top bar so a scoped card is recognisable at
+  // a glance without a tag next to the title.
+  accent?: string;
 }
 
 export function SummaryCards({
@@ -24,6 +28,7 @@ export function SummaryCards({
   toMs,
   model,
   sessionId,
+  accent,
 }: SummaryCardsProps) {
   const { locale, t } = useUi();
   const { token } = theme.useToken();
@@ -51,6 +56,7 @@ export function SummaryCards({
       <Card
         size="small"
         title={t('token.breakdown')}
+        style={accentBarStyle(accent)}
         extra={
           <Button
             size="small"
@@ -144,9 +150,29 @@ export function SummaryCards({
                 totalCostTooltip={t(
                   'input.tokens.and.the.cost.shown.are.totals.including',
                 )}
-                ratio={[
-                  { value: inputUncachedTokens, color: SERIES_COLORS[0] },
-                  { value: inputCacheTokens, color: SERIES_COLORS[1] },
+                bars={[
+                  {
+                    label: t('tokens'),
+                    segments: [
+                      { value: inputUncachedTokens, color: SERIES_COLORS[0] },
+                      { value: inputCacheTokens, color: SERIES_COLORS[1] },
+                    ],
+                  },
+                  {
+                    label: t('amount'),
+                    segments: [
+                      {
+                        value: summary?.uncachedCostCny ?? 0,
+                        color: SERIES_COLORS[0],
+                      },
+                      {
+                        value:
+                          (summary?.cacheReadCostCny ?? 0) +
+                          (summary?.cacheWriteCostCny ?? 0),
+                        color: SERIES_COLORS[1],
+                      },
+                    ],
+                  },
                 ]}
                 rows={[
                   {
@@ -187,11 +213,39 @@ export function SummaryCards({
                 totalCostTooltip={t(
                   'output.tokens.include.reasoning.tokens.and.are.priced',
                 )}
-                ratio={[
-                  { value: outputRegularTokens, color: SERIES_COLORS[2] },
+                bars={[
                   {
-                    value: outputReasoningTokens,
-                    color: SERIES_COLORS[3],
+                    label: t('tokens'),
+                    segments: [
+                      { value: outputRegularTokens, color: SERIES_COLORS[2] },
+                      {
+                        value: outputReasoningTokens,
+                        color: SERIES_COLORS[3],
+                      },
+                    ],
+                  },
+                  {
+                    label: t('amount'),
+                    segments: [
+                      {
+                        value: summary
+                          ? Math.max(
+                              0,
+                              summary.outputCostCny - summary.reasoningCostCny,
+                            )
+                          : 0,
+                        color: SERIES_COLORS[2],
+                      },
+                      {
+                        value: summary
+                          ? Math.min(
+                              summary.reasoningCostCny,
+                              summary.outputCostCny,
+                            )
+                          : 0,
+                        color: SERIES_COLORS[3],
+                      },
+                    ],
                   },
                 ]}
                 rows={[
@@ -314,6 +368,11 @@ interface BreakdownRow {
   cost: string;
 }
 
+interface BreakdownBar {
+  label: string;
+  segments: { value: number; color: string }[];
+}
+
 function BreakdownCard({
   title,
   badge,
@@ -321,7 +380,7 @@ function BreakdownCard({
   totalValue,
   totalCost,
   totalCostTooltip,
-  ratio,
+  bars,
   rows,
 }: {
   title: string;
@@ -330,11 +389,10 @@ function BreakdownCard({
   totalValue: string;
   totalCost: string;
   totalCostTooltip?: string;
-  ratio: { value: number; color: string }[];
+  bars: BreakdownBar[];
   rows: BreakdownRow[];
 }) {
   const { token } = theme.useToken();
-  const ratioTotal = ratio.reduce((sum, item) => sum + item.value, 0);
 
   return (
     <Card
@@ -392,28 +450,65 @@ function BreakdownCard({
           </div>
         </div>
 
-        {/* Proportion bar: segments share the chart colors so the card, the
-            stacked bars and the pie describe the same split. */}
+        {/* Two bars per card: tokens and cost are split differently (a cached
+            token is cheap, a reasoning token is not), so one bar cannot describe
+            both. Segments share the chart colors, so the card, the stacked bars
+            and the pie describe the same split. */}
         <div
-          aria-hidden
           style={{
             display: 'flex',
-            height: 6,
-            borderRadius: 3,
-            overflow: 'hidden',
-            background: token.colorFillSecondary,
+            flexDirection: 'column',
+            gap: 6,
+            paddingTop: 2,
           }}
         >
-          {ratioTotal > 0 &&
-            ratio.map((item, index) => (
-              <span
-                key={index}
-                style={{
-                  width: `${(item.value / ratioTotal) * 100}%`,
-                  background: item.color,
-                }}
-              />
-            ))}
+          {bars.map((bar) => {
+            const total = bar.segments.reduce(
+              (sum, segment) => sum + segment.value,
+              0,
+            );
+
+            return (
+              <div
+                key={bar.label}
+                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                <span
+                  style={{
+                    flex: '0 0 auto',
+                    width: 34,
+                    fontSize: 11,
+                    color: token.colorTextTertiary,
+                  }}
+                >
+                  {bar.label}
+                </span>
+                <div
+                  aria-hidden
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: 'flex',
+                    height: 6,
+                    borderRadius: 3,
+                    overflow: 'hidden',
+                    background: token.colorFillSecondary,
+                  }}
+                >
+                  {total > 0 &&
+                    bar.segments.map((segment, index) => (
+                      <span
+                        key={index}
+                        style={{
+                          width: `${(segment.value / total) * 100}%`,
+                          background: segment.color,
+                        }}
+                      />
+                    ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column' }}>

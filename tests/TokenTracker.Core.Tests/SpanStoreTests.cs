@@ -1062,6 +1062,97 @@ public sealed class SpanStoreTests
     }
 
     [Fact]
+    public void ScopesSessionEventsToolsAndHooksToTheModelOfTheirTrace()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "tokentracker-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "tokentracker.db");
+
+        try
+        {
+            var store = new SpanStore(databasePath);
+            store.InsertMany(new[]
+            {
+                Span("trace-a", "chat-a", "session-1", "model-a", 1_000, 100, 0, 10, 1.0),
+                Span("trace-b", "chat-b", "session-1", "model-b", 2_000, 100, 0, 10, 2.0),
+            });
+            store.InsertEvents(new[]
+            {
+                Event("trace-a", "s1", "copilot-chat", "call-a1", "read_file", 1_000),
+                Event("trace-a", "s2", "copilot-chat", "call-a2", "read_file", 1_100),
+                Event("trace-b", "s3", "copilot-chat", "call-b", "write_file", 2_000),
+                new OtlpEventRecord
+                {
+                    TraceId = "trace-b",
+                    SpanId = "h1",
+                    Operation = "execute_hook",
+                    HookType = "preToolUse",
+                    HookResultKind = "applied",
+                    SessionId = "session-1",
+                    Source = "copilot-chat",
+                    StartTimeMs = 2_000,
+                    EndTimeMs = 2_100,
+                    ReceivedAtMs = 2_100,
+                },
+            });
+
+            // Every trace keeps its own shape without a model filter.
+            Assert.Equal(2, store.GetSessionTools("session-1").Count);
+            Assert.Single(store.GetHookSummaries("session-1"));
+
+            var scopedTools = store.GetSessionTools(
+                "session-1",
+                null,
+                0,
+                long.MaxValue,
+                "model-a");
+            var tool = Assert.Single(scopedTools);
+            Assert.Equal("read_file", tool.Tool);
+            Assert.Equal(2, tool.Calls);
+
+            Assert.Empty(store.GetHookSummaries(
+                "session-1",
+                null,
+                0,
+                long.MaxValue,
+                "model-a"));
+            Assert.Single(store.GetHookSummaries(
+                "session-1",
+                null,
+                0,
+                long.MaxValue,
+                "model-b"));
+
+            var scopedEvents = store.GetSessionEvents(
+                "session-1",
+                null,
+                0,
+                long.MaxValue,
+                "model-b");
+            Assert.Equal(
+                1,
+                Assert.Single(
+                    scopedEvents,
+                    row => row.Operation == "execute_tool").Count);
+            Assert.Equal(
+                1,
+                Assert.Single(
+                    scopedEvents,
+                    row => row.Operation == "execute_hook").Count);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void CombinedMergeWaitsForTheChatTwinBeforePublishingACost()
     {
         var directory = Path.Combine(

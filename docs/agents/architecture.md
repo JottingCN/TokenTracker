@@ -48,7 +48,7 @@ VS Code 扩展（状态栏、Tip、命令、AHP 标题通道）  浏览器 / AHP
 | GET | `/api/dashboard` | `range=0..4` 或 `from`/`to`、`source`；汇总、按模型（含辅助调用）、会话（主调用） |
 | GET | `/api/summary-chart` | `range` 或 `from`/`to`、`groupBy=all/day/week/month/hour`，可选 `model` / `sessionId`；按北京时间聚合输入/缓存/输出/推理的 tokens 与费用及未定价调用数（周从周一开始） |
 | GET | `/api/model/{model}` | `range` 或 `from`/`to`、`source`；模型详情、TTFT、平均生成速度、会话列表 |
-| GET | `/api/session/{sessionId}` | 汇总、`models`（按模型同口径）、`calls`、`events`、`tools`、`agentRuns`、`hooks`、`signalHealth`、`outcomes`；`range` 或 `from`/`to`、`source`、`includeCalls`（默认 true；**Web 会话页传 false**） |
+| GET | `/api/session/{sessionId}` | 汇总、`models`（按模型同口径）、`calls`、`events`、`tools`、`agentRuns`、`hooks`、`signalHealth`、`outcomes`；`range` 或 `from`/`to`、`source`、`includeCalls`（默认 true；**Web 会话页传 false**）、`model`（可选；只影响汇总与事件/工具/Hook/Agent 运行，`models` 始终列出全部模型） |
 | GET | `/api/session/{sessionId}/trace` | 拓扑节点：时间游标 FIFO 分块，`budget` 默认 400，`cursor` 向后取更新块；`range` 或 `from`/`to` 与其它会话接口同口径；响应 `nodes/hasMore/nextCursor/total` |
 | GET | `/api/calls` | 服务端分页：`range/source/model/query/kind/priced/period/hasError/agent/offset/limit`（单页上限 500） |
 | GET/POST/DELETE | `/api/models` | 模型设置：列表、新增或更新（保存后重算历史）、`?model=` 删除 |

@@ -1104,11 +1104,15 @@ public sealed partial class SpanStore
         string sessionId,
         string? source = null,
         long fromMs = 0,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        string? model = null)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
             : $" AND {SourceSql} = @source";
+        var modelFilter = string.IsNullOrWhiteSpace(model)
+            ? string.Empty
+            : $" AND {ModelTraceFilter}";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -1121,7 +1125,7 @@ public sealed partial class SpanStore
             WHERE session_id = @session_id
               AND operation = 'execute_hook'
               AND start_time_ms >= @from
-              AND start_time_ms < @to{sourceFilter}
+              AND start_time_ms < @to{sourceFilter}{modelFilter}
             ORDER BY start_time_ms;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
@@ -1130,6 +1134,10 @@ public sealed partial class SpanStore
         if (!string.IsNullOrWhiteSpace(source))
         {
             command.Parameters.AddWithValue("@source", source);
+        }
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            command.Parameters.AddWithValue("@model", model);
         }
 
         var rows = new Dictionary<string, HookAccumulator>(

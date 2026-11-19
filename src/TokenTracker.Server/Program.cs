@@ -39,7 +39,7 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.30",
+    "1.0.31",
     1,
     port,
     startedAt,
@@ -408,7 +408,8 @@ app.MapGet("/api/session/{sessionId}", (
     long? from,
     long? to,
     bool? includeCalls,
-    string? source) =>
+    string? source,
+    string? model) =>
 {
     if (InvalidRange(from, to) is { } invalid)
     {
@@ -422,12 +423,14 @@ app.MapGet("/api/session/{sessionId}", (
                 source,
                 from.Value,
                 to!.Value,
-                includeCalls ?? true)
+                includeCalls ?? true,
+                model)
             : service.GetSession(
                 sessionId,
                 range ?? DefaultSessionRange,
                 source,
-                includeCalls ?? true),
+                includeCalls ?? true,
+                model),
         AppJsonContext.Default.SessionPayload);
 });
 

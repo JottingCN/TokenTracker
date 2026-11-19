@@ -41,6 +41,15 @@ public sealed partial class SpanStore
     private const string SourceSql =
         "COALESCE(otel_source, " + SourceCaseSql + ")";
 
+    /// <summary>
+    /// Event rows carry no model of their own. A turn's hook, tool and permission
+    /// spans share the trace of the calls that produced them, so the model is
+    /// resolved through the calls in the same trace. A trace that ran two models
+    /// counts in both, which is why the session page labels the filtered cards.
+    /// </summary>
+    private const string ModelTraceFilter =
+        "trace_id IN (SELECT trace_id FROM spans WHERE model = @model)";
+
     private const string SpeedSql = """
         CASE WHEN SUM(CASE WHEN end_time_ms > start_time_ms
             AND ttft_ms IS NOT NULL
@@ -1906,11 +1915,15 @@ public sealed partial class SpanStore
         string sessionId,
         string? source = null,
         long fromMs = 0,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        string? model = null)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
             : $" AND {SourceSql} = @source";
+        var modelFilter = string.IsNullOrWhiteSpace(model)
+            ? string.Empty
+            : $" AND {ModelTraceFilter}";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -1925,7 +1938,7 @@ public sealed partial class SpanStore
             FROM session_events
             WHERE session_id = @session_id
               AND start_time_ms >= @from
-              AND start_time_ms < @to{sourceFilter}
+              AND start_time_ms < @to{sourceFilter}{modelFilter}
             GROUP BY operation, {SourceSql}
             ORDER BY COUNT(*) DESC;
             """;
@@ -1935,6 +1948,10 @@ public sealed partial class SpanStore
         if (!string.IsNullOrWhiteSpace(source))
         {
             command.Parameters.AddWithValue("@source", source);
+        }
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            command.Parameters.AddWithValue("@model", model);
         }
 
         var rows = new List<SessionEventRow>();
@@ -1965,11 +1982,15 @@ public sealed partial class SpanStore
         string sessionId,
         string? source = null,
         long fromMs = 0,
-        long toMs = long.MaxValue)
+        long toMs = long.MaxValue,
+        string? model = null)
     {
         var sourceFilter = string.IsNullOrWhiteSpace(source)
             ? string.Empty
             : $" AND {SourceSql} = @source";
+        var modelFilter = string.IsNullOrWhiteSpace(model)
+            ? string.Empty
+            : $" AND {ModelTraceFilter}";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -1996,7 +2017,7 @@ public sealed partial class SpanStore
             WHERE session_id = @session_id
               AND operation = 'execute_tool'
               AND start_time_ms >= @from
-              AND start_time_ms < @to{sourceFilter}
+              AND start_time_ms < @to{sourceFilter}{modelFilter}
             ORDER BY start_time_ms;
             """;
         command.Parameters.AddWithValue("@session_id", sessionId);
@@ -2005,6 +2026,10 @@ public sealed partial class SpanStore
         if (!string.IsNullOrWhiteSpace(source))
         {
             command.Parameters.AddWithValue("@source", source);
+        }
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            command.Parameters.AddWithValue("@model", model);
         }
 
         var accumulators = new Dictionary<string, ToolAccumulator>(

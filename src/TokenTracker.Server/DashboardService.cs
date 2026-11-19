@@ -549,7 +549,8 @@ public sealed class DashboardService
         string sessionId,
         int range,
         string? source = null,
-        bool includeCalls = true)
+        bool includeCalls = true,
+        string? model = null)
     {
         var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
         return GetSession(
@@ -557,7 +558,8 @@ public sealed class DashboardService
             source,
             FloorToMinute(fromMs),
             toMs,
-            includeCalls);
+            includeCalls,
+            model);
     }
 
     public SessionPayload GetSession(
@@ -565,9 +567,11 @@ public sealed class DashboardService
         string? source = null,
         long fromMs = 0,
         long toMs = long.MaxValue,
-        bool includeCalls = true)
+        bool includeCalls = true,
+        string? model = null)
     {
         source = NormalizeSource(source);
+        model = string.IsNullOrWhiteSpace(model) ? null : model;
         EnsureCombined(source);
         // Keeps the session's chat channels subscribed so idle turns still
         // resolve their tool display names from AHP events. This must run on
@@ -579,12 +583,12 @@ public sealed class DashboardService
         if (!includeCalls)
         {
             return Cached(
-                $"session:{version.Data}:{version.Metadata}:{fromMs}:{toMs}:{source}:{sessionId}",
+                $"session:{version.Data}:{version.Metadata}:{fromMs}:{toMs}:{source}:{model}:{sessionId}",
                 version,
-                () => BuildSession(sessionId, source, fromMs, toMs, includeCalls: false));
+                () => BuildSession(sessionId, source, fromMs, toMs, includeCalls: false, model));
         }
 
-        return BuildSession(sessionId, source, fromMs, toMs, includeCalls: true);
+        return BuildSession(sessionId, source, fromMs, toMs, includeCalls: true, model);
     }
 
     private SessionPayload BuildSession(
@@ -592,7 +596,8 @@ public sealed class DashboardService
         string? source,
         long fromMs,
         long toMs,
-        bool includeCalls)
+        bool includeCalls,
+        string? model)
     {
         var detailSource = source == "combined" ? null : source;
         // The session page must honour the selected range like the dashboard
@@ -611,8 +616,19 @@ public sealed class DashboardService
         var totals = new SummaryAccumulator();
         var byModel = new Dictionary<string, SummaryAccumulator>(
             StringComparer.Ordinal);
+        // The model tabs are built from every sample, even when the rest of the
+        // payload is scoped to one model, so switching tabs never loses options.
+        // Chat events keep counting utility calls, as they always did.
+        var chatSamples = new List<CallSample>(samples.Count);
         foreach (var sample in samples)
         {
+            var matchesModel = model is null ||
+                string.Equals(sample.Model, model, StringComparison.Ordinal);
+            if (matchesModel)
+            {
+                chatSamples.Add(sample);
+            }
+
             // Utility calls stay in the timeline but are not user-facing usage:
             // the dashboard session rows already total `is_main = 1`, so the
             // session page must exclude them too or the two totals disagree.
@@ -621,7 +637,6 @@ public sealed class DashboardService
                 continue;
             }
 
-            totals.Add(sample);
             if (!byModel.TryGetValue(sample.Model, out var accumulator))
             {
                 accumulator = new SummaryAccumulator();
@@ -629,6 +644,10 @@ public sealed class DashboardService
             }
 
             accumulator.Add(sample);
+            if (matchesModel)
+            {
+                totals.Add(sample);
+            }
         }
 
         var summary = totals.Build();
@@ -640,20 +659,20 @@ public sealed class DashboardService
             .ToList();
 
         var events = _store
-            .GetSessionEvents(sessionId, detailSource, fromMs, toMs)
+            .GetSessionEvents(sessionId, detailSource, fromMs, toMs, model)
             .ToList();
-        var chatEvents = includeCalls
-            ? BuildChatEvents(calls)
-            : BuildChatEvents(samples);
+        var chatEvents = BuildChatEvents(chatSamples);
         events.InsertRange(0, chatEvents);
 
         var metadata = _metadata.Get(sessionId);
         var tools = _store
-            .GetSessionTools(sessionId, detailSource, fromMs, toMs)
+            .GetSessionTools(sessionId, detailSource, fromMs, toMs, model)
             .ToList();
         var agentRuns = _store
             .GetAgentRuns(sessionId, detailSource)
             .Where(row => row.StartTimeMs >= fromMs && row.StartTimeMs < toMs)
+            .Where(row => model is null ||
+                string.Equals(row.RequestModel, model, StringComparison.Ordinal))
             .ToList();
         _workspaces.Flush();
 
@@ -667,7 +686,7 @@ public sealed class DashboardService
             tools,
             agentRuns,
             _store
-                .GetHookSummaries(sessionId, detailSource, fromMs, toMs)
+                .GetHookSummaries(sessionId, detailSource, fromMs, toMs, model)
                 .ToList(),
             _store.GetSignalHealth(sessionId, detailSource, fromMs, toMs),
             _store.GetOutcomeSummary(
@@ -700,12 +719,6 @@ public sealed class DashboardService
         call.ErrorType,
         call.StartTimeMs,
         call.IsMain);
-
-    private static List<SessionEventRow> BuildChatEvents(
-        IReadOnlyList<CallRow> calls) =>
-        BuildChatEvents(
-            calls.Select(call => (call.Source, call.DurationMs, call.ErrorType, call.StartTimeMs))
-                .ToList());
 
     private static List<SessionEventRow> BuildChatEvents(
         IReadOnlyList<CallSample> calls) =>

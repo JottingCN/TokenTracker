@@ -186,12 +186,14 @@ public static class WsEndpoint
                                             state.Source,
                                             state.FromMs!.Value,
                                             state.ToMs!.Value,
-                                            state.IncludeCalls)
+                                            state.IncludeCalls,
+                                            state.Model)
                                         : service.GetSession(
                                             state.Id!,
                                             state.Range,
                                             state.Source,
-                                            state.IncludeCalls)),
+                                            state.IncludeCalls,
+                                            state.Model)),
                                 AppJsonContext.Default.SessionMessage),
                         "calls" => JsonSerializer.SerializeToUtf8Bytes(
                             new CallsMessage(

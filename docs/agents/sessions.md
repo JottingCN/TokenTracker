@@ -29,6 +29,7 @@
 ## 4. Agent 运行（agentRuns）
 
 - **AHP 不提供轮次/用量**：AHP 会话 ID 与 OTel 会话 ID 是两套 ID（AHP 的 `ahp-session` / `ahp-chat` 均与 OTel session 无对应关系，`defaultChatProviderData.sdkSessionId` 才是映射），无法稳定关联，因此会话页不再展示 AHP 轮次或 AHP 会话明细。会话级统计一律以 OTel 调用的「Agent 运行」为准，不要重新引入按 AHP 轮次汇总的指标。
+- **模型视角**：会话页的模型 Tab 会把 `model` 带给 `/api/session`（HTTP 与 WS 同参），服务端据此约束汇总、事件、工具、Hook 与 Agent 运行；`models` 数组始终返回全部模型，否则切换 Tab 会丢选项。`session_events` 没有 model 列，事件/工具/Hook 用「同一 trace 内有该模型的调用」（`trace_id IN (SELECT trace_id FROM spans WHERE model=@model)`）归属，跨模型 trace 会同时计入两个模型；Agent 运行按行上已算好的 `RequestModel`（窗口众数）过滤。界面用「卡片底部一条该模型颜色的彩条」表示范围：只有选中具体模型时才绘，Trace 拓扑与编辑结果没有模型维度，保持整会话且不加彩条；颜色优先取模型设置里的图标色，否则由模型名稳定派生。单模型会话、模型页与主页不出现彩条。
 - AHP 仍用于标题、工作区与工具名：会话页会请求 AHP 保持该会话的 chat 通道订阅，便于空闲轮次的 `toolCallStart` 回填工具显示名；不得据此读取轮次正文、token 或费用。
 
 - 一次运行 = 一个 invoke_agent span。根 invoke_agent（父 span 不入库）是主代理运行，每条用户消息一个；挂在 execute_tool 下的 invoke_agent 是子代理运行。

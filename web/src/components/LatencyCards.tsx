@@ -4,23 +4,26 @@ import type { Summary } from '../types';
 import { useUi } from '../ui';
 import { intlLocale } from '../i18n';
 import { formatLatency, formatSpeed } from '../utils/labels';
+import { accentBarStyle } from '../utils/modelColors';
 
 interface LatencyCardsProps {
   summary: Summary | null | undefined;
   // Rendered as an extra card after the latency cards (session page only).
   extra?: ReactNode;
+  // Model accent, painted along the card's top edge.
+  accent?: string;
 }
 
 // Shared by the session and model pages so both report identical latency
 // figures; extremes only consider successful calls, which the server filters.
-export function LatencyCards({ summary, extra }: LatencyCardsProps) {
+export function LatencyCards({ summary, extra, accent }: LatencyCardsProps) {
   const { locale, t } = useUi();
   const number = new Intl.NumberFormat(intlLocale(locale));
   const metricCount = 3 + (extra ? 1 : 0);
   const columns = Math.floor(24 / metricCount);
 
   return (
-    <Card size="small" title={t('usage.and.performance')}>
+    <Card size="small" title={t('usage.and.performance')} style={accentBarStyle(accent)}>
       <Row gutter={[12, 12]}>
         <Col xs={24} sm={12} md={columns}>
           <CountCard

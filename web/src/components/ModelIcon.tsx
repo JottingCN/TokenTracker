@@ -1,6 +1,7 @@
 import { Tooltip } from 'antd';
 import type { ModelProfile } from '../types';
 import { providerOf } from '../utils/model';
+import { modelAccent } from '../utils/modelColors';
 import { useModelProfiles } from '../utils/modelProfiles';
 
 const PROVIDER_STYLES: Record<string, { color: string; letter: string }> = {
@@ -58,6 +59,11 @@ export function ModelIcon({
     // Custom providers (e.g. "DeepSeek 官方") get their own initial instead of ?.
     letter: (provider.match(/[\p{L}\p{N}]/u)?.[0] ?? '?').toUpperCase(),
   };
+  // Models of one provider share a brand colour, which makes two of them look
+  // identical in the sidebar. The per-model hue keeps the provider letter while
+  // giving every model its own colour, and it is the same colour the session
+  // page paints on the cards it scopes to that model.
+  const color = profile?.iconColor ?? modelAccent(model) ?? fallback.color;
   const radius = Math.max(3, Math.round(size * 0.25));
 
   const icon =
@@ -87,7 +93,7 @@ export function ModelIcon({
           width: size,
           height: size,
           borderRadius: radius,
-          background: profile?.iconColor ?? fallback.color,
+          background: color,
           color: '#fff',
           fontSize: Math.max(9, Math.round(size * 0.58)),
           fontWeight: 600,

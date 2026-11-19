@@ -72,6 +72,9 @@ export function SummaryUsageChart({
   const groupBy = resolveGrouping(range, fromMs, toMs);
   const [chartType, setChartType] = useState<ChartType>('bar');
   const [metric, setMetric] = useState<Metric>('tokens');
+  // Hidden series stay listed in the legend so the split can be compared without
+  // losing the total: a hidden slice is simply left out of the stack and the pie.
+  const [hiddenKeys, setHiddenKeys] = useState<SeriesKey[]>([]);
   // The payload is tagged with the grouping that produced it: rendering the old
   // keys under a new grouping would format "2026-11-19" as an hour bucket.
   const [chart, setChart] = useState<{
@@ -210,6 +213,25 @@ export function SummaryUsageChart({
       0,
     ),
   );
+  const visibleSeries = series.filter(
+    (item) => !hiddenKeys.includes(item.key),
+  );
+  const visibleTotals = visibleSeries.map(
+    (item) => totals[series.indexOf(item)] ?? 0,
+  );
+  const toggleSeries = (key: SeriesKey) => {
+    setHiddenKeys((current) => {
+      if (current.includes(key)) {
+        return current.filter((item) => item !== key);
+      }
+      // Hiding every slice would leave an empty chart with no way back except
+      // this legend, so the last visible series stays.
+      if (current.length >= series.length - 1) {
+        return current;
+      }
+      return [...current, key];
+    });
+  };
   const unpricedCalls = buckets.reduce(
     (total, bucket) => total + bucket.unpricedCalls,
     0,
@@ -272,9 +294,14 @@ export function SummaryUsageChart({
         <>
           {chartType === 'pie' ? (
             <UsagePie
-              series={series}
-              values={totals}
+              series={visibleSeries}
+              values={visibleTotals}
+              allSeries={series}
+              allValues={totals}
+              hiddenKeys={hiddenKeys}
+              onToggle={toggleSeries}
               formatValue={formatValue}
+              hint={t('chart.legend.hint')}
               emptyColor={token.colorFillSecondary}
               centerLabel={
                 metric === 'tokens' ? t('total.tokens') : t('estimated.cost')
@@ -284,8 +311,12 @@ export function SummaryUsageChart({
             <UsageBars
               buckets={buckets}
               metric={metric}
-              series={series}
-              totals={totals}
+              series={visibleSeries}
+              allSeries={series}
+              allValues={totals}
+              hiddenKeys={hiddenKeys}
+              onToggle={toggleSeries}
+              hint={t('chart.legend.hint')}
               formatValue={formatValue}
               formatAxis={formatAxisValue}
               groupBy={groupBy}
@@ -399,13 +430,23 @@ function bucketSeriesValue(
 function UsagePie({
   series,
   values,
+  allSeries,
+  allValues,
+  hiddenKeys,
+  onToggle,
   formatValue,
+  hint,
   emptyColor,
   centerLabel,
 }: {
   series: SeriesDef[];
   values: number[];
+  allSeries: SeriesDef[];
+  allValues: number[];
+  hiddenKeys: SeriesKey[];
+  onToggle: (key: SeriesKey) => void;
   formatValue: (value: number) => string;
+  hint: string;
   emptyColor: string;
   centerLabel: string;
 }) {
@@ -469,9 +510,12 @@ function UsagePie({
         </div>
       </div>
       <SeriesLegend
-        series={series}
-        values={values}
+        series={allSeries}
+        values={allValues}
+        hiddenKeys={hiddenKeys}
+        onToggle={onToggle}
         formatValue={formatValue}
+        hint={hint}
         minWidth={170}
       />
     </div>
@@ -500,7 +544,11 @@ function UsageBars({
   buckets,
   metric,
   series,
-  totals,
+  allSeries,
+  allValues,
+  hiddenKeys,
+  onToggle,
+  hint,
   formatValue,
   formatAxis,
   groupBy,
@@ -511,7 +559,11 @@ function UsageBars({
   buckets: SummaryChartBucket[];
   metric: Metric;
   series: SeriesDef[];
-  totals: number[];
+  allSeries: SeriesDef[];
+  allValues: number[];
+  hiddenKeys: SeriesKey[];
+  onToggle: (key: SeriesKey) => void;
+  hint: string;
   formatValue: (value: number) => string;
   formatAxis: (value: number, max: number) => string;
   groupBy: Grouping;
@@ -701,9 +753,12 @@ function UsageBars({
         </svg>
       </div>
       <SeriesLegend
-        series={series}
-        values={totals}
+        series={allSeries}
+        values={allValues}
+        hiddenKeys={hiddenKeys}
+        onToggle={onToggle}
         formatValue={formatValue}
+        hint={hint}
       />
     </div>
   );
@@ -712,21 +767,31 @@ function UsageBars({
 function SeriesLegend({
   series,
   values,
+  hiddenKeys,
+  onToggle,
   formatValue,
+  hint,
   minWidth,
 }: {
   series: SeriesDef[];
   values: number[];
+  hiddenKeys: SeriesKey[];
+  onToggle: (key: SeriesKey) => void;
   formatValue: (value: number) => string;
+  hint: string;
   minWidth?: number;
 }) {
   return (
+    // Centered rather than stretched: four short labels spread over the full
+    // width read as four unrelated columns.
     <div
       style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-        gap: '8px 16px',
-        marginTop: 8,
+        display: 'flex',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: '8px 20px',
+        marginTop: 10,
         minWidth,
       }}
     >
@@ -736,6 +801,9 @@ function SeriesLegend({
           label={item.label}
           value={formatValue(values[index] ?? 0)}
           color={item.color}
+          hidden={hiddenKeys.includes(item.key)}
+          hint={hint}
+          onToggle={() => onToggle(item.key)}
         />
       ))}
     </div>
@@ -766,13 +834,37 @@ function LegendItem({
   label,
   value,
   color,
+  hidden,
+  hint,
+  onToggle,
 }: {
   label: string;
   value?: string;
   color: string;
+  hidden: boolean;
+  hint: string;
+  onToggle: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <button
+      type="button"
+      aria-pressed={!hidden}
+      title={hint}
+      onClick={onToggle}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '2px 6px',
+        margin: 0,
+        border: 'none',
+        borderRadius: 4,
+        background: 'transparent',
+        cursor: 'pointer',
+        opacity: hidden ? 0.45 : 1,
+        transition: 'opacity 120ms',
+      }}
+    >
       <span
         aria-hidden
         style={{
@@ -783,14 +875,25 @@ function LegendItem({
           flex: '0 0 auto',
         }}
       />
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      <Typography.Text
+        type="secondary"
+        style={{
+          fontSize: 12,
+          textDecoration: hidden ? 'line-through' : undefined,
+        }}
+      >
         {label}
       </Typography.Text>
       {value !== undefined && (
-        <Typography.Text style={{ fontVariantNumeric: 'tabular-nums' }}>
+        <Typography.Text
+          style={{
+            fontVariantNumeric: 'tabular-nums',
+            textDecoration: hidden ? 'line-through' : undefined,
+          }}
+        >
           {value}
         </Typography.Text>
       )}
-    </div>
+    </button>
   );
 }

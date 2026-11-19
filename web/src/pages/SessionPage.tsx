@@ -15,10 +15,12 @@ import {
   Table,
   Tabs,
   Tag,
+  theme,
   Tooltip,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { ModelIcon } from '../components/ModelIcon';
 import { OutcomeCard } from '../components/OutcomeCard';
 import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
@@ -33,6 +35,11 @@ import type {
 } from '../types';
 import { useUi } from '../ui';
 import { intlLocale } from '../i18n';
+import {
+  accentBarStyle,
+  modelAccent,
+} from '../utils/modelColors';
+import { useModelProfiles } from '../utils/modelProfiles';
 import {
   formatLatency,
   formatTime,
@@ -61,6 +68,8 @@ export function SessionPage({
 }: SessionPageProps) {
   useMoney();
   const { locale, t } = useUi();
+  const { token } = theme.useToken();
+  const { profileOf } = useModelProfiles();
   const number = new Intl.NumberFormat(intlLocale(locale));
   const shortId =
     sessionId.length > 20 ? `${sessionId.slice(0, 8)}…` : sessionId;
@@ -68,12 +77,21 @@ export function SessionPage({
   const [traceExpanded, setTraceExpanded] = useState(false);
   const [activeScope, setActiveScope] = useState('all');
   const [openPanels, setOpenPanels] = useState<string[]>([]);
+  const scopedModel = activeScope === 'all' ? undefined : activeScope;
+  // Each model keeps its own hue so the tab icon and every card scoped to it
+  // agree without a label saying which model is selected.
+  const accentColor =
+    modelAccent(scopedModel, scopedModel ? profileOf(scopedModel) : null) ??
+    undefined;
   const { data, refresh } = useRealtime<SessionPayload>({
     view: 'session',
     id: sessionId,
     range,
     fromMs,
     toMs,
+    // The server scopes the aggregate cards to this model; leaving it unset
+    // keeps the whole-session view.
+    model: scopedModel,
     utility: false,
     // The page renders aggregates only; the raw call list would add ~800 KB
     // per snapshot, so it is requested by the VS Code tip instead.
@@ -532,21 +550,63 @@ export function SessionPage({
       </div>
 
       {modelScopes.length > 1 && (
-        <Tabs
-          size="small"
-          activeKey={activeScope}
-          onChange={setActiveScope}
-          items={[
-            {
-              key: 'all',
-              label: `${t('all.models')}(${modelScopes.length})`,
-            },
-            ...modelScopes.map((row) => ({
-              key: row.model,
-              label: row.model,
-            })),
-          ]}
-        />
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+            padding: '4px 12px',
+            borderRadius: token.borderRadiusLG,
+            background: token.colorFillQuaternary,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            // The selected model paints the strip's leading edge, so its colour
+            // is already visible before the cards below repeat it.
+            boxShadow: accentColor
+              ? `inset 3px 0 0 0 ${accentColor}`
+              : undefined,
+          }}
+        >
+          <Typography.Text strong style={{ fontSize: 12 }}>
+            {t('model.scope')}
+          </Typography.Text>
+          <Tabs
+            size="small"
+            activeKey={activeScope}
+            onChange={setActiveScope}
+            tabBarStyle={{ marginBottom: 0 }}
+            style={{ flex: '1 1 320px', minWidth: 0 }}
+            items={[
+              {
+                key: 'all',
+                label: `${t('all.models')}(${modelScopes.length})`,
+              },
+              ...modelScopes.map((row) => ({
+                key: row.model,
+                label: (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <ModelIcon model={row.model} size={14} tooltip={false} />
+                    {row.model}
+                  </span>
+                ),
+              })),
+            ]}
+          />
+          <Typography.Text
+            type="secondary"
+            style={{ fontSize: 11, flex: '0 1 auto' }}
+          >
+            {activeScope === 'all'
+              ? t('model.scope.all')
+              : t('model.scope.filtered')}
+          </Typography.Text>
+        </div>
       )}
 
       <SummaryCards
@@ -554,11 +614,12 @@ export function SessionPage({
         range={range}
         fromMs={fromMs}
         toMs={toMs}
-        model={activeScope === 'all' ? undefined : activeScope}
+        model={scopedModel}
         sessionId={sessionId}
+        accent={accentColor}
       />
 
-      <LatencyCards summary={summary} />
+      <LatencyCards summary={summary} accent={accentColor} />
 
       <Card
         size="small"
@@ -616,6 +677,7 @@ export function SessionPage({
 
       <Card
         size="small"
+        style={accentBarStyle(accentColor)}
         styles={collapsedBodyStyle(openPanels.includes('agents'))}
         title={`${t('agent.runs')}(${data?.agentRuns.length ?? 0})`}
         extra={
@@ -660,6 +722,7 @@ export function SessionPage({
 
       <Card
         size="small"
+        style={accentBarStyle(accentColor)}
         styles={collapsedBodyStyle(openPanels.includes('hooks'))}
         title={`${t('hook.executions')}(${hookTotal})`}
         extra={
@@ -698,6 +761,7 @@ export function SessionPage({
 
       <Card
         size="small"
+        style={accentBarStyle(accentColor)}
         styles={collapsedBodyStyle(openPanels.includes('events'))}
         title={`${t('event.statistics')}(${eventTotal})`}
         extra={
@@ -733,6 +797,7 @@ export function SessionPage({
 
       <Card
         size="small"
+        style={accentBarStyle(accentColor)}
         styles={collapsedBodyStyle(openPanels.includes('tools'))}
         title={`${t('tool.call.statistics')}(${toolTotal})`}
         extra={
