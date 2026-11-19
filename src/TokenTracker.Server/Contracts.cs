@@ -44,7 +44,10 @@ public sealed record DashboardPayload(
     int RetentionDays,
     SignalHealthRow SignalHealth,
     OutcomeSummary Outcomes,
-    AhpStatusPayload Ahp);
+    AhpStatusPayload Ahp,
+    // Workspace totals ride along with the dashboard: they are a handful of rows,
+    // and a separate request would make the card lag one refresh behind the rest.
+    List<WorkspaceRow> Workspaces);
 
 public sealed record SummaryChartPayload(
     List<SummaryChartBucket> Buckets);

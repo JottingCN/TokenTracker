@@ -41,8 +41,13 @@ finish_reasons, received_at_ms
 - **时间窗必须在 SQL 聚合之前下推**：`GetSessionEvents` / `GetSessionTools` / `GetHookSummaries` 都接受 `fromMs`/`toMs`。按聚合后的 `lastSeenMs`（组内最大值）过滤会让“今天用过的工具”显示全部历史计数（实测 `range=0` 报 1881 次而当天真实 64 次）。
 - 会话页所有统计都遵循标题栏范围：调用与 Agent 运行按 `startTimeMs`，事件/工具/Hook 按上述 SQL 窗口，outcome 指标同样传区间。VS Code Tip 也按 `tokentracker.statsRange` 传 `range` 给 `/api/session`——**聚合不能靠客户端过滤**。
 - `includeCalls=false` 时必须走 `SpanStore.GetSessionCallSamples`（`CallSample` 投影），不要 materialize 数千个 `CallRow`；`SummaryAccumulator` 的算术只保留一份实现（`Add(CallRow)` 转调 `Add(CallSample)`）。会话快照从约 880 KB 降到约 36 KB。
+- **范围汇总必须带延迟列**：`ReadSummary`（`GetSummary`）是看板顶部「平均首次响应 / 平均生成速度」的唯一来源，`GetModelSummary` 只服务模型页。两者都必须投影 `AVG(ttft_ms)`、`COUNT(ttft_ms)`、加权速度与成功调用的最值；漏掉这些列不会报错，卡片只会永远显示 `-`（曾因重写投影丢掉过一次）。最值只统计 `error_type IS NULL`。
 - combined 行按「脏会话 + 会话级时间窗」增量重建，窗口沿重叠区间扩展，超过 12 小时或 4 轮不收敛才回退该会话全量；**不要**恢复「按会话整库重算」（单个新 span 曾要重算整个 5k span 会话，实测 208 ms/次）。无 `session_id` 的辅助调用按批次时间窗增量重建，**不要**恢复「辅助调用批次 → 全表重建」（实测 2 万 span 全量读取 3~12 秒 CPU，窗口重建 0.16 秒）。窗口查询写成可用 `ix_spans_start` / `ix_spans_end` 的 OR 形式，`COALESCE(end_time_ms, start_time_ms)` 会退化成全表扫描。
 - **合并不许抢跑**：Agent Host 行不带缓存列且比 Copilot Chat 早到约 0.5 秒（4300 对双胞胎实测：起点差 p50 500 ms、p90 1.2 s、p99 1.8 s）。只有 Agent Host 行时先发布，价格会从「未缓存」跳到「已缓存」（本机实测 ¥0.0297 → ¥0.0013，25 倍），状态栏与 Tip 每轮都跳。所以合并组必须等到 chat 行，只有超过 `CombinedTwinGraceMs`（3 秒）宽限仍无 chat 行才单独发布；等待中的组必须保留 dirty 标记让下次请求重试，**清掉 dirty 会永久丢掉该调用**。
+- **工作区统计**（`/api/dashboard.workspaces`）由「会话 → 工作区」映射 + 每次调用的模型分组得到：
+  1. 会话到目录的映射取 `session_workspaces`（`SessionWorkspaceCache` 在元数据解析时写入）与本次请求已解析的元数据，后者优先。仪表盘只为可见的 50 个会话解析元数据，其余会话回退到表里的历史值，所以新会话首次出现的那一帧可能落在「未归属」，下一帧即归位。
+  2. tokens / 费用与看板汇总、按模型同口径（含辅助调用）；**没有 `session_id` 的辅助调用无法归属工作区**（实测 82 条中 41 条没有窗口 ID），因此工作区合计可以比顶部汇总少这些调用，费用通常一致。
+  3. 路径分组在 Windows / macOS 上忽略大小写（实测同一目录存在 `D:\` 与 `d:\` 两种写法），Linux 区分大小写；尾部目录分隔符先去掉。
 - 调用明细必须服务端分页（`total`/`offset`/`limit`，单页上限 500），不要重新引入固定 2000 条截断；文本检索在服务端匹配会话标题（元数据）、模型与会话 ID 后直接分页。
 - 跨请求缓存必须有上界：`ToolNameResolver.Cache`（4096 后清空）、`SessionMetadataProvider._cache`（2048）、`DashboardService._outcomeCache`（32）、`DashboardService._snapshotCache`（8，按 `(DataVersion, MetadataVersion)` 整体失效）。WS 接收缓冲上限 256 KB，超过即断开。
 - 快照缓存只缓存聚合投影（`includeCalls: false` 的会话快照、dashboard、model、summary-chart）；**带原始调用列表的会话快照不缓存**，它是唯一的大 payload（实测 80+ KB 且随调用数线性增长）。

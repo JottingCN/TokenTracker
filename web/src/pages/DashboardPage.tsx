@@ -5,7 +5,7 @@ import { CardPagination } from '../components/CardPagination';
 import { OutcomeCard } from '../components/OutcomeCard';
 import { LatencyCards } from '../components/LatencyCards';
 import { SummaryCards } from '../components/SummaryCards';
-import { modelColumns, sessionColumns } from '../components/columns';
+import { modelColumns, sessionColumns, workspaceColumns } from '../components/columns';
 import type { DashboardPayload } from '../types';
 import { useUi } from '../ui';
 import { intlLocale } from '../i18n';
@@ -36,15 +36,22 @@ export function DashboardPage({
   const number = new Intl.NumberFormat(intlLocale(locale));
   const models = data?.models ?? [];
   const sessions = data?.sessions ?? [];
+  const workspaces = data?.workspaces ?? [];
   const [page, setPage] = useState(1);
   const [openLists, setOpenLists] = useState<string[]>([]);
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
   const modelViewportHeight = useViewportHeight(0.3, 160, 340);
   const sessionViewportHeight = useViewportHeight(0.42, 260, 520);
+  const workspaceViewportHeight = useViewportHeight(0.3, 160, 340);
   const modelHeight = clampTableHeight(
     modelViewportHeight,
     models.length,
+    TABLE_ROW_DOUBLE_PX,
+  );
+  const workspaceHeight = clampTableHeight(
+    workspaceViewportHeight,
+    workspaces.length,
     TABLE_ROW_DOUBLE_PX,
   );
   const pageRowCount = Math.min(
@@ -57,6 +64,10 @@ export function DashboardPage({
     TABLE_ROW_DOUBLE_PX,
   );
   const totalSessionCalls = sessions.reduce((total, row) => total + row.calls, 0);
+  const totalWorkspaceSessions = workspaces.reduce(
+    (total, row) => total + row.sessions,
+    0,
+  );
 
   useEffect(() => {
     if (page > pageCount) {
@@ -121,6 +132,45 @@ export function DashboardPage({
             pagination={false}
             scroll={{ x: 1130, y: modelHeight }}
           />
+          ))}
+      </Card>
+
+      <Card
+        size="small"
+        title={`${t('by.workspace')}(${workspaces.length})`}
+        styles={
+          openLists.includes('workspaces')
+            ? undefined
+            : { body: { display: 'none' } }
+        }
+        extra={
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${t('workspace')}: ${number.format(workspaces.length)} · ${t('sessions')}: ${data ? number.format(totalWorkspaceSessions) : '-'} · ${t('total.tokens')}: ${data ? number.format(data.summary.inputTokens + data.summary.outputTokens) : '-'}`}
+            </Typography.Text>
+            <ListToggle
+              open={openLists.includes('workspaces')}
+              onToggle={() => toggleList('workspaces')}
+            />
+          </Space>
+        }
+      >
+        {openLists.includes('workspaces') &&
+          (data && workspaces.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t('no.data')}
+            />
+          ) : (
+            <Table
+              size="small"
+              rowKey="workspaceKey"
+              columns={workspaceColumns()}
+              dataSource={workspaces}
+              loading={!data}
+              pagination={false}
+              scroll={{ x: 1450, y: workspaceHeight }}
+            />
           ))}
       </Card>
 

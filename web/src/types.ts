@@ -84,6 +84,59 @@ export interface ModelRow {
   tokensPerSecondText: string;
 }
 
+export interface WorkspaceModelUsage {
+  model: string;
+  calls: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  costCny: number;
+  tokens: number;
+  callsText: string;
+  costText: string;
+}
+
+// One working directory: the sessions that resolved to it, already summed over
+// their main calls. `workspacePath` is empty for sessions without a directory.
+export interface WorkspaceRow {
+  workspaceKey: string;
+  workspacePath: string | null;
+  sessions: number;
+  calls: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  costCny: number;
+  unpricedCalls: number;
+  hitRate: number | null;
+  avgDurationMs: number | null;
+  costShare: number;
+  firstSeenMs: number;
+  lastSeenMs: number;
+  models: WorkspaceModelUsage[];
+  totalTokens: number;
+  workspaceName: string;
+  modelsText: string;
+  sessionsText: string;
+  callsText: string;
+  inputText: string;
+  cacheText: string;
+  cacheCreationText: string;
+  outputText: string;
+  reasoningText: string;
+  tokensText: string;
+  hitRateText: string;
+  costText: string;
+  costShareText: string;
+  avgDurationText: string;
+  firstSeenText: string;
+  lastSeenText: string;
+  modelCountText: string;
+}
+
 export interface SessionRow {
   sessionId: string;
   model: string;
@@ -402,6 +455,7 @@ export interface DashboardPayload {
   summary: Summary;
   models: ModelRow[];
   sessions: SessionRow[];
+  workspaces: WorkspaceRow[];
   receiver: ReceiverInfo;
   updatedAt: string;
   retentionDays: number;

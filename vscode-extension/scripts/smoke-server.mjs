@@ -693,10 +693,25 @@ try {
 
   const dashboard = await request(`${base}/api/dashboard?range=2`);
   check('GET /api/dashboard', dashboard.status, 200);
+  const dashboardPayload = JSON.parse(dashboard.body);
   check(
     'GET /api/dashboard payload',
-    typeof JSON.parse(dashboard.body).outcomes,
+    typeof dashboardPayload.outcomes,
     'object',
+  );
+  // The latency cards read these from the range summary; they were once missing
+  // from the projection, which rendered both cards as "-" forever.
+  check(
+    'GET /api/dashboard summary latency',
+    'avgTtftMs' in dashboardPayload.summary &&
+      'tokensPerSecond' in dashboardPayload.summary &&
+      'ttftSamples' in dashboardPayload.summary,
+    true,
+  );
+  check(
+    'GET /api/dashboard workspaces',
+    Array.isArray(dashboardPayload.workspaces),
+    true,
   );
 
   // A half-specified window used to be silently ignored.

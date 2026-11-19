@@ -1268,6 +1268,102 @@ public sealed partial class SpanStore
             source);
     }
 
+    /// <summary>
+    /// Per-session, per-model totals. The workspace card is built from this: a
+    /// workspace is a set of sessions, and its model list has to come from the
+    /// calls rather than from <see cref="SessionRow.Model"/> (that is only the
+    /// newest model of each session).
+    /// </summary>
+    public IReadOnlyList<SessionModelUsage> GetSessionModelUsage(
+        long fromMs,
+        long toMs,
+        string? source = null,
+        bool includeUtility = false)
+    {
+        var sourceFilter = string.IsNullOrWhiteSpace(source)
+            ? string.Empty
+            : $" AND {SourceSql} = @source";
+        var utilityFilter = includeUtility ? string.Empty : " AND is_main = 1";
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT
+                session_id,
+                COALESCE(model, '-'),
+                COUNT(*),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(reasoning_tokens), 0),
+                COALESCE(SUM(cost_cny), 0),
+                COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
+                MIN(start_time_ms),
+                MAX(start_time_ms),
+                SUM(CASE WHEN end_time_ms > start_time_ms THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN end_time_ms > start_time_ms
+                    THEN end_time_ms - start_time_ms ELSE 0 END), 0)
+            FROM spans
+            WHERE session_id IS NOT NULL
+              AND start_time_ms >= @from
+              AND start_time_ms < @to{utilityFilter}{sourceFilter}
+            GROUP BY session_id, model;
+            """;
+        command.Parameters.AddWithValue("@from", fromMs);
+        command.Parameters.AddWithValue("@to", toMs);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        var rows = new List<SessionModelUsage>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new SessionModelUsage(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3),
+                reader.GetInt64(4),
+                reader.GetInt64(5),
+                reader.GetInt64(6),
+                reader.GetInt64(7),
+                reader.GetDouble(8),
+                reader.GetInt64(9),
+                reader.GetInt64(10),
+                reader.GetInt64(11),
+                reader.GetInt64(12),
+                reader.GetDouble(13)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Every session → workspace path the server has ever resolved. Sessions that
+    /// never had a workspace (or predate the cache) are simply absent.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> GetSessionWorkspaces()
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT session_id, workspace_path FROM session_workspaces;";
+        var rows = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var path = reader.GetString(1);
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                rows[reader.GetString(0)] = path;
+            }
+        }
+
+        return rows;
+    }
+
     public IReadOnlyList<SummaryChartBucket> GetSummaryChart(
         long fromMs,
         long toMs,
@@ -1390,7 +1486,32 @@ public sealed partial class SpanStore
                 COALESCE(SUM(CASE WHEN cost_cny IS NULL THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(cache_creation_tokens), 0),
                 COALESCE(SUM(cache_read_cost_cny), 0),
-                COALESCE(SUM(cache_write_cost_cny), 0)
+                COALESCE(SUM(cache_write_cost_cny), 0),
+                -- Latency belongs to the same row set as the token sums. It was
+                -- dropped from this projection during a rewrite, which left the
+                -- dashboard's TTFT and generation-speed cards permanently empty
+                -- even though the spans carried ttft_ms.
+                AVG(ttft_ms),
+                COUNT(ttft_ms),
+                {SpeedSql},
+                MIN(CASE WHEN error_type IS NULL AND ttft_ms > 0
+                    THEN ttft_ms END),
+                MAX(CASE WHEN error_type IS NULL AND ttft_ms > 0
+                    THEN ttft_ms END),
+                MIN(CASE WHEN error_type IS NULL
+                    AND end_time_ms > start_time_ms
+                    AND ttft_ms IS NOT NULL
+                    AND output_tokens >= 5
+                    AND end_time_ms - start_time_ms - ttft_ms >= 50
+                    THEN output_tokens * 1000.0 /
+                        (end_time_ms - start_time_ms - ttft_ms) END),
+                MAX(CASE WHEN error_type IS NULL
+                    AND end_time_ms > start_time_ms
+                    AND ttft_ms IS NOT NULL
+                    AND output_tokens >= 5
+                    AND end_time_ms - start_time_ms - ttft_ms >= 50
+                    THEN output_tokens * 1000.0 /
+                        (end_time_ms - start_time_ms - ttft_ms) END)
             FROM spans
             WHERE start_time_ms >= @from
               AND start_time_ms < @to{filter}{sourceFilter};
@@ -1425,6 +1546,15 @@ public sealed partial class SpanStore
             CacheCreationTokens = reader.GetInt64(12),
             CacheReadCostCny = reader.GetDouble(13),
             CacheWriteCostCny = reader.GetDouble(14),
+            AvgTtftMs = reader.IsDBNull(15) ? null : reader.GetDouble(15),
+            TtftSamples = reader.GetInt64(16),
+            TokensPerSecond = reader.IsDBNull(17) ? null : reader.GetDouble(17),
+            MinTtftMs = reader.IsDBNull(18) ? null : reader.GetDouble(18),
+            MaxTtftMs = reader.IsDBNull(19) ? null : reader.GetDouble(19),
+            MinTokensPerSecond =
+                reader.IsDBNull(20) ? null : reader.GetDouble(20),
+            MaxTokensPerSecond =
+                reader.IsDBNull(21) ? null : reader.GetDouble(21),
         };
     }
 

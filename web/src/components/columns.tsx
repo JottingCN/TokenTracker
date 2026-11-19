@@ -1,6 +1,11 @@
 import { Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { CallRow, ModelRow, SessionRow } from '../types';
+import type {
+  CallRow,
+  ModelRow,
+  SessionRow,
+  WorkspaceRow,
+} from '../types';
 import { ModelIcon } from './ModelIcon';
 import { t } from '../i18n';
 import {
@@ -200,6 +205,126 @@ export function modelColumns(
       width: 110,
       align: 'right',
       render: (_, row) => formatCost(row.costCny, row.unpricedCalls),
+    },
+  ];
+}
+
+export function workspaceColumns(): ColumnsType<WorkspaceRow> {
+  return [
+    {
+      title: t('workspace'),
+      key: 'workspace',
+      width: 220,
+      ellipsis: true,
+      render: (_, row) =>
+        row.workspacePath ? (
+          <Tooltip title={row.workspacePath}>
+            <span>{row.workspaceName}</span>
+          </Tooltip>
+        ) : (
+          <span className="tt-secondary">{t('workspace.unassigned')}</span>
+        ),
+    },
+    {
+      title: t('sessions'),
+      dataIndex: 'sessionsText',
+      key: 'sessions',
+      width: 80,
+      align: 'right',
+    },
+    {
+      title: t('calls'),
+      dataIndex: 'callsText',
+      key: 'calls',
+      width: 80,
+      align: 'right',
+    },
+    {
+      title: t('input.tokens'),
+      dataIndex: 'inputText',
+      key: 'input',
+      width: 110,
+      align: 'right',
+    },
+    {
+      title: t('cached.tokens'),
+      dataIndex: 'cacheText',
+      key: 'cache',
+      width: 110,
+      align: 'right',
+    },
+    {
+      title: t('hit'),
+      dataIndex: 'hitRateText',
+      key: 'hitRate',
+      width: 80,
+      align: 'right',
+    },
+    {
+      title: t('output.tokens'),
+      dataIndex: 'outputText',
+      key: 'output',
+      width: 110,
+      align: 'right',
+    },
+    {
+      title: (
+        <Tooltip
+          title={t('reasoning.tokens.are.part.of.output.their.cost.is.2')}
+        >
+          {t('reasoning.tokens')}
+        </Tooltip>
+      ),
+      dataIndex: 'reasoningText',
+      key: 'reasoning',
+      width: 110,
+      align: 'right',
+    },
+    {
+      title: t('estimated.cost'),
+      key: 'cost',
+      width: 120,
+      align: 'right',
+      render: (_, row) => formatCost(row.costCny, row.unpricedCalls),
+    },
+    {
+      title: t('workspace.share'),
+      dataIndex: 'costShareText',
+      key: 'share',
+      width: 90,
+      align: 'right',
+    },
+    {
+      title: t('model'),
+      key: 'models',
+      width: 220,
+      ellipsis: true,
+      render: (_, row) =>
+        row.models.length === 0 ? (
+          '-'
+        ) : (
+          <Tooltip
+            title={
+              <>
+                <div>{t('workspace.models.detail')}</div>
+                {row.models.map((model) => (
+                  <div key={model.model}>
+                    {`${model.model}: ${model.callsText} ${t('calls')} · ${model.costText}`}
+                  </div>
+                ))}
+              </>
+            }
+          >
+            <span>{row.modelsText}</span>
+          </Tooltip>
+        ),
+    },
+    {
+      title: t('last.seen'),
+      dataIndex: 'lastSeenText',
+      key: 'lastSeen',
+      width: 120,
+      align: 'right',
     },
   ];
 }

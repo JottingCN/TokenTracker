@@ -577,3 +577,128 @@ public sealed class OutcomeSummary
         ? "-"
         : DisplayFormat.Duration(ToolMetricAvgMs);
 }
+
+
+/// <summary>
+/// Aggregated main-call usage of one (session, model) pair. The workspace card is
+/// built from these rows so a workspace's model list comes from the calls instead
+/// of <see cref="SessionRow.Model"/> (which is only the newest model per session).
+/// </summary>
+public readonly record struct SessionModelUsage(
+    string SessionId,
+    string Model,
+    long Calls,
+    long InputTokens,
+    long CacheReadTokens,
+    long CacheCreationTokens,
+    long OutputTokens,
+    long ReasoningTokens,
+    double CostCny,
+    long UnpricedCalls,
+    long FirstSeenMs,
+    long LastSeenMs,
+    long DurationSamples,
+    double DurationSumMs);
+
+public sealed class WorkspaceModelUsage
+{
+    public required string Model { get; init; }
+    public long Calls { get; init; }
+    public long InputTokens { get; init; }
+    public long CacheReadTokens { get; init; }
+    public long OutputTokens { get; init; }
+    public long ReasoningTokens { get; init; }
+    public double CostCny { get; init; }
+
+    public string CallsText => DisplayFormat.Number(Calls);
+    public string CostText => DisplayFormat.Cost(CostCny);
+    public long Tokens => InputTokens + OutputTokens;
+}
+
+/// <summary>
+/// Usage of one workspace. A workspace is the set of sessions that resolved to the
+/// same working directory; sessions with no known directory are grouped together so
+/// the card still adds up to the range total instead of silently dropping them.
+/// </summary>
+public sealed class WorkspaceRow
+{
+    /// <summary>Normalized directory used for grouping; empty for unassigned.</summary>
+    public required string WorkspaceKey { get; init; }
+    public string? WorkspacePath { get; init; }
+    public long Sessions { get; init; }
+    public long Calls { get; init; }
+    public long InputTokens { get; init; }
+    public long CacheReadTokens { get; init; }
+    public long CacheCreationTokens { get; init; }
+    public long OutputTokens { get; init; }
+    public long ReasoningTokens { get; init; }
+    public double CostCny { get; init; }
+    public long UnpricedCalls { get; init; }
+    public double? AvgDurationMs { get; init; }
+    public double? HitRate { get; init; }
+    /// <summary>Share of the range's total cost, 0..1.</summary>
+    public double CostShare { get; init; }
+    public long FirstSeenMs { get; init; }
+    public long LastSeenMs { get; init; }
+    public List<WorkspaceModelUsage> Models { get; init; } = new();
+
+    public long TotalTokens => InputTokens + OutputTokens;
+
+    // Only the last two path segments: a sidebar width cannot hold a full path, and
+    // the client shows the full value in a tooltip.
+    public string WorkspaceName
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(WorkspacePath))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = WorkspacePath.TrimEnd('\\', '/');
+            var separator = trimmed.LastIndexOfAny(['\\', '/']);
+            if (separator <= 0)
+            {
+                return trimmed;
+            }
+
+            var parentSeparator = trimmed.LastIndexOfAny(['\\', '/'], separator - 1);
+            return parentSeparator < 0
+                ? trimmed[(separator + 1)..]
+                : trimmed[(parentSeparator + 1)..];
+        }
+    }
+
+    public string ModelsText
+    {
+        get
+        {
+            if (Models.Count == 0)
+            {
+                return "-";
+            }
+
+            var top = Models.Take(3).Select(row => row.Model).ToList();
+            var text = string.Join(", ", top);
+            return Models.Count > top.Count
+                ? $"{text} +{Models.Count - top.Count}"
+                : text;
+        }
+    }
+
+    public string SessionsText => DisplayFormat.Number(Sessions);
+    public string CallsText => DisplayFormat.Number(Calls);
+    public string InputText => DisplayFormat.Number(InputTokens);
+    public string CacheText => DisplayFormat.Number(CacheReadTokens);
+    public string CacheCreationText => DisplayFormat.Number(CacheCreationTokens);
+    public string OutputText => DisplayFormat.Number(OutputTokens);
+    public string ReasoningText => DisplayFormat.Number(ReasoningTokens);
+    public string TokensText => DisplayFormat.Number(TotalTokens);
+    public string HitRateText => DisplayFormat.Rate(HitRate);
+    public string CostText => DisplayFormat.Cost(CostCny, UnpricedCalls);
+    public string CostShareText => CostShare.ToString("P1");
+    public string AvgDurationText => DisplayFormat.Duration(AvgDurationMs);
+    public string LastSeenText => DisplayFormat.LocalTime(LastSeenMs);
+    public string FirstSeenText => DisplayFormat.LocalTime(FirstSeenMs);
+    public string ModelCountText => DisplayFormat.Number(Models.Count);
+}

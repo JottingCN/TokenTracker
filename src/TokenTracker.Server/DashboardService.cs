@@ -317,7 +317,16 @@ public sealed class DashboardService
             .Select(row => WithTitle(row, metadataCache))
             .ToList();
 
+        // Resolved paths are persisted first: the workspace card groups every
+        // session in range, including the ones outside the visible top 50, and
+        // those only have the stored mapping to go by.
         _workspaces.Flush();
+        var workspaces = BuildWorkspaces(
+            fromMs,
+            toMs,
+            source,
+            sessions.Values,
+            metadataCache);
 
         return new DashboardPayload(
             _store.GetSummary(fromMs, includeUtility: true, toMs, source),
@@ -347,7 +356,8 @@ public sealed class DashboardService
                     item.Activity,
                     item.WorkspacePath,
                     item.ModifiedAt,
-                    item.Chats)).ToList()));
+                    item.Chats)).ToList()),
+            workspaces);
     }
 
     public ModelPayload GetModel(
@@ -1489,4 +1499,206 @@ public sealed class DashboardService
         {
             Title = GetCachedMetadata(row.SessionId, cache)?.Title,
         };
+
+    /// <summary>
+    /// Groups the range by working directory. Tokens and cost follow the dashboard
+    /// totals (utility calls included, exactly like the summary and by-model cards,
+    /// so the three add up); sessions come from the session rows so event-only
+    /// sessions are still counted. Sessions without a resolved directory share one
+    /// bucket, which keeps the card adding up to the range total instead of silently
+    /// dropping rows.
+    /// </summary>
+    private List<WorkspaceRow> BuildWorkspaces(
+        long fromMs,
+        long toMs,
+        string? source,
+        IEnumerable<SessionRow> sessions,
+        Dictionary<string, SessionMetadata?> metadataCache)
+    {
+        var stored = _store.GetSessionWorkspaces();
+        // Windows and macOS compare paths case-insensitively; Linux does not.
+        var pathComparer = OperatingSystem.IsLinux()
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase;
+
+        string? ResolvePath(string sessionId)
+        {
+            if (metadataCache.TryGetValue(sessionId, out var metadata) &&
+                !string.IsNullOrWhiteSpace(metadata?.WorkspacePath))
+            {
+                return metadata!.WorkspacePath;
+            }
+
+            return stored.TryGetValue(sessionId, out var path) ? path : null;
+        }
+
+        static string KeyOf(string? path) =>
+            string.IsNullOrWhiteSpace(path)
+                ? string.Empty
+                : path.Trim().TrimEnd('\\', '/');
+
+        var byWorkspace = new Dictionary<string, WorkspaceAccumulator>(pathComparer);
+
+        WorkspaceAccumulator Get(string key)
+        {
+            if (!byWorkspace.TryGetValue(key, out var accumulator))
+            {
+                accumulator = new WorkspaceAccumulator
+                {
+                    Key = key,
+                    Path = string.IsNullOrEmpty(key) ? null : key,
+                };
+                byWorkspace[key] = accumulator;
+            }
+
+            return accumulator;
+        }
+
+        foreach (var session in sessions)
+        {
+            Get(KeyOf(ResolvePath(session.SessionId)))
+                .Sessions
+                .Add(session.SessionId);
+        }
+
+        foreach (var row in _store.GetSessionModelUsage(
+                     fromMs,
+                     toMs,
+                     source,
+                     includeUtility: true))
+        {
+            var accumulator = Get(KeyOf(ResolvePath(row.SessionId)));
+            accumulator.Sessions.Add(row.SessionId);
+            accumulator.Add(row);
+        }
+
+        var totalCost = byWorkspace.Values.Sum(entry => entry.Cost);
+        return byWorkspace.Values
+            .Select(entry => entry.Build(totalCost))
+            .OrderByDescending(row => row.CostCny)
+            .ThenByDescending(row => row.Calls)
+            .ThenBy(row => row.WorkspacePath, pathComparer)
+            .ToList();
+    }
+
+    private sealed class WorkspaceAccumulator
+    {
+        public required string Key { get; init; }
+        public string? Path { get; init; }
+        public HashSet<string> Sessions { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        private long _calls;
+        private long _input;
+        private long _cache;
+        private long _cacheCreation;
+        private long _output;
+        private long _reasoning;
+        private long _unpriced;
+        private long _durationSamples;
+        private double _durationSum;
+        private double _cost;
+        private long _firstSeen = long.MaxValue;
+        private long _lastSeen;
+        private readonly Dictionary<string, WorkspaceModelUsageBuilder> _models =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public double Cost => _cost;
+
+        public void Add(SessionModelUsage row)
+        {
+            _calls += row.Calls;
+            _input += row.InputTokens;
+            _cache += row.CacheReadTokens;
+            _cacheCreation += row.CacheCreationTokens;
+            _output += row.OutputTokens;
+            _reasoning += row.ReasoningTokens;
+            _unpriced += row.UnpricedCalls;
+            _cost += row.CostCny;
+            _durationSamples += row.DurationSamples;
+            _durationSum += row.DurationSumMs;
+            if (row.FirstSeenMs > 0 && row.FirstSeenMs < _firstSeen)
+            {
+                _firstSeen = row.FirstSeenMs;
+            }
+
+            if (row.LastSeenMs > _lastSeen)
+            {
+                _lastSeen = row.LastSeenMs;
+            }
+
+            if (!_models.TryGetValue(row.Model, out var model))
+            {
+                model = new WorkspaceModelUsageBuilder(row.Model);
+                _models[row.Model] = model;
+            }
+
+            model.Add(row);
+        }
+
+        public WorkspaceRow Build(double totalCost)
+        {
+            var models = _models.Values
+                .Select(entry => entry.Build())
+                .OrderByDescending(row => row.Tokens)
+                .ThenByDescending(row => row.CostCny)
+                .ThenBy(row => row.Model, StringComparer.Ordinal)
+                .ToList();
+            return new WorkspaceRow
+            {
+                WorkspaceKey = Key,
+                WorkspacePath = Path,
+                Sessions = Sessions.Count,
+                Calls = _calls,
+                InputTokens = _input,
+                CacheReadTokens = _cache,
+                CacheCreationTokens = _cacheCreation,
+                OutputTokens = _output,
+                ReasoningTokens = _reasoning,
+                CostCny = _cost,
+                UnpricedCalls = _unpriced,
+                HitRate = _input > 0 ? (double)_cache / _input : null,
+                AvgDurationMs = _durationSamples > 0
+                    ? _durationSum / _durationSamples
+                    : null,
+                CostShare = totalCost > 0 ? _cost / totalCost : 0,
+                FirstSeenMs = _firstSeen == long.MaxValue ? 0 : _firstSeen,
+                LastSeenMs = _lastSeen,
+                Models = models,
+            };
+        }
+    }
+
+    private sealed class WorkspaceModelUsageBuilder
+    {
+        private readonly string _model;
+        private long _calls;
+        private long _input;
+        private long _cache;
+        private long _output;
+        private long _reasoning;
+        private double _cost;
+
+        public WorkspaceModelUsageBuilder(string model) => _model = model;
+
+        public void Add(SessionModelUsage row)
+        {
+            _calls += row.Calls;
+            _input += row.InputTokens;
+            _cache += row.CacheReadTokens;
+            _output += row.OutputTokens;
+            _reasoning += row.ReasoningTokens;
+            _cost += row.CostCny;
+        }
+
+        public WorkspaceModelUsage Build() => new()
+        {
+            Model = _model,
+            Calls = _calls,
+            InputTokens = _input,
+            CacheReadTokens = _cache,
+            OutputTokens = _output,
+            ReasoningTokens = _reasoning,
+            CostCny = _cost,
+        };
+    }
 }
