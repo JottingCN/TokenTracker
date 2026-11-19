@@ -5,6 +5,10 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using System.Collections.Concurrent;
+using Microsoft.AgentHostProtocol;
+using TokenTracker.Core.Otlp;
 using TokenTracker.Core.Session;
 
 namespace TokenTracker.Core.Tests;
@@ -14,6 +18,14 @@ public sealed class AhpTitleClientTests
     [Fact]
     public async Task ResolvesLiveTitleFromLocalAhpEndpoint()
     {
+        var parsedSnapshot = JsonSerializer.Deserialize<SubscribeResult>(
+            ChatSnapshot(historyLoaded: false),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+            });
+        Assert.NotNull(parsedSnapshot?.Snapshot?.State.Chat);
+
         var root = Path.Combine(
             Path.GetTempPath(),
             "tokentracker-tests",
@@ -26,6 +38,7 @@ public sealed class AhpTitleClientTests
             "entries");
         var listener = new TcpListener(IPAddress.Loopback, 0);
         using var serverCancellation = new CancellationTokenSource();
+        var requests = new ConcurrentQueue<string>();
         Task? serverTask = null;
 
         try
@@ -48,7 +61,10 @@ public sealed class AhpTitleClientTests
                 """);
 
             serverTask = Task.Run(
-                () => ServeAsync(listener, serverCancellation.Token));
+                () => ServeAsync(listener, serverCancellation.Token, requests));
+
+            var toolHash = Hash("runtime-custom-tool");
+            Assert.Null(ToolNameResolver.Resolve(toolHash));
 
             var provider = new SessionMetadataProvider(
                 root,
@@ -73,6 +89,52 @@ public sealed class AhpTitleClientTests
             }
 
             Assert.Equal("AHP renamed title", renamed);
+
+            var resolvedToolName = toolHash;
+            for (var attempt = 0; attempt < 50 && resolvedToolName == toolHash; attempt++)
+            {
+                await Task.Delay(100);
+                resolvedToolName = ToolNameResolver.Display(toolHash);
+            }
+
+            Assert.Equal("Custom Tool", resolvedToolName);
+
+            var hashedToolName = Hash("runtime-hashed-tool");
+            var resolvedHashedToolName = hashedToolName;
+            for (var attempt = 0;
+                 attempt < 50 && resolvedHashedToolName == hashedToolName;
+                 attempt++)
+            {
+                await Task.Delay(100);
+                resolvedHashedToolName = ToolNameResolver.Display(hashedToolName);
+            }
+
+            Assert.Equal("Hashed Custom Tool", resolvedHashedToolName);
+
+            provider.RequestAhpSessionUsage("session-1");
+            AhpSessionUsage? usage = null;
+            for (var attempt = 0;
+                 attempt < 50 && usage?.TurnCount != 3;
+                 attempt++)
+            {
+                await Task.Delay(100);
+                usage = provider.GetAhpSessionUsage("session-1");
+            }
+
+            Assert.NotNull(usage);
+            Assert.Contains("fetchTurns:ahp-chat:/chat-1", requests);
+            Assert.Equal(3, usage.TurnCount);
+            Assert.True(usage.HistoryComplete);
+            Assert.Equal(2, usage.Turns.Count(turn => turn.HasUsage));
+            Assert.Contains(usage.Turns, turn =>
+                turn.TurnId == "turn-current" &&
+                turn.InputTokens == 23 &&
+                turn.CacheReadTokens == 7 &&
+                turn.OutputTokens == 5);
+            Assert.Contains(usage.Turns, turn =>
+                turn.TurnId == "turn-active" &&
+                turn.State == "in_progress" &&
+                turn.InputTokens == 10);
         }
         finally
         {
@@ -186,16 +248,18 @@ public sealed class AhpTitleClientTests
 
     private static async Task ServeAsync(
         TcpListener listener,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ConcurrentQueue<string>? requests = null)
     {
         using var client = await listener.AcceptTcpClientAsync(cancellationToken);
         await using var stream = client.GetStream();
-        await ServeStreamAsync(stream, cancellationToken);
+        await ServeStreamAsync(stream, cancellationToken, requests);
     }
 
     private static async Task ServeStreamAsync(
         Stream stream,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ConcurrentQueue<string>? requests = null)
     {
         var request = await ReadHeadersAsync(stream, cancellationToken);
         var key = request
@@ -218,6 +282,7 @@ public sealed class AhpTitleClientTests
             isServer: true,
             subProtocol: null,
             keepAliveInterval: TimeSpan.FromSeconds(20));
+        var historyLoaded = false;
         while (!cancellationToken.IsCancellationRequested &&
                socket.State == WebSocketState.Open)
         {
@@ -237,12 +302,26 @@ public sealed class AhpTitleClientTests
             }
 
             var method = methodElement.GetString();
+            var channel = root.TryGetProperty("params", out var parameters) &&
+                parameters.TryGetProperty("channel", out var channelElement)
+                    ? channelElement.GetString()
+                    : null;
+            requests?.Enqueue($"{method}:{channel}");
+            if (method == "fetchTurns")
+            {
+                historyLoaded = true;
+            }
+
             var result = method switch
             {
                 "initialize" => "{\"protocolVersion\":\"1.0.0\",\"serverSeq\":1,\"snapshots\":[]}",
                 "listSessions" => """
-                    {"items":[{"resource":"ahp-session:/session-1","provider":"copilot","title":"AHP live title","createdAt":"2026-10-30T00:00:00Z","modifiedAt":"2026-10-30T00:00:00Z","workingDirectories":["file:///d:/source/demo"]}]}
+                    {"items":[{"resource":"ahp-session:/session-1","provider":"copilot","title":"AHP live title","status":8,"createdAt":"2026-10-30T00:00:00Z","modifiedAt":"2026-10-30T00:00:00Z","workingDirectories":["file:///d:/source/demo"],"chats":[{"resource":"ahp-chat:/chat-1","title":"Chat","status":8}]}]}
                     """,
+                "subscribe" when channel == "ahp-chat:/chat-1" =>
+                    ChatSnapshot(historyLoaded),
+                "fetchTurns" => "{}",
+                "subscribe" => "{}",
                 _ => "{}",
             };
             await SendTextAsync(
@@ -259,8 +338,56 @@ public sealed class AhpTitleClientTests
                     """,
                     cancellationToken);
             }
+            else if (method == "subscribe" &&
+                     channel == "ahp-session:/session-1")
+            {
+                var hashedToolName = Hash("runtime-hashed-tool");
+                await SendTextAsync(
+                    socket,
+                    """
+                    {"jsonrpc":"2.0","method":"action","params":{"channel":"ahp-session:/session-1","serverSeq":1,"action":{"type":"session/toolCallStart","toolCallId":"call-1","turnId":"turn-1","toolName":"runtime-custom-tool","displayName":"Custom Tool"}}}
+                    """,
+                    cancellationToken);
+                await SendTextAsync(
+                    socket,
+                    """
+                    {"jsonrpc":"2.0","method":"action","params":{"channel":"ahp-session:/session-1","serverSeq":2,"action":{"type":"session/toolCallStart","toolCallId":"call-2","turnId":"turn-1","toolName":"HASH_PLACEHOLDER","displayName":"Hashed Custom Tool"}}}
+                    """.Replace("HASH_PLACEHOLDER", hashedToolName, StringComparison.Ordinal),
+                    cancellationToken);
+            }
         }
     }
+
+    private static string ChatSnapshot(bool historyLoaded)
+    {
+        var completedTurns = historyLoaded
+            ? """
+              [
+                {"id":"turn-old","startedAt":"2026-10-29T23:59:00Z","message":{"text":"hidden","origin":{"kind":"user"}},"responseParts":[]},
+                {"id":"turn-current","startedAt":"2026-10-30T00:00:00Z","duration":1200,"message":{"text":"hidden","origin":{"kind":"user"}},"responseParts":[],"usage":{"model":"gpt-test","inputTokens":23,"cacheReadTokens":7,"outputTokens":5}}
+              ]
+              """
+            : """
+              [
+                {"id":"turn-current","startedAt":"2026-10-30T00:00:00Z","duration":1200,"message":{"text":"hidden","origin":{"kind":"user"}},"responseParts":[],"usage":{"model":"gpt-test","inputTokens":23,"cacheReadTokens":7,"outputTokens":5}}
+              ]
+              """;
+        var cursor = historyLoaded ? "" : ",\"turnsNextCursor\":\"older-cursor\"";
+        return
+            "{\"snapshot\":{\"resource\":\"ahp-chat:/chat-1\",\"fromSeq\":0," +
+            "\"state\":{\"resource\":\"ahp-chat:/chat-1\",\"title\":\"Chat\"," +
+            "\"status\":8,\"modifiedAt\":\"2026-10-30T00:00:00Z\",\"turns\":" +
+            completedTurns + cursor +
+            ",\"activeTurn\":{\"id\":\"turn-active\"," +
+            "\"startedAt\":\"2026-10-30T00:01:00Z\",\"message\":" +
+            "{\"text\":\"hidden\",\"origin\":{\"kind\":\"user\"}}," +
+            "\"responseParts\":[],\"usage\":{\"model\":\"gpt-test\"," +
+            "\"inputTokens\":10,\"outputTokens\":2}}}}}";
+    }
+
+    private static string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
 
     private static async Task<string> ReadHeadersAsync(
         Stream stream,

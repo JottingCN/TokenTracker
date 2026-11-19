@@ -486,6 +486,11 @@ public sealed class DashboardService
         events.InsertRange(0, chatEvents);
 
         var metadata = _metadata.Get(sessionId);
+        _metadata.RequestAhpSessionUsage(sessionId);
+        var ahpUsage = BuildAhpSessionUsage(
+            _metadata.GetAhpSessionUsage(sessionId),
+            fromMs,
+            toMs);
         var tools = _store
             .GetSessionTools(sessionId, detailSource, fromMs, toMs)
             .ToList();
@@ -515,7 +520,67 @@ public sealed class DashboardService
                 sessionId),
             sessionId,
             metadata?.Title,
-            metadata?.WorkspacePath);
+            metadata?.WorkspacePath,
+            ahpUsage);
+    }
+
+    private static AhpSessionUsagePayload? BuildAhpSessionUsage(
+        AhpSessionUsage? usage,
+        long fromMs,
+        long toMs)
+    {
+        if (usage is null)
+        {
+            return null;
+        }
+
+        var allTime = fromMs <= 0 && toMs == long.MaxValue;
+        var hasUntimedTurns = usage.Turns.Any(turn => turn.StartedAtMs is null);
+        var turns = usage.Turns
+            .Where(turn => turn.StartedAtMs is { } start
+                ? start >= fromMs && start < toMs
+                : allTime)
+            .ToList();
+
+        return new AhpSessionUsagePayload(
+            usage.HistoryComplete && (allTime || !hasUntimedTurns),
+            allTime ? usage.TurnCount : turns.Count,
+            turns.LongCount(turn => turn.HasUsage),
+            SumKnown(turns.Select(turn => turn.InputTokens)),
+            SumKnown(turns.Select(turn => turn.CacheReadTokens)),
+            SumKnown(turns.Select(turn => turn.OutputTokens)),
+            turns
+                .OrderByDescending(turn => turn.StartedAtMs)
+                .Take(100)
+                .Select(turn => new AhpTurnUsagePayload(
+                    turn.ChatResource,
+                    turn.TurnId,
+                    turn.State,
+                    turn.StartedAtMs,
+                    turn.DurationMs,
+                    turn.Model,
+                    turn.InputTokens,
+                    turn.CacheReadTokens,
+                    turn.OutputTokens,
+                    turn.HasUsage,
+                    turn.Tools))
+                .ToList());
+    }
+
+    private static long? SumKnown(IEnumerable<long?> values)
+    {
+        var known = values
+            .Where(value => value.HasValue)
+            .Select(value => value.GetValueOrDefault());
+        var sum = 0L;
+        var found = false;
+        foreach (var value in known)
+        {
+            sum += value;
+            found = true;
+        }
+
+        return found ? sum : null;
     }
 
     private static CallSample ToSample(CallRow call) => new(

@@ -69,7 +69,30 @@ public sealed record SessionPayload(
     OutcomeSummary Outcomes,
     string SessionId,
     string? Title,
-    string? WorkspacePath);
+    string? WorkspacePath,
+    AhpSessionUsagePayload? AhpUsage = null);
+
+public sealed record AhpTurnUsagePayload(
+    string ChatResource,
+    string TurnId,
+    string State,
+    long? StartedAtMs,
+    long? DurationMs,
+    string? Model,
+    long? InputTokens,
+    long? CacheReadTokens,
+    long? OutputTokens,
+    bool HasUsage,
+    List<string> Tools);
+
+public sealed record AhpSessionUsagePayload(
+    bool HistoryComplete,
+    long TurnCount,
+    long TurnsWithUsage,
+    long? InputTokens,
+    long? CacheReadTokens,
+    long? OutputTokens,
+    List<AhpTurnUsagePayload> RecentTurns);
 
 public sealed record TracePayload(
     List<TraceNodeRow> Nodes,
@@ -240,6 +263,9 @@ public sealed record ErrorPayload(string Error);
 [JsonSerializable(typeof(CallsMessage))]
 [JsonSerializable(typeof(CallsPayload))]
 [JsonSerializable(typeof(TracePayload))]
+[JsonSerializable(typeof(AhpSessionUsagePayload))]
+[JsonSerializable(typeof(AhpTurnUsagePayload))]
+[JsonSerializable(typeof(List<AhpTurnUsagePayload>))]
 [JsonSerializable(typeof(SystemInfoPayload))]
 [JsonSerializable(typeof(SubscribeMessage))]
 [JsonSerializable(typeof(List<ModelSettingsRowPayload>))]

@@ -42,6 +42,21 @@ internal sealed class AhpTitleClient
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AhpSessionInfo> _sessions =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, SessionSummary> _sessionSummaries =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AhpSessionUsage> _sessionUsage =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _sessionUsageRequests =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _requestedUsageAt =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _requestedUsageSessions =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _loadingUsageSessions =
+        new(StringComparer.OrdinalIgnoreCase);
+    private AhpClient? _client;
+    private AhpToolNameObserver? _toolNameObserver;
+    private CancellationToken _connectionToken;
     private string _state;
 
     public AhpTitleClient(
@@ -79,6 +94,71 @@ internal sealed class AhpTitleClient
     }
 
     public event Action? StatusChanged;
+
+    public AhpSessionUsage? GetSessionUsage(string sessionId)
+    {
+        lock (_gate)
+        {
+            return _sessionUsage.TryGetValue(sessionId, out var usage)
+                ? usage
+                : null;
+        }
+    }
+
+    public void RequestSessionUsage(string? sessionId, bool refresh = false)
+    {
+        if (!IsSafeSessionId(sessionId))
+        {
+            return;
+        }
+
+        AhpClient? client;
+        AhpToolNameObserver? observer;
+        SessionSummary? summary;
+        CancellationToken cancellationToken;
+        lock (_gate)
+        {
+            var id = sessionId!;
+            _requestedUsageSessions.Add(id);
+            _requestedUsageAt[id] = DateTimeOffset.UtcNow;
+            TrimRequestedUsageSessions();
+            if (!refresh && _sessionUsage.ContainsKey(id))
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (_loadingUsageSessions.Contains(id) ||
+                refresh &&
+                _sessionUsageRequests.TryGetValue(id, out var lastRequest) &&
+                now - lastRequest < TimeSpan.FromSeconds(1))
+            {
+                return;
+            }
+
+            if (!_sessionSummaries.TryGetValue(id, out summary))
+            {
+                return;
+            }
+
+            client = _client;
+            observer = _toolNameObserver;
+            cancellationToken = _connectionToken;
+            if (client is null || observer is null || cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _loadingUsageSessions.Add(id);
+            _sessionUsageRequests[id] = now;
+        }
+
+        _ = LoadSessionUsageAsync(
+            client,
+            summary,
+            sessionId!,
+            cancellationToken);
+    }
 
     private void SetState(string state)
     {
@@ -156,8 +236,11 @@ internal sealed class AhpTitleClient
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var rootSubscription = client.AttachSubscription(
             ProtocolVersion.RootResourceUri);
+        var toolNameObserver = new AhpToolNameObserver(client, OnAhpAction);
         var eventsTask = ReadEventsAsync(
+            client,
             rootSubscription,
+            toolNameObserver,
             connectionCancellation.Token);
         try
         {
@@ -168,13 +251,37 @@ internal sealed class AhpTitleClient
                 connectionCancellation.Token);
             lock (_gate)
             {
+                _client = client;
+                _toolNameObserver = toolNameObserver;
+                _connectionToken = connectionCancellation.Token;
+            }
+
+            lock (_gate)
+            {
                 _titles.Clear();
                 _sessions.Clear();
             }
 
-            await ListSessionsAsync(client, connectionCancellation.Token);
+            var sessions = await ListSessionsAsync(
+                client,
+                connectionCancellation.Token);
+            if (sessions is not null)
+            {
+                await toolNameObserver.SyncAsync(
+                    sessions,
+                    GetRequestedUsageSessions(),
+                    connectionCancellation.Token);
+                foreach (var sessionId in GetRequestedUsageSessions())
+                {
+                    RequestSessionUsage(sessionId, refresh: true);
+                }
+            }
+
             SetState("connected");
-            _ = RefreshLoopAsync(client, connectionCancellation.Token);
+            _ = RefreshLoopAsync(
+                client,
+                toolNameObserver,
+                connectionCancellation.Token);
             await client.Completion.WaitAsync(cancellationToken);
             await eventsTask;
         }
@@ -182,10 +289,17 @@ internal sealed class AhpTitleClient
         {
             connectionCancellation.Cancel();
             rootSubscription.Dispose();
+            await toolNameObserver.DisposeAsync();
             lock (_gate)
             {
+                _client = null;
+                _toolNameObserver = null;
+                _connectionToken = default;
                 _titles.Clear();
                 _sessions.Clear();
+                _sessionSummaries.Clear();
+                _sessionUsage.Clear();
+                _loadingUsageSessions.Clear();
                 _state = "searching";
             }
 
@@ -195,6 +309,7 @@ internal sealed class AhpTitleClient
 
     private async Task RefreshLoopAsync(
         AhpClient client,
+        AhpToolNameObserver toolNameObserver,
         CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -202,7 +317,18 @@ internal sealed class AhpTitleClient
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(60), cancellationToken);
-                await ListSessionsAsync(client, cancellationToken);
+                var sessions = await ListSessionsAsync(client, cancellationToken);
+                if (sessions is not null)
+                {
+                    await toolNameObserver.SyncAsync(
+                        sessions,
+                        GetRequestedUsageSessions(),
+                        cancellationToken);
+                    foreach (var sessionId in GetRequestedUsageSessions())
+                    {
+                        RequestSessionUsage(sessionId, refresh: true);
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -215,7 +341,9 @@ internal sealed class AhpTitleClient
     }
 
     private async Task ReadEventsAsync(
+        AhpClient client,
         Subscription subscription,
+        AhpToolNameObserver toolNameObserver,
         CancellationToken cancellationToken)
     {
         try
@@ -226,12 +354,36 @@ internal sealed class AhpTitleClient
                 {
                     case SubscriptionEventSessionSummaryChanged changed:
                         UpdateSession(changed.Params.Session, changed.Params.Changes);
+                        if (changed.Params.Changes.Status is not null ||
+                            changed.Params.Changes.Chats is not null)
+                        {
+                            await RefreshToolNameSubscriptionsAsync(
+                                client,
+                                toolNameObserver,
+                                cancellationToken);
+                        }
+
+                        if (changed.Params.Changes.ModifiedAt is not null)
+                        {
+                            RequestSessionUsage(
+                                CanonicalSessionId(changed.Params.Session),
+                                refresh: true);
+                        }
+
                         break;
                     case SubscriptionEventSessionAdded added:
                         UpdateSession(added.Params.Summary);
+                        await RefreshToolNameSubscriptionsAsync(
+                            client,
+                            toolNameObserver,
+                            cancellationToken);
                         break;
                     case SubscriptionEventSessionRemoved removed:
                         RemoveSession(removed.Params.Session);
+                        await RefreshToolNameSubscriptionsAsync(
+                            client,
+                            toolNameObserver,
+                            cancellationToken);
                         break;
                     case SubscriptionEventAction action
                         when action.Envelope.Action.Value is SessionTitleChangedAction titleChanged:
@@ -251,17 +403,227 @@ internal sealed class AhpTitleClient
         }
     }
 
-    private async Task ListSessionsAsync(
+    private async Task RefreshToolNameSubscriptionsAsync(
+        AhpClient client,
+        AhpToolNameObserver toolNameObserver,
+        CancellationToken cancellationToken)
+    {
+        var sessions = await ListSessionsAsync(client, cancellationToken);
+        if (sessions is not null)
+        {
+            await toolNameObserver.SyncAsync(
+                sessions,
+                GetRequestedUsageSessions(),
+                cancellationToken);
+        }
+    }
+
+    private async Task LoadSessionUsageAsync(
+        AhpClient client,
+        SessionSummary summary,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var chats = new List<(string ChatResource, ChatState State)>();
+            foreach (var chat in summary.Chats ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(chat.Resource))
+                {
+                    continue;
+                }
+
+                var state = await LoadChatStateAsync(
+                    client,
+                    chat.Resource,
+                    cancellationToken);
+                if (state is not null)
+                {
+                    chats.Add((chat.Resource, state));
+                }
+            }
+
+            var usage = AhpSessionUsageBuilder.Build(chats);
+            lock (_gate)
+            {
+                _sessionUsage[sessionId] = usage;
+            }
+
+            StatusChanged?.Invoke();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Trace.TraceWarning(
+                "AHP session usage request failed for {0}: {1}",
+                sessionId,
+                exception.Message);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _loadingUsageSessions.Remove(sessionId);
+            }
+        }
+    }
+
+    private static async Task<ChatState?> LoadChatStateAsync(
+        AhpClient client,
+        string chatResource,
+        CancellationToken cancellationToken)
+    {
+        var state = await RequestChatStateAsync(
+            client,
+            chatResource,
+            cancellationToken);
+        if (state is null)
+        {
+            return null;
+        }
+
+        for (var page = 0;
+             page < 1_000 &&
+             state.Turns.Count < AhpSessionUsageBuilder.MaxRetainedTurns &&
+             !string.IsNullOrWhiteSpace(state.TurnsNextCursor);
+             page++)
+        {
+            var cursor = state.TurnsNextCursor;
+            try
+            {
+                await client.RequestAsync<FetchTurnsParams, FetchTurnsResult>(
+                    "fetchTurns",
+                    new FetchTurnsParams
+                    {
+                        Channel = chatResource,
+                        Cursor = cursor,
+                    },
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                Trace.TraceWarning(
+                    "AHP historical turns request failed for {0}: {1}",
+                    chatResource,
+                    exception.Message);
+                break;
+            }
+
+            var nextState = await RequestChatStateAsync(
+                client,
+                chatResource,
+                cancellationToken);
+            if (nextState is null ||
+                nextState.Turns.Count <= state.Turns.Count ||
+                string.Equals(
+                    nextState.TurnsNextCursor,
+                    cursor,
+                    StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            state = nextState;
+        }
+
+        return state;
+    }
+
+    private static async Task<ChatState?> RequestChatStateAsync(
+        AhpClient client,
+        string chatResource,
+        CancellationToken cancellationToken)
+    {
+        var result = await client.RequestAsync<SubscribeParams, SubscribeResult>(
+            "subscribe",
+            new SubscribeParams { Channel = chatResource },
+            cancellationToken);
+        return result?.Snapshot?.State.Chat;
+    }
+
+    private void OnAhpAction(string sessionId, StateAction action)
+    {
+        if (action.Value is ChatTurnStartedAction or
+            ChatUsageAction or
+            ChatToolCallStartAction or
+            ChatToolCallReadyAction or
+            ChatToolCallCompleteAction or
+            ChatToolCallResultConfirmedAction or
+            ChatToolCallAuthRequiredAction or
+            ChatToolCallAuthResolvedAction or
+            ChatTurnCompleteAction or
+            ChatTurnCancelledAction)
+        {
+            RequestSessionUsage(sessionId, refresh: true);
+        }
+    }
+
+    private IReadOnlyList<SessionSummary> GetSessionSummaries()
+    {
+        lock (_gate)
+        {
+            return _sessionSummaries.Values.ToArray();
+        }
+    }
+
+    private HashSet<string> GetRequestedUsageSessions()
+    {
+        lock (_gate)
+        {
+            return new HashSet<string>(
+                _requestedUsageSessions,
+                StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private void TrimRequestedUsageSessions()
+    {
+        while (_requestedUsageSessions.Count > 8)
+        {
+            var oldest = _requestedUsageAt
+                .OrderBy(entry => entry.Value)
+                .Select(entry => entry.Key)
+                .FirstOrDefault();
+            if (oldest is null)
+            {
+                break;
+            }
+
+            _requestedUsageSessions.Remove(oldest);
+            _requestedUsageAt.Remove(oldest);
+            _sessionUsageRequests.Remove(oldest);
+            _sessionUsage.Remove(oldest);
+        }
+    }
+
+    private static bool IsSafeSessionId(string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) ||
+            sessionId.Length > 128 ||
+            sessionId is "." or "..")
+        {
+            return false;
+        }
+
+        return sessionId.All(character =>
+            char.IsLetterOrDigit(character) || character is '-' or '_');
+    }
+
+    private async Task<IReadOnlyList<SessionSummary>?> ListSessionsAsync(
         AhpClient client,
         CancellationToken cancellationToken)
     {
+        var sessions = new List<SessionSummary>();
         string? cursor = null;
         var pages = 0;
         do
         {
             if (++pages > 1_000)
             {
-                return;
+                return null;
             }
 
             var result = await client.RequestAsync<ListSessionsParams, ListSessionsResult>(
@@ -275,11 +637,12 @@ internal sealed class AhpTitleClient
                 cancellationToken);
             if (result is null)
             {
-                return;
+                return null;
             }
 
             foreach (var session in result.Items)
             {
+                sessions.Add(session);
                 if (string.IsNullOrWhiteSpace(session.Resource) ||
                     string.IsNullOrWhiteSpace(session.Title))
                 {
@@ -309,7 +672,21 @@ internal sealed class AhpTitleClient
             cursor = result.NextCursor;
         } while (!string.IsNullOrWhiteSpace(cursor));
 
+        lock (_gate)
+        {
+            _sessionSummaries.Clear();
+            foreach (var session in sessions)
+            {
+                var sessionId = CanonicalSessionId(session.Resource);
+                if (!string.IsNullOrWhiteSpace(sessionId))
+                {
+                    _sessionSummaries[sessionId] = session;
+                }
+            }
+        }
+
         StatusChanged?.Invoke();
+        return sessions;
     }
 
     private static async Task<Stream> ConnectStreamAsync(

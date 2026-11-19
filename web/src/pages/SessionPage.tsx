@@ -26,6 +26,7 @@ import { SummaryCards } from '../components/SummaryCards';
 import { TraceTree } from '../components/TraceTree';
 import { useRealtime } from '../useRealtime';
 import type {
+  AhpTurnUsagePayload,
   AgentRunRow,
   HookSummaryRow,
   SessionEventRow,
@@ -123,6 +124,60 @@ export function SessionPage({
   const pageTitle =
     data?.title?.trim() || `${t('unnamed')} · ${shortId}`;
   const pageSubtitle = data?.workspacePath || sessionId;
+
+  const ahpTurnColumns: ColumnsType<AhpTurnUsagePayload> = [
+    {
+      title: t('time'),
+      key: 'startedAt',
+      width: 160,
+      render: (_, row) =>
+        row.startedAtMs === null ? '—' : formatTime(row.startedAtMs),
+    },
+    {
+      title: t('state'),
+      key: 'state',
+      width: 110,
+      render: (_, row) => row.state,
+    },
+    {
+      title: t('model'),
+      key: 'model',
+      width: 180,
+      ellipsis: true,
+      render: (_, row) => row.model ?? '—',
+    },
+    {
+      title: t('input.tokens'),
+      key: 'input',
+      width: 120,
+      align: 'right',
+      render: (_, row) =>
+        row.inputTokens === null ? '—' : number.format(row.inputTokens),
+    },
+    {
+      title: t('cached.tokens'),
+      key: 'cache',
+      width: 120,
+      align: 'right',
+      render: (_, row) =>
+        row.cacheReadTokens === null ? '—' : number.format(row.cacheReadTokens),
+    },
+    {
+      title: t('output.tokens'),
+      key: 'output',
+      width: 120,
+      align: 'right',
+      render: (_, row) =>
+        row.outputTokens === null ? '—' : number.format(row.outputTokens),
+    },
+    {
+      title: t('tools'),
+      key: 'tools',
+      width: 240,
+      ellipsis: true,
+      render: (_, row) => row.tools.join(', ') || '—',
+    },
+  ];
 
   useEffect(() => {
     onMeta?.({ title: pageTitle, subtitle: pageSubtitle });
@@ -546,39 +601,81 @@ export function SessionPage({
 
       <SummaryCards
         summary={summary ?? null}
-        lastCard={{
-          label: t('events'),
-          value: data ? number.format(eventTotal) : '-',
-        }}
+        lastCard={null}
       />
 
       <OutcomeCard outcomes={data?.outcomes} />
 
       <SignalCard signalHealth={data?.signalHealth} />
 
-      <LatencyCards
-        summary={summary}
-        extra={
-          <Card size="small" style={{ height: '100%' }}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {t('tool.calls')}
-            </Typography.Text>
-            <div
-              style={{
-                fontSize: 24,
-                fontWeight: 500,
-                fontVariantNumeric: 'tabular-nums',
-                lineHeight: 1.3,
-              }}
-            >
-              {data ? number.format(toolTotal) : '-'}
-            </div>
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              {data ? t('tools.count', { count: number.format(data.tools.length) }) : '-'}
-            </Typography.Text>
-          </Card>
-        }
-      />
+      <LatencyCards summary={summary} />
+
+      {data?.ahpUsage && (
+        <Card
+          size="small"
+          styles={collapsedBodyStyle(openPanels.includes('ahpUsage'))}
+          title={t('ahp.session.usage')}
+          extra={
+            <Space size={8}>
+              {!data.ahpUsage.historyComplete && (
+                <Tooltip title={t('ahp.history.may.be.incomplete')}>
+                  <Tag color="warning">{t('partial')}</Tag>
+                </Tooltip>
+              )}
+              <CollapseToggle
+                panel="ahpUsage"
+                open={openPanels.includes('ahpUsage')}
+                onToggle={togglePanel}
+              />
+            </Space>
+          }
+        >
+          {openPanels.includes('ahpUsage') && (
+            <>
+              <Space wrap size={[20, 8]} style={{ marginBottom: 12 }}>
+                <Typography.Text>
+                  {t('turns')}: {number.format(data.ahpUsage.turnCount)}
+                </Typography.Text>
+                <Typography.Text>
+                  {t('turns.with.usage')}:{' '}
+                  {number.format(data.ahpUsage.turnsWithUsage)}
+                </Typography.Text>
+                <Typography.Text>
+                  {t('input.tokens')}:{' '}
+                  {data.ahpUsage.inputTokens === null
+                    ? '—'
+                    : number.format(data.ahpUsage.inputTokens)}
+                </Typography.Text>
+                <Typography.Text>
+                  {t('cached.tokens')}:{' '}
+                  {data.ahpUsage.cacheReadTokens === null
+                    ? '—'
+                    : number.format(data.ahpUsage.cacheReadTokens)}
+                </Typography.Text>
+                <Typography.Text>
+                  {t('output.tokens')}:{' '}
+                  {data.ahpUsage.outputTokens === null
+                    ? '—'
+                    : number.format(data.ahpUsage.outputTokens)}
+                </Typography.Text>
+              </Space>
+              {!data.ahpUsage.historyComplete && (
+                <Typography.Paragraph type="secondary">
+                  {t('ahp.history.may.be.incomplete')}
+                </Typography.Paragraph>
+              )}
+              <Table
+                size="small"
+                rowKey={(row) => `${row.chatResource}:${row.turnId}`}
+                columns={ahpTurnColumns}
+                dataSource={data.ahpUsage.recentTurns}
+                pagination={false}
+                scroll={{ x: 1050, y: listHeight }}
+              />
+            </>
+          )}
+        </Card>
+      )}
 
       <Card
         size="small"

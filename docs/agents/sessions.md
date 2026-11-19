@@ -22,13 +22,17 @@
 ## 3. 元数据刷新
 
 - 扩展监听 `workspace.yaml`（500 ms 去抖）与 `agent-host.db*`（500 ms 去抖、15 秒节流）；AHP 已连接时暂停这些监控（标题与工作目录由 AHP 推送并触发广播），断开后自动恢复，状态写入 `extension.log` 的 `metadata watchers paused/resumed`。
-- AHP 客户端后台读 `local-endpoint/entries`，经命名管道/UDS/TCP 连接，订阅根通道并处理 `listSessions`、`session/titleChanged`、`root/sessionSummaryChanged`；断线 30 秒重连，**仅用于标题，不读对话内容**。协议层用官方 `Microsoft.VisualStudioCode.AgentHostProtocol` SDK，自定义 transport 只负责本地 WebSocket 握手。
+- AHP 客户端后台读 `local-endpoint/entries`，经命名管道/UDS/TCP 连接，订阅根通道并处理 `listSessions`、`session/titleChanged`、`root/sessionSummaryChanged`；断线 30 秒重连。协议层用官方 `Microsoft.VisualStudioCode.AgentHostProtocol` SDK，自定义 transport 只负责本地 WebSocket 握手。
 - `DashboardPayload.ahp` 返回 `state / connected / sessions / items`，状态变化触发实时推送。
 - 变化后调用 `POST /api/metadata-changed` 广播新快照；旧服务不支持时扩展回退为本地重新订阅。
 
 ## 4. Agent 运行（agentRuns）
 
-会话页与状态栏只有一张「Agent 运行」表，**不再提供对话轮次**：轮次口径与聊天客户端的气泡不一致（steering 插话会并入当前轮），继续维护两套数字只会互相矛盾。
+会话页同时展示 AHP 的正式轮次/用量摘要与 OTel 推导的「Agent 运行」；两者口径不同，不得混成一个指标。AHP 轮次来自 `ChatState.turns` 与 `activeTurn`，历史通过 `fetchTurns` 按 cursor 补齐；每个会话只在内存缓存摘要（最多 8 个会话、每会话最多保留 20,000 个轮次），不持久化消息、推理文本或工具输入/输出。
+
+- AHP 轮次与 usage 都按 Host 实际提供的数据展示；可选或缺失的 token 字段保持未知，不得补零。只有 `UsageInfo` 明确提供的输入、缓存读取、输出和模型才可展示；AHP 不提供费用或 cache-write，仍由现有 OTel 路径负责这些指标。
+- 时间范围筛选按 AHP 轮次开始时间执行；无时间戳的轮次只计入「全部」范围。Host 仍有历史 cursor、缓存触及 20,000 条上限或范围内存在无法定位的轮次时，标记历史不完整。最近列表最多展示 100 条，汇总仍基于当前已载入的摘要。
+- AHP 提供的工具名只用于轮次工具摘要与现有工具名哈希解析，不读取工具参数或结果正文。
 
 - 一次运行 = 一个 invoke_agent span。根 invoke_agent（父 span 不入库）是主代理运行，每条用户消息一个；挂在 execute_tool 下的 invoke_agent 是子代理运行。
 - **is_root 读取时重算**：不能按「父 id 为空」判断，根轮的父是宿主 session span（不入库），旧实现把 85/91 判成子代理。规则是「父 span 不在本地 session_events 中即为根」，与拓扑同一口径。

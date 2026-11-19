@@ -7,14 +7,12 @@ import { useGridColumns } from '../utils/useGridColumns';
 
 interface SummaryCardsProps {
   summary: Summary | null;
-  lastCard?: { label: string; value: string | number };
+  lastCard?: { label: string; value: string | number } | null;
 }
 
 interface CardDefinition {
   label: string;
   value: string | number;
-  cost?: string;
-  hint?: string;
 }
 
 export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
@@ -29,135 +27,222 @@ export function SummaryCards({ summary, lastCard }: SummaryCardsProps) {
       value: summary ? number.format(summary.calls) : '-',
     },
     {
-      label: t('input.tokens'),
-      value: summary ? number.format(summary.inputTokens) : '-',
-      cost: summary
-        ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
-        : '-',
-      hint: t('input.tokens.and.the.cost.shown.are.totals.including'),
-    },
-    {
-      label: t('cached.tokens'),
-      value: summary ? number.format(summary.cacheReadTokens) : '-',
-      cost: summary ? formatMoney(summary.cacheReadCostCny) : '-',
-      hint: t('cache.cost.includes.cache.reads.and.cache.writes'),
-    },
-    {
-      label: t('cache.write'),
-      value: summary ? number.format(summary.cacheCreationTokens) : '-',
-      cost: summary ? formatMoney(summary.cacheWriteCostCny) : '-',
-    },
-    {
-      label: t('hit.rate'),
-      value:
-        summary && summary.hitRate !== null
-          ? `${(summary.hitRate * 100).toFixed(1)}%`
-          : '-',
-    },
-    {
-      label: t('output.tokens'),
-      value: summary ? number.format(summary.outputTokens) : '-',
-      cost: summary ? formatMoney(summary.outputCostCny) : '-',
-      hint: t('output.tokens.include.reasoning.tokens.and.are.priced'),
-    },
-    {
-      label: t('reasoning.tokens'),
-      value: summary ? summary.reasoningTokensText : '-',
-      cost:
-        summary && summary.reasoningTokens > 0
-          ? formatMoney(summary.reasoningCostCny)
-          : '-',
-      hint: t('reasoning.tokens.are.part.of.output.their.cost.is'),
-    },
-    {
       label: t('estimated.cost'),
       value: summary ? formatMoney(summary.costCny) : '-',
-      hint: t('estimated.cost.input.cost.output.cost.cached.and'),
     },
-    lastCard ?? {
-      label: t('sessions'),
-      value: summary ? number.format(summary.sessions) : '-',
-    },
+    ...(lastCard === null
+      ? []
+      : [
+          lastCard ?? {
+            label: t('sessions'),
+            value: summary ? number.format(summary.sessions) : '-',
+          },
+        ]),
     {
       label: t('unpriced.calls'),
       value: summary ? number.format(summary.unpricedCalls) : '-',
     },
   ];
+  const [primaryGridRef, primaryColumns] = useGridColumns(2, 320);
   const [gridRef, columns] = useGridColumns(cards.length);
 
   return (
-    <div
-      ref={gridRef}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gap: 12,
-      }}
-    >
-      {cards.map((card) => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div
+        ref={primaryGridRef}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${primaryColumns}, minmax(0, 1fr))`,
+          gap: 12,
+        }}
+      >
         <Card
-          key={card.label}
           size="small"
-          style={{ height: '100%', minWidth: 0 }}
-          styles={{
-            body: {
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              minHeight: 64,
-            },
-          }}
+          title={
+            <Tooltip title={t('input.tokens.and.the.cost.shown.are.totals.including')}>
+              <span>{t('input.tokens')}</span>
+            </Tooltip>
+          }
+          style={{ minWidth: 0 }}
+          styles={{ body: { minHeight: 118 } }}
         >
-          <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
-            {card.hint ? (
-              <Tooltip title={card.hint}>
-                <span style={{ cursor: 'help', borderBottom: '1px dotted currentColor' }}>
-                  {card.label}
-                </span>
-              </Tooltip>
-            ) : (
-              card.label
-            )}
-          </div>
           <div
             style={{
               display: 'flex',
               alignItems: 'baseline',
               flexWrap: 'wrap',
-              columnGap: 8,
-              rowGap: 2,
+              gap: 12,
               lineHeight: 1.3,
-              minWidth: 0,
             }}
           >
             <span
               style={{
-                fontSize: 'clamp(16px, 1.5vw, 22px)',
-                fontWeight: 500,
+                fontSize: 'clamp(24px, 2.4vw, 36px)',
+                fontWeight: 600,
                 fontVariantNumeric: 'tabular-nums',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                maxWidth: '100%',
               }}
             >
-              {card.value}
+              {summary ? number.format(summary.inputTokens) : '-'}
             </span>
-            {card.cost !== undefined && (
-              <span
-                style={{
-                  fontSize: 12,
-                  color: token.colorTextSecondary,
-                  fontVariantNumeric: 'tabular-nums',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {card.cost}
-              </span>
-            )}
+            <span style={{ color: token.colorTextSecondary }}>
+              {summary
+                ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
+                : '-'}
+            </span>
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              gap: 8,
+              marginTop: 16,
+            }}
+          >
+            <BreakdownMetric
+              label={t('cached.tokens')}
+              value={summary ? number.format(summary.cacheReadTokens) : '-'}
+              detail={summary ? formatMoney(summary.cacheReadCostCny) : '-'}
+            />
+            <BreakdownMetric
+              label={t('cache.write')}
+              value={summary ? number.format(summary.cacheCreationTokens) : '-'}
+              detail={summary ? formatMoney(summary.cacheWriteCostCny) : '-'}
+            />
+            <BreakdownMetric
+              label={t('hit.rate')}
+              value={
+                summary && summary.hitRate !== null
+                  ? `${(summary.hitRate * 100).toFixed(1)}%`
+                  : '-'
+              }
+            />
           </div>
         </Card>
-      ))}
+        <Card
+          size="small"
+          title={
+            <Tooltip title={t('output.tokens.include.reasoning.tokens.and.are.priced')}>
+              <span>{t('output.tokens')}</span>
+            </Tooltip>
+          }
+          style={{ minWidth: 0 }}
+          styles={{ body: { minHeight: 118 } }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              flexWrap: 'wrap',
+              gap: 12,
+              lineHeight: 1.3,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 'clamp(24px, 2.4vw, 36px)',
+                fontWeight: 600,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {summary ? number.format(summary.outputTokens) : '-'}
+            </span>
+            <span style={{ color: token.colorTextSecondary }}>
+              {summary ? formatMoney(summary.outputCostCny) : '-'}
+            </span>
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <BreakdownMetric
+              label={t('reasoning.tokens')}
+              value={summary ? summary.reasoningTokensText : '-'}
+              detail={
+                summary && summary.reasoningTokens > 0
+                  ? formatMoney(summary.reasoningCostCny)
+                  : '-'
+              }
+            />
+          </div>
+        </Card>
+      </div>
+      <div
+        ref={gridRef}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+          gap: 12,
+        }}
+      >
+        {cards.map((card) => (
+          <Card
+            key={card.label}
+            size="small"
+            style={{ height: '100%', minWidth: 0 }}
+            title={card.label}
+            styles={{ body: { minHeight: 28 } }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                flexWrap: 'wrap',
+                columnGap: 8,
+                rowGap: 2,
+                lineHeight: 1.3,
+                minWidth: 0,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 'clamp(16px, 1.5vw, 22px)',
+                  fontWeight: 500,
+                  fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  maxWidth: '100%',
+                }}
+              >
+                {card.value}
+              </span>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BreakdownMetric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
+  const { token } = theme.useToken();
+
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div
+        style={{
+          fontSize: 11,
+          color: token.colorTextSecondary,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </div>
+      <div style={{ fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>
+        {value}
+      </div>
+      {detail !== undefined && (
+        <div style={{ fontSize: 11, color: token.colorTextSecondary }}>
+          {detail}
+        </div>
+      )}
     </div>
   );
 }

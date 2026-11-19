@@ -14,6 +14,9 @@ public static class ToolNameResolver
     private static readonly Lazy<Dictionary<string, string>> Hashed =
         new(BuildIndex);
 
+    private static readonly ConcurrentDictionary<string, string> Discovered =
+        new(StringComparer.Ordinal);
+
     private static readonly ConcurrentDictionary<string, string?> Cache =
         new(StringComparer.Ordinal);
 
@@ -164,12 +167,43 @@ public static class ToolNameResolver
 
         return Cache.GetOrAdd(
             candidate,
-            key => Hashed.Value.TryGetValue(key, out var resolved) ? resolved : null);
+            key => Hashed.Value.TryGetValue(key, out var resolved)
+                ? resolved
+                : Discovered.TryGetValue(key, out var discovered) ? discovered : null);
     }
 
     // Tables and tooltips show this instead of the raw value.
     public static string Display(string? name) =>
         Resolve(name) ?? (string.IsNullOrWhiteSpace(name) ? "-" : name);
+
+    internal static void Register(string? toolName, string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return;
+        }
+
+        var candidate = toolName.Trim();
+        var display = string.IsNullOrWhiteSpace(displayName)
+            ? candidate
+            : displayName.Trim();
+        var hash = IsSha256(candidate)
+            ? candidate.ToLowerInvariant()
+            : HashName(candidate);
+        if (Hashed.Value.ContainsKey(hash))
+        {
+            return;
+        }
+
+        if (Discovered.Count >= 4096 && !Discovered.ContainsKey(hash))
+        {
+            Discovered.Clear();
+            Cache.Clear();
+        }
+
+        Discovered[hash] = display;
+        Cache.TryRemove(hash, out _);
+    }
 
     private static Dictionary<string, string> BuildIndex()
     {
@@ -179,12 +213,31 @@ public static class ToolNameResolver
         var index = new Dictionary<string, string>(names.Length, StringComparer.Ordinal);
         foreach (var name in names)
         {
-            var hash = Convert.ToHexString(
-                    SHA256.HashData(Encoding.UTF8.GetBytes(name)))
-                .ToLowerInvariant();
-            index[hash] = name;
+            index[HashName(name)] = name;
         }
 
         return index;
+    }
+
+    private static string HashName(string name) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name)))
+            .ToLowerInvariant();
+
+    private static bool IsSha256(string value)
+    {
+        if (value.Length != 64)
+        {
+            return false;
+        }
+
+        foreach (var character in value)
+        {
+            if (!char.IsAsciiHexDigit(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
