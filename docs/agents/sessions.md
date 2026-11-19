@@ -28,7 +28,7 @@
 
 ## 4. Agent 运行（agentRuns）
 
-会话页同时展示 AHP 的正式轮次/用量摘要与 OTel 推导的「Agent 运行」；两者口径不同，不得混成一个指标。AHP 轮次来自 `ChatState.turns` 与 `activeTurn`，历史通过 `fetchTurns` 按 cursor 补齐；每个会话只在内存缓存摘要（最多 8 个会话、每会话最多保留 20,000 个轮次），不持久化消息、推理文本或工具输入/输出。
+会话页同时展示 AHP 的正式轮次/用量摘要与 OTel 推导的「Agent 运行」；两者口径不同，不得混成一个指标。AHP 轮次来自 `ChatState.turns` 与 `activeTurn`，历史通过 `fetchTurns` 按 cursor 补齐；OTel 会话 ID 可能对应 AHP chat resource，查询时先解析到所属 AHP session，再汇总其 chats；每个会话只在内存缓存摘要（最多 8 个会话、每会话最多保留 20,000 个轮次），不持久化消息、推理文本或工具输入/输出。
 
 - AHP 轮次与 usage 都按 Host 实际提供的数据展示；可选或缺失的 token 字段保持未知，不得补零。只有 `UsageInfo` 明确提供的输入、缓存读取、输出和模型才可展示；AHP 不提供费用或 cache-write，仍由现有 OTel 路径负责这些指标。
 - 时间范围筛选按 AHP 轮次开始时间执行；无时间戳的轮次只计入「全部」范围。Host 仍有历史 cursor、缓存触及 20,000 条上限或范围内存在无法定位的轮次时，标记历史不完整。最近列表最多展示 100 条，汇总仍基于当前已载入的摘要。

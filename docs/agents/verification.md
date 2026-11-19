@@ -6,9 +6,9 @@
 
 | 改动 | 必须执行 | 当前基线 |
 | --- | --- | --- |
-| Core 逻辑（解析、存储、定价、元数据） | `dotnet test --project tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release` | 104 项 |
+| Core 逻辑（解析、存储、定价、元数据） | `dotnet test --project tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release` | 106 项 |
 | 看板 `web/` | `cd web && npm run build`（内含 `tsc --noEmit`） | 构建通过 |
-| 扩展 `vscode-extension/` | `npm run compile` + `npm test` | 17 项 |
+| 扩展 `vscode-extension/` | `npm run compile` + `npm test` | 19 项 |
 | 服务端 / 路由 / 序列化 | `npm run sync-server`（AOT 成功）+ `npm run smoke` | 71 项 |
 | 文档（本目录） | 检查链接与路径是否仍然存在 | — |
 
@@ -47,6 +47,7 @@ Code.exe --new-window \
 ## 5. 禁止事项
 
 - 不要修改或写入真实的 `~/.copilot/session-state`、`agent-host.db`、`state.vscdb` 或用户数据库；验证请复制到临时目录。
+- 事件日志监控测试必须使用临时日志目录和临时数据库，覆盖首次启动跳过历史、游标重启续读与超大行后的恢复。
 - 不要终止用户正在使用的 `TokenTracker.Server`（默认端口 4318）或关闭用户的 VS Code 窗口；只清理自己启动的测试实例。
 - 不要上传任何数据或引入遥测。
 - 不要删除、重建或 DROP 用户数据；迁移只能附加式（见[存储](storage.md)第 3 节）。

@@ -21,6 +21,11 @@ public sealed record StoredModelProfile(
     string? IconImage,
     long UpdatedAtMs);
 
+public sealed record SessionEventLogReadState(
+    string FileKey,
+    long Offset,
+    long LastWriteTicks);
+
 public sealed partial class SpanStore
 {
     private const string SourceCaseSql =
@@ -62,7 +67,7 @@ public sealed partial class SpanStore
     /// <see cref="Initialize"/> using only additive statements: an older build must
     /// still be able to open and read the same file.
     /// </summary>
-    public const int SchemaVersion = 4;
+    public const int SchemaVersion = 5;
 
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -416,6 +421,12 @@ public sealed partial class SpanStore
                 session_id TEXT PRIMARY KEY,
                 workspace_path TEXT NOT NULL,
                 updated_at_ms INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS session_event_log_read_states (
+                file_key TEXT PRIMARY KEY,
+                offset INTEGER NOT NULL,
+                last_write_ticks INTEGER NOT NULL
             );
             """;
         command.ExecuteNonQuery();
@@ -1101,6 +1112,110 @@ public sealed partial class SpanStore
         command.Parameters.AddWithValue("@key", key);
         command.Parameters.AddWithValue("@value", value);
         command.ExecuteNonQuery();
+    }
+
+    public IReadOnlyList<SessionEventLogReadState> GetSessionEventLogReadStates()
+    {
+        if (IsNewerSchema)
+        {
+            return Array.Empty<SessionEventLogReadState>();
+        }
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT file_key, offset, last_write_ticks
+            FROM session_event_log_read_states;
+            """;
+        using var reader = command.ExecuteReader();
+        var states = new List<SessionEventLogReadState>();
+        while (reader.Read())
+        {
+            states.Add(new SessionEventLogReadState(
+                reader.GetString(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2)));
+        }
+
+        return states;
+    }
+
+    public void SaveSessionEventLogReadStates(
+        IReadOnlyList<SessionEventLogReadState> states)
+    {
+        if (IsNewerSchema)
+        {
+            return;
+        }
+
+        _writeLock.Wait();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO session_event_log_read_states
+                        (file_key, offset, last_write_ticks)
+                    VALUES (@file_key, @offset, @last_write_ticks)
+                    ON CONFLICT(file_key) DO UPDATE SET
+                        offset = excluded.offset,
+                        last_write_ticks = excluded.last_write_ticks;
+                    """;
+                var fileKey = command.Parameters.Add("@file_key", SqliteType.Text);
+                var offset = command.Parameters.Add("@offset", SqliteType.Integer);
+                var lastWriteTicks = command.Parameters.Add(
+                    "@last_write_ticks",
+                    SqliteType.Integer);
+
+                foreach (var state in states)
+                {
+                    fileKey.Value = state.FileKey;
+                    offset.Value = state.Offset;
+                    lastWriteTicks.Value = state.LastWriteTicks;
+                    command.ExecuteNonQuery();
+                }
+            }
+
+            var fileKeys = states
+                .Select(state => state.FileKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                if (fileKeys.Length == 0)
+                {
+                    command.CommandText =
+                        "DELETE FROM session_event_log_read_states;";
+                }
+                else
+                {
+                    var parameters = fileKeys
+                        .Select((_, index) => $"@file_key_{index}")
+                        .ToArray();
+                    command.CommandText =
+                        "DELETE FROM session_event_log_read_states " +
+                        $"WHERE file_key NOT IN ({string.Join(", ", parameters)});";
+                    for (var index = 0; index < fileKeys.Length; index++)
+                    {
+                        command.Parameters.AddWithValue(
+                            parameters[index],
+                            fileKeys[index]);
+                    }
+                }
+
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     private static bool EventExists(

@@ -22,6 +22,7 @@ VS Code 扩展（状态栏、Tip、命令、AHP 标题通道）  浏览器 / AHP
 - **WinUI 桌面端已删除**（提交 `835671a 删除app`）。不要按 `TokenTracker.App`、Windows App SDK、`TableRowFactory` 或 TableView 约束写代码或做规划。
 - 所有数据留在本机，不采集、不上传对话内容（默认 `captureContent: false`）。
 - 时间范围、峰谷价格一律按北京时间（UTC+8）。
+- `SessionEventLogMonitor` 只为实时刷新读取 `events.jsonl`：首次启动跳过历史行，之后每次按文件分块追读；SQLite 仅持久化路径哈希与已提交字节偏移，重启后从游标续读，不保存事件正文。
 
 ## 2. 目录
 

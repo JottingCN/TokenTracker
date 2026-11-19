@@ -39,7 +39,7 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.27",
+    "1.0.28",
     1,
     port,
     startedAt,
@@ -122,7 +122,8 @@ var hub = new RealtimeHub();
 metadata.AhpStatusChanged += hub.NotifyChanged;
 var sessionEventMonitor = new SessionEventLogMonitor(
     metadata.GetAccessInfo().SessionRoot,
-    hub);
+    hub,
+    store);
 _ = Task.Run(
     () => sessionEventMonitor.RunAsync(app.Lifetime.ApplicationStopping),
     app.Lifetime.ApplicationStopping);

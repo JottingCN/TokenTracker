@@ -52,10 +52,10 @@ finish_reasons, received_at_ms
 
 ## 3. 迁移与版本
 
-- 本地库只存需要的数据：span 投影、`session_events`、`agent_runs`、outcome `metric_points`、`window_session_links`、`session_workspaces`、价格、节假日、设置。不保存原始 attributes、日志事件、可由 span 推导的指标；会话标题只查询时解析，不入库。
+- 本地库只存需要的数据：span 投影、`session_events`、`agent_runs`、outcome `metric_points`、`window_session_links`、`session_workspaces`、事件日志读取游标、价格、节假日、设置。不保存原始 attributes、日志事件正文或可由 span 推导的指标；事件日志游标只存文件路径哈希、字节偏移和更新时间戳，会话标题只查询时解析，不入库。
 - schema 变更使用幂等迁移（`EnsureColumn` / `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`）。**建索引必须放在列迁移之后**：索引引用尚未添加的列会让 DDL 批次中断、后续表缺失并在启动时崩溃。
 - **数据库必须向前兼容**：升级只能附加式迁移，**禁止** `DROP TABLE` / `DROP COLUMN` / 清库重建 / 版本不匹配时重建或清空。旧库原地补齐，任何一行用户数据都不能因版本变化被删除。
-- 版本标记用 `PRAGMA user_version`（`SpanStore.SchemaVersion`，当前 **4**）。新增列/表时把常量 +1 并在 `Initialize` 追加幂等语句；启动时写当前值。读到 `user_version > SchemaVersion`（旧程序打开新库）进入兼容模式：只告警、不改库、不删数据，系统信息里显示 `schemaFromNewerBuild`。
+- 版本标记用 `PRAGMA user_version`（`SpanStore.SchemaVersion`，当前 **5**）。新增列/表时把常量 +1 并在 `Initialize` 追加幂等语句；启动时写当前值。读到 `user_version > SchemaVersion`（旧程序打开新库）进入兼容模式：只告警、不改库、不删数据，系统信息里显示 `schemaFromNewerBuild`。
 - 唯一允许的删除路径是数据保留期（`DeleteOlderThan`，由 `retention_days` 触发）与按模型删除设置。**不要恢复 `SlimStorage`**（它会删 `metric_points`、DROP 列与 `otel_log_events` 表）。
 - 工作目录来源（AHP `workingDirectories` / `agent-host.db` / `workspace.yaml`）大多要求 Agent Host 在线。服务端解析成功时把 `session_id → workspace_path` 写 `session_workspaces`，解析不到回退读表，因此 AHP 掉线后归属不丢；`DeleteOlderThan` 会清掉已无 span 的会话缓存。
 

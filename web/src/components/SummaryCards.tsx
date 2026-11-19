@@ -15,10 +15,12 @@ interface SummaryCardsProps {
 export function SummaryCards({ summary, turnCount }: SummaryCardsProps) {
   const { locale, t } = useUi();
   const { token } = theme.useToken();
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(true);
   useMoney();
   const number = new Intl.NumberFormat(intlLocale(locale));
   const [gridRef, columns] = useGridColumns(4, 170);
+  const detailColumns = Math.min(columns, 2);
+  const sectionColumns = columns > 2 ? 2 : 1;
 
   const cards = [
     {
@@ -126,51 +128,75 @@ export function SummaryCards({ summary, turnCount }: SummaryCardsProps) {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: `repeat(${Math.min(columns, 6)}, minmax(0, 1fr))`,
+              gridTemplateColumns: `repeat(${sectionColumns}, minmax(0, 1fr))`,
               gap: 12,
             }}
           >
-            <BreakdownMetric
-              label={t('input.tokens')}
-              value={summary ? number.format(summary.inputTokens) : '-'}
-              detail={
-                summary
-                  ? formatMoney(summary.uncachedCostCny + summary.cacheCostCny)
-                  : '-'
-              }
-            />
-            <BreakdownMetric
-              label={t('cached.tokens')}
-              value={summary ? number.format(summary.cacheReadTokens) : '-'}
-              detail={summary ? formatMoney(summary.cacheReadCostCny) : '-'}
-            />
-            <BreakdownMetric
-              label={t('cache.write')}
-              value={summary ? number.format(summary.cacheCreationTokens) : '-'}
-              detail={summary ? formatMoney(summary.cacheWriteCostCny) : '-'}
-            />
-            <BreakdownMetric
-              label={t('hit.rate')}
-              value={
-                summary && summary.hitRate !== null
-                  ? `${(summary.hitRate * 100).toFixed(1)}%`
-                  : '-'
-              }
-            />
-            <BreakdownMetric
-              label={t('output.tokens')}
-              value={summary ? number.format(summary.outputTokens) : '-'}
-              detail={summary ? formatMoney(summary.outputCostCny) : '-'}
-            />
-            <BreakdownMetric
-              label={t('reasoning.tokens')}
-              value={summary ? summary.reasoningTokensText : '-'}
-              detail={
-                summary && summary.reasoningTokens > 0
-                  ? formatMoney(summary.reasoningCostCny)
-                  : '-'
-              }
-            />
+            <Card size="small" title={t('input')}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${detailColumns}, minmax(0, 1fr))`,
+                  gap: 12,
+                }}
+              >
+                <BreakdownMetric
+                  label={t('input.tokens')}
+                  value={summary ? number.format(summary.inputTokens) : '-'}
+                  detail={
+                    summary
+                      ? formatMoney(
+                          summary.uncachedCostCny + summary.cacheCostCny,
+                        )
+                      : '-'
+                  }
+                />
+                <BreakdownMetric
+                  label={t('cached.tokens')}
+                  value={summary ? number.format(summary.cacheReadTokens) : '-'}
+                  detail={summary ? formatMoney(summary.cacheReadCostCny) : '-'}
+                />
+                <BreakdownMetric
+                  label={t('cache.write')}
+                  value={
+                    summary ? number.format(summary.cacheCreationTokens) : '-'
+                  }
+                  detail={summary ? formatMoney(summary.cacheWriteCostCny) : '-'}
+                />
+                <BreakdownMetric
+                  label={t('hit.rate')}
+                  value={
+                    summary && summary.hitRate !== null
+                      ? `${(summary.hitRate * 100).toFixed(1)}%`
+                      : '-'
+                  }
+                />
+              </div>
+            </Card>
+            <Card size="small" title={t('output')}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${detailColumns}, minmax(0, 1fr))`,
+                  gap: 12,
+                }}
+              >
+                <BreakdownMetric
+                  label={t('output.tokens')}
+                  value={summary ? number.format(summary.outputTokens) : '-'}
+                  detail={summary ? formatMoney(summary.outputCostCny) : '-'}
+                />
+                <BreakdownMetric
+                  label={t('reasoning.tokens')}
+                  value={summary ? summary.reasoningTokensText : '-'}
+                  detail={
+                    summary && summary.reasoningTokens > 0
+                      ? formatMoney(summary.reasoningCostCny)
+                      : '-'
+                  }
+                />
+              </div>
+            </Card>
           </div>
         )}
       </Card>

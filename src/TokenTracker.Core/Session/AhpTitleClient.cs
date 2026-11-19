@@ -44,6 +44,10 @@ internal sealed class AhpTitleClient
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, SessionSummary> _sessionSummaries =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _chatSessionOwners =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _ambiguousChatSessionIds =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AhpSessionUsage> _sessionUsage =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _sessionUsageRequests =
@@ -99,7 +103,8 @@ internal sealed class AhpTitleClient
     {
         lock (_gate)
         {
-            return _sessionUsage.TryGetValue(sessionId, out var usage)
+            var ownerId = ResolveUsageSessionId(sessionId);
+            return _sessionUsage.TryGetValue(ownerId, out var usage)
                 ? usage
                 : null;
         }
@@ -114,13 +119,27 @@ internal sealed class AhpTitleClient
 
         AhpClient? client;
         AhpToolNameObserver? observer;
-        SessionSummary? summary;
+        SessionSummary summary;
+        string usageSessionId;
         CancellationToken cancellationToken;
         lock (_gate)
         {
-            var id = sessionId!;
-            _requestedUsageSessions.Add(id);
-            _requestedUsageAt[id] = DateTimeOffset.UtcNow;
+            var requestedId = sessionId!;
+            var id = ResolveUsageSessionId(requestedId);
+            usageSessionId = id;
+            if (!_sessionSummaries.TryGetValue(id, out var foundSummary) ||
+                foundSummary is null)
+            {
+                _requestedUsageSessions.Add(requestedId);
+                _requestedUsageAt[requestedId] = DateTimeOffset.UtcNow;
+                TrimRequestedUsageSessions();
+                return;
+            }
+            summary = foundSummary;
+
+            var trackedId = id;
+            _requestedUsageSessions.Add(trackedId);
+            _requestedUsageAt[trackedId] = DateTimeOffset.UtcNow;
             TrimRequestedUsageSessions();
             if (!refresh && _sessionUsage.ContainsKey(id))
             {
@@ -132,11 +151,6 @@ internal sealed class AhpTitleClient
                 refresh &&
                 _sessionUsageRequests.TryGetValue(id, out var lastRequest) &&
                 now - lastRequest < TimeSpan.FromSeconds(1))
-            {
-                return;
-            }
-
-            if (!_sessionSummaries.TryGetValue(id, out summary))
             {
                 return;
             }
@@ -156,7 +170,7 @@ internal sealed class AhpTitleClient
         _ = LoadSessionUsageAsync(
             client,
             summary,
-            sessionId!,
+            usageSessionId,
             cancellationToken);
     }
 
@@ -260,6 +274,8 @@ internal sealed class AhpTitleClient
             {
                 _titles.Clear();
                 _sessions.Clear();
+                _chatSessionOwners.Clear();
+                _ambiguousChatSessionIds.Clear();
             }
 
             var sessions = await ListSessionsAsync(
@@ -298,6 +314,8 @@ internal sealed class AhpTitleClient
                 _titles.Clear();
                 _sessions.Clear();
                 _sessionSummaries.Clear();
+                _chatSessionOwners.Clear();
+                _ambiguousChatSessionIds.Clear();
                 _sessionUsage.Clear();
                 _loadingUsageSessions.Clear();
                 _state = "searching";
@@ -573,10 +591,57 @@ internal sealed class AhpTitleClient
     {
         lock (_gate)
         {
-            return new HashSet<string>(
-                _requestedUsageSessions,
-                StringComparer.OrdinalIgnoreCase);
+            return _requestedUsageSessions
+                .Select(ResolveUsageSessionId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    private string ResolveUsageSessionId(string sessionId) =>
+        _chatSessionOwners.TryGetValue(sessionId, out var ownerId)
+            ? ownerId
+            : sessionId;
+
+    private void AddChatSessionOwner(string chatResource, string ownerId)
+    {
+        var chatId = CanonicalSessionId(chatResource);
+        if (chatId is null || _ambiguousChatSessionIds.Contains(chatId))
+        {
+            return;
+        }
+
+        if (_chatSessionOwners.TryGetValue(chatId, out var existingOwner) &&
+            !string.Equals(existingOwner, ownerId, StringComparison.OrdinalIgnoreCase))
+        {
+            _chatSessionOwners.Remove(chatId);
+            _ambiguousChatSessionIds.Add(chatId);
+            return;
+        }
+
+        _chatSessionOwners[chatId] = ownerId;
+    }
+
+    private void NormalizeRequestedUsageSessions()
+    {
+        var timestamps = _requestedUsageAt.ToArray();
+        _requestedUsageSessions.Clear();
+        _requestedUsageAt.Clear();
+        foreach (var (sessionId, requestedAt) in timestamps)
+        {
+            var ownerId = ResolveUsageSessionId(sessionId);
+            if (!_requestedUsageAt.TryGetValue(ownerId, out var existing) ||
+                requestedAt > existing)
+            {
+                _requestedUsageAt[ownerId] = requestedAt;
+            }
+        }
+
+        foreach (var sessionId in _requestedUsageAt.Keys)
+        {
+            _requestedUsageSessions.Add(sessionId);
+        }
+
+        TrimRequestedUsageSessions();
     }
 
     private void TrimRequestedUsageSessions()
@@ -667,6 +732,7 @@ internal sealed class AhpTitleClient
                         }
                     }
                 }
+
             }
 
             cursor = result.NextCursor;
@@ -675,14 +741,25 @@ internal sealed class AhpTitleClient
         lock (_gate)
         {
             _sessionSummaries.Clear();
+            _chatSessionOwners.Clear();
+            _ambiguousChatSessionIds.Clear();
             foreach (var session in sessions)
             {
                 var sessionId = CanonicalSessionId(session.Resource);
                 if (!string.IsNullOrWhiteSpace(sessionId))
                 {
                     _sessionSummaries[sessionId] = session;
+                    foreach (var chat in session.Chats ?? [])
+                    {
+                        if (!string.IsNullOrWhiteSpace(chat.Resource))
+                        {
+                            AddChatSessionOwner(chat.Resource, sessionId);
+                        }
+                    }
                 }
             }
+
+            NormalizeRequestedUsageSessions();
         }
 
         StatusChanged?.Invoke();

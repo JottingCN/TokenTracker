@@ -111,17 +111,18 @@ public sealed class AhpTitleClientTests
 
             Assert.Equal("Hashed Custom Tool", resolvedHashedToolName);
 
-            provider.RequestAhpSessionUsage("session-1");
+            provider.RequestAhpSessionUsage("chat-1");
             AhpSessionUsage? usage = null;
             for (var attempt = 0;
                  attempt < 50 && usage?.TurnCount != 3;
                  attempt++)
             {
                 await Task.Delay(100);
-                usage = provider.GetAhpSessionUsage("session-1");
+                usage = provider.GetAhpSessionUsage("chat-1");
             }
 
             Assert.NotNull(usage);
+            Assert.Same(usage, provider.GetAhpSessionUsage("session-1"));
             Assert.Contains("fetchTurns:ahp-chat:/chat-1", requests);
             Assert.Equal(3, usage.TurnCount);
             Assert.True(usage.HistoryComplete);

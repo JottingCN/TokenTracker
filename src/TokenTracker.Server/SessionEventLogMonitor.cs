@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using TokenTracker.Core.Storage;
 
 namespace TokenTracker.Server;
 
@@ -18,26 +20,42 @@ public sealed class SessionEventLogMonitor
     private const int MaxSessions = 256;
     private const int MaxSeenEventIds = 4096;
     private const int ReadChunkBytes = 256 * 1024;
+    private const int MaxEventLineBytes = 2 * 1024 * 1024;
+    private const int MaxPendingBytes = 32 * 1024 * 1024;
+    private const int InitialOffsetScanBytes = 64 * 1024;
+    private static readonly StringComparer FilePathComparer =
+        OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
     private readonly ConcurrentDictionary<string, SessionFileState> _states =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(FilePathComparer);
+    private readonly Dictionary<string, SessionEventLogReadState> _persistedStates;
     private readonly LinkedList<string> _seenEventOrder = new();
     private readonly HashSet<string> _seenEventIds =
         new(StringComparer.Ordinal);
     private readonly object _seenGate = new();
     private readonly string _root;
     private readonly RealtimeHub _hub;
+    private readonly SpanStore? _store;
     private long _eventsRead;
     private long _uniqueEvents;
     private long _lastReadMs;
+    private bool _stateDirty = true;
     private string? _lastError;
     private volatile bool _running;
 
     public SessionEventLogMonitor(
         string root,
-        RealtimeHub hub)
+        RealtimeHub hub,
+        SpanStore? store = null)
     {
         _root = root;
         _hub = hub;
+        _store = store;
+        _persistedStates = store?.GetSessionEventLogReadStates()
+            .ToDictionary(state => state.FileKey, StringComparer.Ordinal)
+            ?? new Dictionary<string, SessionEventLogReadState>(
+                StringComparer.Ordinal);
     }
 
     public SessionEventLogStatus GetStatus() => new(
@@ -81,18 +99,20 @@ public sealed class SessionEventLogMonitor
             {
                 _lastError = null;
                 PruneMissingSessions();
+                PersistReadStates();
                 return;
             }
 
             var files = Directory.EnumerateDirectories(_root)
                 .Select(directory => Path.Combine(directory, "events.jsonl"))
                 .Where(File.Exists)
+                .OrderBy(file => file, FilePathComparer)
                 .Take(MaxSessions)
                 .ToArray();
 
             var present = new HashSet<string>(
                 files,
-                StringComparer.OrdinalIgnoreCase);
+                FilePathComparer);
 
             foreach (var file in files)
             {
@@ -104,11 +124,15 @@ public sealed class SessionEventLogMonitor
             {
                 if (!present.Contains(pair.Key))
                 {
-                    _states.TryRemove(pair.Key, out _);
+                    if (_states.TryRemove(pair.Key, out _))
+                    {
+                        _stateDirty = true;
+                    }
                 }
             }
 
             _lastError = null;
+            PersistReadStates();
         }
         catch (OperationCanceledException)
         {
@@ -127,13 +151,26 @@ public sealed class SessionEventLogMonitor
         CancellationToken cancellationToken)
     {
         var info = new FileInfo(file);
+        var fileKey = GetFileKey(file);
         var state = _states.GetOrAdd(
             file,
-            static (path, _) => new SessionFileState(path),
-            info);
+            _ => CreateFileState(fileKey));
 
         var length = info.Length;
         var lastWriteTicks = info.LastWriteTimeUtc.Ticks;
+        if (!state.Initialized)
+        {
+            state.Offset = await FindInitialOffsetAsync(
+                file,
+                length,
+                cancellationToken);
+            state.CommittedOffset = state.Offset;
+            state.LastWriteTicks = lastWriteTicks;
+            state.Initialized = true;
+            _stateDirty = true;
+            return;
+        }
+
         var changedIdentity =
             length < state.Offset ||
             (length == state.Offset &&
@@ -142,10 +179,15 @@ public sealed class SessionEventLogMonitor
 
         if (changedIdentity)
         {
-            state.Offset = 0;
-            state.Pending.Clear();
+            state.Reset();
+            _stateDirty = true;
         }
+        var previousLastWriteTicks = state.LastWriteTicks;
         state.LastWriteTicks = lastWriteTicks;
+        if (previousLastWriteTicks != lastWriteTicks)
+        {
+            _stateDirty = true;
+        }
 
         if (length <= state.Offset)
         {
@@ -200,52 +242,193 @@ public sealed class SessionEventLogMonitor
             return;
         }
 
+        var previousCommittedOffset = state.CommittedOffset;
         var combined = new byte[state.Pending.Count + chunk.Length];
         state.Pending.CopyTo(combined, 0);
         chunk.CopyTo(combined, state.Pending.Count);
 
-        var completeEnd = GetLastCompleteLineEnd(combined);
-        if (completeEnd == 0)
+        var processStart = 0;
+        if (state.DiscardingOversizedLine)
         {
-            state.Pending.Clear();
-            state.Pending.AddRange(combined);
-            state.Offset += chunk.Length;
+            var newline = Array.IndexOf(combined, (byte)'\n');
+            if (newline < 0)
+            {
+                state.DiscardedLineBytes += chunk.Length;
+                state.Offset += chunk.Length;
+                return;
+            }
+
+            state.CommittedOffset += state.DiscardedLineBytes + newline + 1;
+            state.DiscardedLineBytes = 0;
+            state.DiscardingOversizedLine = false;
+            processStart = newline + 1;
+        }
+
+        var completeEnd = GetLastCompleteLineEnd(combined);
+        if (completeEnd < processStart)
+        {
+            completeEnd = processStart;
+        }
+
+        ProcessCompleteLines(combined, processStart, completeEnd);
+        state.CommittedOffset += completeEnd - processStart;
+
+        state.Pending.Clear();
+        var tailLength = combined.Length - completeEnd;
+        if (tailLength > 0)
+        {
+            var pendingBytes = _states.Values.Sum(item => item.Pending.Count);
+            if (tailLength > MaxEventLineBytes ||
+                pendingBytes + tailLength > MaxPendingBytes)
+            {
+                state.DiscardingOversizedLine = true;
+                state.DiscardedLineBytes = tailLength;
+                Console.Error.WriteLine(
+                    tailLength > MaxEventLineBytes
+                        ? "session event log monitor skipped a line larger than " +
+                          $"{MaxEventLineBytes} bytes"
+                        : "session event log monitor skipped a partial line because " +
+                          $"buffered data exceeded {MaxPendingBytes} bytes");
+            }
+            else
+            {
+                state.Pending.AddRange(combined.AsSpan(completeEnd, tailLength));
+            }
+        }
+
+        state.Offset += chunk.Length;
+        _stateDirty |= state.CommittedOffset != previousCommittedOffset;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        Interlocked.Exchange(ref _lastReadMs, now);
+    }
+
+    private SessionFileState CreateFileState(string fileKey)
+    {
+        return _persistedStates.Remove(fileKey, out var saved)
+            ? new SessionFileState(fileKey, saved)
+            : new SessionFileState(fileKey);
+    }
+
+    private static async Task<long> FindInitialOffsetAsync(
+        string file,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        if (length == 0)
+        {
+            return 0;
+        }
+
+        var minimumOffset = Math.Max(0, length - MaxEventLineBytes);
+        var position = length;
+        var buffer = new byte[InitialOffsetScanBytes];
+        await using var stream = new FileStream(
+            file,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: InitialOffsetScanBytes,
+            useAsync: true);
+
+        while (position > minimumOffset)
+        {
+            var count = (int)Math.Min(
+                buffer.Length,
+                position - minimumOffset);
+            position -= count;
+            stream.Seek(position, SeekOrigin.Begin);
+            var read = 0;
+            while (read < count)
+            {
+                var bytesRead = await stream.ReadAsync(
+                    buffer.AsMemory(read, count - read),
+                    cancellationToken);
+                if (bytesRead == 0)
+                {
+                    return length;
+                }
+
+                read += bytesRead;
+            }
+
+            for (var index = read - 1; index >= 0; index--)
+            {
+                if (buffer[index] == (byte)'\n')
+                {
+                    return position + index + 1;
+                }
+            }
+        }
+
+        return length;
+    }
+
+    private static string GetFileKey(string file)
+    {
+        var path = Path.GetFullPath(file);
+        if (OperatingSystem.IsWindows())
+        {
+            path = path.ToUpperInvariant();
+        }
+
+        return Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(path)));
+    }
+
+    private void PersistReadStates()
+    {
+        if (_store is null || !_stateDirty)
+        {
             return;
         }
 
-        state.Pending.Clear();
-        for (var index = 0; index < completeEnd;)
+        _store.SaveSessionEventLogReadStates(
+            _states.Values
+                .Where(state => state.Initialized)
+                .Select(state => new SessionEventLogReadState(
+                    state.FileKey,
+                    state.CommittedOffset,
+                    state.LastWriteTicks))
+                .ToArray());
+        _stateDirty = false;
+    }
+
+    private void ProcessCompleteLines(
+        byte[] content,
+        int start,
+        int end)
+    {
+        for (var index = start; index < end;)
         {
-            var newline = Array.IndexOf(combined, (byte)'\n', index, completeEnd - index);
+            var newline = Array.IndexOf(
+                content,
+                (byte)'\n',
+                index,
+                end - index);
             if (newline < 0)
             {
                 break;
             }
 
             var lineLength = newline - index;
-            if (lineLength > 0 && combined[index + lineLength - 1] == (byte)'r')
+            if (lineLength > 0 && content[index + lineLength - 1] == (byte)'\r')
             {
                 lineLength--;
             }
 
-            if (lineLength > 0)
+            if (lineLength > MaxEventLineBytes)
             {
-                ProcessLine(combined.AsSpan(index, lineLength));
+                Console.Error.WriteLine(
+                    $"session event log monitor skipped a line larger than " +
+                    $"{MaxEventLineBytes} bytes");
+            }
+            else if (lineLength > 0)
+            {
+                ProcessLine(content.AsSpan(index, lineLength));
             }
 
             index = newline + 1;
         }
-
-        state.Offset += chunk.Length;
-
-        var tailLength = combined.Length - completeEnd;
-        if (tailLength > 0)
-        {
-            state.Pending.AddRange(combined.AsSpan(completeEnd, tailLength));
-        }
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        Interlocked.Exchange(ref _lastReadMs, now);
     }
 
     private void ProcessLine(ReadOnlySpan<byte> utf8Line)
@@ -319,22 +502,50 @@ public sealed class SessionEventLogMonitor
         {
             if (!Directory.Exists(Path.GetDirectoryName(pair.Key)))
             {
-                _states.TryRemove(pair.Key, out _);
+                if (_states.TryRemove(pair.Key, out _))
+                {
+                    _stateDirty = true;
+                }
             }
         }
     }
 
     private sealed class SessionFileState
     {
-        public SessionFileState(string path)
+        public SessionFileState(string fileKey)
         {
-            Path = path;
+            FileKey = fileKey;
             Pending = new List<byte>();
         }
 
-        public string Path { get; }
+        public SessionFileState(
+            string fileKey,
+            SessionEventLogReadState saved)
+            : this(fileKey)
+        {
+            Offset = saved.Offset;
+            CommittedOffset = saved.Offset;
+            LastWriteTicks = saved.LastWriteTicks;
+            Initialized = true;
+        }
+
+        public string FileKey { get; }
         public long Offset { get; set; }
+        public long CommittedOffset { get; set; }
         public long LastWriteTicks { get; set; }
+        public long DiscardedLineBytes { get; set; }
+        public bool DiscardingOversizedLine { get; set; }
+        public bool Initialized { get; set; }
         public List<byte> Pending { get; }
+
+        public void Reset()
+        {
+            Offset = 0;
+            CommittedOffset = 0;
+            LastWriteTicks = 0;
+            DiscardedLineBytes = 0;
+            DiscardingOversizedLine = false;
+            Pending.Clear();
+        }
     }
 }
