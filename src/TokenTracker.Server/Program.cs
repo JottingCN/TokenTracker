@@ -39,7 +39,7 @@ var startedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 var buildId = Environment.GetEnvironmentVariable("TOKENTRACKER_BUILD_ID");
 var serverInfo = new ServerInfoPayload(
     "TokenTracker.Server",
-    "1.0.29",
+    "1.0.30",
     1,
     port,
     startedAt,
@@ -119,7 +119,11 @@ if (store.GetSetting("metric_attribution_v1") != "1")
 }
 
 var hub = new RealtimeHub();
-metadata.AhpStatusChanged += hub.NotifyChanged;
+metadata.AhpStatusChanged += () =>
+{
+    service.InvalidateSnapshots();
+    hub.NotifyChanged();
+};
 var sessionEventMonitor = new SessionEventLogMonitor(
     metadata.GetAccessInfo().SessionRoot,
     hub,
@@ -361,17 +365,21 @@ app.MapGet("/api/summary-chart", (
             StatusCodes.Status400BadRequest);
     }
 
-    var (fromMs, toMs) = from is > 0
-        ? (from.Value, to!.Value)
-        : RangeTime.Resolve(range ?? DefaultDashboardRange, DateTimeOffset.UtcNow);
     return Results.Json(
-        service.GetSummaryChart(
-            fromMs,
-            toMs,
-            grouping,
-            model,
-            sessionId,
-            source),
+        from is > 0
+            ? service.GetSummaryChart(
+                from.Value,
+                to!.Value,
+                grouping,
+                model,
+                sessionId,
+                source)
+            : service.GetSummaryChart(
+                range ?? DefaultDashboardRange,
+                grouping,
+                model,
+                sessionId,
+                source),
         AppJsonContext.Default.SummaryChartPayload);
 });
 
@@ -536,6 +544,9 @@ app.MapDelete("/api/models", (string model) =>
 
 app.MapPost("/api/metadata-changed", () =>
 {
+    // Titles and workspaces live outside the span tables, so the snapshot cache
+    // has to be dropped before waking the WebSocket loops.
+    service.InvalidateSnapshots();
     hub.NotifyChanged();
     return Results.NoContent();
 });
@@ -571,6 +582,9 @@ app.MapPost("/api/settings", (SettingsUpdateRequest request) =>
             statusCode: StatusCodes.Status500InternalServerError);
     }
 
+    // RetentionDays and the retention sweep both change the payload without
+    // touching span rows in the common case.
+    service.InvalidateSnapshots();
     hub.NotifyChanged();
     return Results.Json(
         new SettingsPayload(days),

@@ -7,17 +7,16 @@ import { formatLatency, formatSpeed } from '../utils/labels';
 
 interface LatencyCardsProps {
   summary: Summary | null | undefined;
-  turnCount?: number | null;
   // Rendered as an extra card after the latency cards (session page only).
   extra?: ReactNode;
 }
 
 // Shared by the session and model pages so both report identical latency
 // figures; extremes only consider successful calls, which the server filters.
-export function LatencyCards({ summary, turnCount, extra }: LatencyCardsProps) {
+export function LatencyCards({ summary, extra }: LatencyCardsProps) {
   const { locale, t } = useUi();
   const number = new Intl.NumberFormat(intlLocale(locale));
-  const metricCount = 3 + (turnCount === undefined ? 0 : 1) + (extra ? 1 : 0);
+  const metricCount = 3 + (extra ? 1 : 0);
   const columns = Math.floor(24 / metricCount);
 
   return (
@@ -29,18 +28,6 @@ export function LatencyCards({ summary, turnCount, extra }: LatencyCardsProps) {
             value={summary ? number.format(summary.calls) : '-'}
           />
         </Col>
-        {turnCount !== undefined && (
-          <Col xs={24} sm={12} md={columns}>
-            <CountCard
-              label={
-                <Tooltip title={t('turns.only.available.for.sessions')}>
-                  <span>{t('ahp.turns')}</span>
-                </Tooltip>
-              }
-              value={turnCount === null ? '-' : number.format(turnCount)}
-            />
-          </Col>
-        )}
         <Col xs={24} sm={12} md={columns}>
           <MetricCard
             label={t('average.ttft')}

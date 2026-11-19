@@ -2846,6 +2846,10 @@ public sealed partial class SpanStore
             }
 
             transaction.Commit();
+            // Pricing changes rewrite cost columns without inserting spans, so the
+            // cached snapshots must still see a new version or they would keep
+            // serving the old estimate.
+            BumpDataVersion();
             return count;
         }
         finally

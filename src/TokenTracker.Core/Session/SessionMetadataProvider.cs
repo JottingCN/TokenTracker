@@ -52,11 +52,8 @@ public sealed class SessionMetadataProvider
 
     public AhpConnectionStatus GetAhpStatus() => _ahp.GetStatus();
 
-    public AhpSessionUsage? GetAhpSessionUsage(string sessionId) =>
-        _ahp.GetSessionUsage(sessionId);
-
-    public void RequestAhpSessionUsage(string sessionId) =>
-        _ahp.RequestSessionUsage(sessionId);
+    public void RequestAhpSessionDetails(string sessionId) =>
+        _ahp.RequestDetailSubscription(sessionId);
 
     public SessionAccessInfo GetAccessInfo() => new(
         _rootDirectory,

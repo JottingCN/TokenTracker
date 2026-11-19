@@ -135,15 +135,15 @@ public static class WsEndpoint
             }
 
             Subscription.SubscriptionState? lastState = null;
-            long lastDataVersion = -1;
+            (long Data, long Metadata) lastVersion = (-1, -1);
             byte[]? lastPayload = null;
 
             while (!token.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
                 var state = subscription.Snapshot();
-                var dataVersion = service.DataVersion;
+                var dataVersion = service.SnapshotVersion;
                 if (lastPayload is not null &&
-                    dataVersion == lastDataVersion &&
+                    dataVersion == lastVersion &&
                     state == lastState)
                 {
                     // Nothing changed since the last snapshot: rebuilding it would
@@ -249,7 +249,7 @@ public static class WsEndpoint
                 }
 
                 lastState = state;
-                lastDataVersion = dataVersion;
+                lastVersion = dataVersion;
                 lastPayload = payload;
                 await socket.SendAsync(payload, WebSocketMessageType.Text, true, token);
                 await connection.WaitForSignalAsync(

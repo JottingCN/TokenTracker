@@ -11,12 +11,18 @@
 
 ## 2. 内存与 SQLite
 
-- 服务端是**内存受限**而非 CPU 受限的本地单用户服务：固定 `<ServerGarbageCollection>false</ServerGarbageCollection>`（默认 Server GC 会按逻辑核建堆 + 专用 GC 线程，实测 12 核下私有内存 53.6 MB / 27 线程 → Workstation 28.6 MB / 16 线程），并用 `RuntimeHostConfigurationOption` 设 `System.GC.ConserveMemory=7` 与 `System.GC.HighMemoryPercent=60`（默认 90% 在大内存机器上等于永不压缩）。**不要为了吞吐改回去。**
+- 服务端是**内存受限**而非 CPU 受限的本地单用户服务：固定 `<ServerGarbageCollection>false</ServerGarbageCollection>`（默认 Server GC 会按逻辑核建堆 + 专用 GC 线程，实测 12 核下私有内存 53.6 MB / 27 线程 → Workstation 28.6 MB / 16 线程），并用 `RuntimeHostConfigurationOption` 设 `System.GC.ConserveMemory=7`、`System.GC.HighMemoryPercent=60`、`System.GC.HeapHardLimit=0x14000000`（默认 90% 在大内存机器上等于永不压缩，硬上限避免堆涨到 GB 级）。**不要为了吞吐改回去。**
+- 实测基线（含 4 个 WebSocket 客户端 + 每 120 ms 一次写入，持续 60 秒）：峰值私有内存约 **137 MB**，写入期间稳定在 **52–56 MB**，停止后回落到 **36 MB**。若改动后超过这个量级，先查是否有新的全量快照重建或 LOH 分配。
+- 事件日志监控每 500 ms 轮询最多 256 个 `events.jsonl`：读取必须走 `ArrayPool<byte>` 并直接追加到会话的 `Pending` 列表，**不要**为每次轮询 `new byte[256KB]` 或拼接 `Pending + chunk` 的新数组（两者都会持续进 LOH）。读取失败时不能把已读字节并入 `Pending`，否则偏移未推进会重复读到同一段。
+- 快照缓存（`DashboardService.Cached`）以 `(DataVersion, MetadataVersion)` 为键，`DataVersion` 只由 span / 事件 / agent run / metric 写入和费用重算推进；标题、工作区、AHP 状态走 `InvalidateSnapshots()`。缓存条目上限 8，版本变化时整体丢弃。**不要**把「每次请求都会写库」的操作（如工作区回写）放进快照路径，否则缓存永远不会命中——`SessionWorkspaceCache` 因此只在值变化时落库。
+- 「近 N 天」的起点按分钟向下取整（`FloorToMinute`）后再进缓存，否则 `UtcNow` 每次都不同，键永不重复。
 - SQLite 用 `Cache=Private` + 打开连接时 `PRAGMA cache_size = -1024`：shared-cache 与 WAL 混用不受官方推荐，而连接池下私有缓存必须限容（否则每个池化连接按默认 2 MB 预留）。
 - 跨请求缓存必须有上界（见[存储](storage.md)第 2 节），新增缓存照此处理。
 
 ## 3. Web / UI
 
+- 图表刷新不得清空内容：`SummaryUsageChart` 用 350 ms 防抖，并且只在「首次加载」(`payload === null`) 时显示 Spin；后续刷新保留旧柱状图直到新数据到达。实测每 250 ms 一次写入、持续 6 秒，空白帧与 Spinner 帧均为 0。**不要**恢复 `setChart(null)` 或每次 `setLoading(true)`。
+- 图表 payload 带分组标记（`groupBy`），切换分桶时若标记不匹配就按加载态处理，避免用上一次的键格式化日期（曾导致 `RangeError: Invalid time value` 白屏）。
 - 不添加 Webview；看板在浏览器打开。WinUI 已删除，不要再引入桌面端代码。
 - 不新增依赖或抽象，除非任务确实需要。代码注释只写非显而易见的“为什么”。
 - 表格高度统一走 `utils/tableMetrics.ts` 的 `clampTableHeight`：可用高度来自 `useAutoTableHeight`，按行数（单行 41px / 双行 48px）收敛，并把同一个值同时给 `scroll.y` 与 `--tt-table-body-height`，否则 `.tt-fill-table` 的 `min-height` 会让一两行数据撑满视口。
@@ -24,7 +30,7 @@
 - 列表分页放卡片标题栏右侧，条数写在标题后 `标题(N)`，单页时隐藏分页。
 - 主页「按模型」表与会话表口径一致：模型 / 次数 / 输入（总 token + 输入费用）/ 缓存读取（token + 读取费用）/ 缓存写入（token + 写入费用）/ 命中 / 输出（token + 费用）/ 思考（token + 费用，0 时费用 `-`）/ 首次响应 / 生成速度 / 估算费用。`ModelRow` 必须带缓存读取/写入、未命中输入、输出与思考费用及对应 token；新增列后同步 `scroll.x` 与双行行高。
 - 会话页有多个模型时显示模型 Tab（`全部模型(N)` + 各模型），切换后 Token 明细与「用量与性能」按该模型统计（`SessionPayload.models`，服务端与总会话用同一 `BuildSummary`）。
-- Token 明细把总 tokens 与估算费用合并成一张概要卡，下面是输入/输出明细与图表；图表可由「图表类型」切换柱状图/饼图，柱状图按天 / 星期 / 小时以堆叠柱显示「未缓存输入 / 缓存 / 非推理输出 / 推理」，饼图汇总所选范围。四段互不重叠，相加等于总 tokens 与总费用。**分桶由所选时间跨度自动决定，不提供范围选择**：≤1 天按小时，>1 个月按周，>3 个月按月，其余按天；纵轴刻度随 tokens/费用切换重算。输入/输出卡片用同色系占比条 + 明细行，行内数字相加等于卡片总量。调用次数与会话级 AHP 轮次放在「用量与性能」区。
+- Token 明细把总 tokens 与估算费用合并成一张概要卡，下面是输入/输出明细与图表；图表可由「图表类型」切换柱状图/饼图，柱状图按天 / 星期 / 小时以堆叠柱显示「未缓存输入 / 缓存 / 非推理输出 / 推理」，饼图汇总所选范围。四段互不重叠，相加等于总 tokens 与总费用。**分桶由所选时间跨度自动决定，不提供范围选择**：≤1 天按小时，>1 个月按周，>3 个月按月，其余按天；纵轴刻度随 tokens/费用切换重算。输入/输出卡片用同色系占比条 + 明细行，行内数字相加等于卡片总量。调用次数与首次响应、生成速度放在「用量与性能」区；会话页不再有 AHP 轮次卡片（AHP 与 OTel 的会话 ID 无法稳定对应）。
 - 系统信息抽屉读 `GET /api/system`，路径表每行带用途标记（`扩展监控中` / `AHP 在线，暂停监控` / `查询时读取` / `AHP 端点轮询中` / `仅导入时读取` / `未使用`），由服务端 AHP 状态推导，与扩展监控开关同源，**不要写成静态清单**。
 - 界面文案全部走 i18n（见[扩展 UI](extension-ui.md)），不写死中文或英文。
 

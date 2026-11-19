@@ -438,31 +438,6 @@ export interface SessionPayload {
   sessionId: string;
   title: string | null;
   workspacePath: string | null;
-  ahpUsage: AhpSessionUsagePayload | null;
-}
-
-export interface AhpTurnUsagePayload {
-  chatResource: string;
-  turnId: string;
-  state: string;
-  startedAtMs: number | null;
-  durationMs: number | null;
-  model: string | null;
-  inputTokens: number | null;
-  cacheReadTokens: number | null;
-  outputTokens: number | null;
-  hasUsage: boolean;
-  tools: string[];
-}
-
-export interface AhpSessionUsagePayload {
-  historyComplete: boolean;
-  turnCount: number;
-  turnsWithUsage: number;
-  inputTokens: number | null;
-  cacheReadTokens: number | null;
-  outputTokens: number | null;
-  recentTurns: AhpTurnUsagePayload[];
 }
 
 export interface CallsPayload {

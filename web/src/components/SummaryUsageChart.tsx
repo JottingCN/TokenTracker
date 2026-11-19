@@ -91,10 +91,20 @@ export function SummaryUsageChart({
 
   useEffect(() => {
     const controller = new AbortController();
-    const load = async () => {
-      setLoading(true);
+    // A burst of writes produces a snapshot every couple of hundred
+    // milliseconds; without this timer each one would replace the chart with a
+    // spinner. Only the first load shows the spinner, later refreshes keep the
+    // previous bars on screen until the new payload arrives.
+    const timer = setTimeout(() => {
+      void load();
+    }, payload === null ? 0 : 350);
+
+    async function load() {
       setFailed(false);
-      setChart(null);
+      if (payload === null) {
+        setLoading(true);
+      }
+
       const params = new URLSearchParams({
         groupBy,
         range: String(range),
@@ -130,10 +140,16 @@ export function SummaryUsageChart({
           setLoading(false);
         }
       }
-    };
+    }
 
-    void load();
-    return () => controller.abort();
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+    // `payload` is intentionally absent: it changes when the fetch above lands,
+    // and re-running would fetch in a loop. The grouping tag already forces a
+    // fresh load when the bucket size changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromMs, groupBy, model, range, refreshKey, sessionId, toMs]);
 
   const buckets = useMemo(() => {
@@ -232,18 +248,27 @@ export function SummaryUsageChart({
         extra={stackControls ? undefined : controls}
       >
         {stackControls && <div style={{ marginBottom: 12 }}>{controls}</div>}
-        {failed ? (
-        <Alert type="error" showIcon message={t('chart.load.failed')} />
-      ) : loading || payload === null ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
-          <Spin />
-        </div>
-      ) : !hasData ? (
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={t('chart.no.data')}
-        />
-      ) : (
+        {payload === null ? (
+          failed ? (
+            <Alert type="error" showIcon message={t('chart.load.failed')} />
+          ) : loading ? (
+            <div
+              style={{ display: 'flex', justifyContent: 'center', padding: 32 }}
+            >
+              <Spin />
+            </div>
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t('chart.no.data')}
+            />
+          )
+        ) : !hasData ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={t('chart.no.data')}
+          />
+        ) : (
         <>
           {chartType === 'pie' ? (
             <UsagePie

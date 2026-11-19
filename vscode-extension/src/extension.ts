@@ -5,7 +5,13 @@ import * as vscode from 'vscode';
 import { httpPost } from './httpClient';
 import { tr } from './i18n';
 import { readMoneySettings } from './money';
-import { cleanupOldRuntimes, prepareRuntime, RuntimeInfo } from './runtimeManager';
+import {
+  cleanupOldRuntimes,
+  hasPreparedRuntime,
+  prepareRuntime,
+  resolveCachedRuntime,
+  RuntimeInfo,
+} from './runtimeManager';
 import {
   ensureServer,
   fetchServerInfo,
@@ -486,26 +492,57 @@ async function prepareAndStartServer(
   port: number,
   autoStart: boolean,
   idleExitSeconds: number,
+  reuseOutdated = false,
 ): Promise<RunningServer> {
-  // Published builds ship no server/, so the first run downloads it over the network:
-  // that must be visible instead of a quiet status-bar spinner.
+  // Published builds ship no server/, so the first run downloads it over the
+  // network: that must be visible instead of a quiet status-bar spinner. Only a
+  // genuine first run gets the notification — an update has a cached runtime and
+  // must not claim the server is being installed for the first time.
   const bundled = fs.existsSync(
     path.join(context.extensionPath, 'server', 'build.json'),
   );
+  const storagePath = context.globalStorageUri.fsPath;
+
+  // Activation path: serve from the runtime already on disk so an update never
+  // blocks startup. The update check (and its download) then runs in the
+  // background; `attachOrStartServer` announces the newer build.
+  if (reuseOutdated && !bundled) {
+    const cached = resolveCachedRuntime(storagePath);
+    if (cached) {
+      log(`using cached runtime before update check: ${describeRuntime(cached)}`);
+      return ensureServer({
+        storagePath,
+        port,
+        autoStart,
+        executablePath: cached.executablePath,
+        dataDirectory: cached.dataDirectory,
+        buildId: cached.buildId,
+        idleExitSeconds,
+        reuseOutdated: true,
+      });
+    }
+  }
+
+  const firstRun = !bundled && !hasPreparedRuntime(storagePath);
   const runtime = await vscode.window.withProgress(
     {
-      location: bundled
-        ? vscode.ProgressLocation.Window
-        : vscode.ProgressLocation.Notification,
+      location: firstRun
+        ? vscode.ProgressLocation.Notification
+        : vscode.ProgressLocation.Window,
       title: bundled
         ? tr(
             'Token Tracker 正在准备服务端',
             'Token Tracker is preparing the server',
           )
-        : tr(
-            'Token Tracker 首次运行需要下载本地服务端（来自 GitHub Release，只在本机运行）',
-            'Token Tracker needs to download its local server on first run (from a GitHub Release; it only runs on this machine)',
-          ),
+        : firstRun
+          ? tr(
+              'Token Tracker 首次运行需要下载本地服务端（来自 GitHub Release，只在本机运行）',
+              'Token Tracker needs to download its local server on first run (from a GitHub Release; it only runs on this machine)',
+            )
+          : tr(
+              'Token Tracker 正在检查服务端更新',
+              'Token Tracker is checking for server updates',
+            ),
       cancellable: false,
     },
     (progress) =>
@@ -513,6 +550,7 @@ async function prepareAndStartServer(
   );
 
   log(describeRuntime(runtime));
+  resolvedRuntime = runtime;
 
   const running = await ensureServer({
     storagePath: context.globalStorageUri.fsPath,
@@ -522,16 +560,12 @@ async function prepareAndStartServer(
     dataDirectory: runtime.dataDirectory,
     buildId: runtime.buildId,
     idleExitSeconds,
+    reuseOutdated,
   });
 
   if (running.outdated) {
-    log('server build differs and is externally managed');
-    void vscode.window.showWarningMessage(
-      tr(
-        'Token Tracker 服务版本与扩展不一致，且该实例由外部启动，未自动替换。',
-        'The running Token Tracker server version differs and was started externally, so it was not replaced.',
-      ),
-    );
+    log('server build differs; kept the running server for this session');
+    return running;
   }
 
   const cleanup = cleanupOldRuntimes(
@@ -540,6 +574,7 @@ async function prepareAndStartServer(
   );
   log(
     `runtime cleanup: removed=[${cleanup.removed.join(', ')}] ` +
+      `skipped=[${cleanup.skipped.join(', ')}] ` +
       `failed=[${cleanup.failed.join(', ')}]`,
   );
 
@@ -547,15 +582,20 @@ async function prepareAndStartServer(
 }
 
 let updateAnnouncedBuildId = '';
+// The runtime resolved during activation. The background check reuses it instead
+// of hitting the release API a second time right after startup.
+let resolvedRuntime: RuntimeInfo | undefined;
 
 async function checkServerUpdateInBackground(
   context: vscode.ExtensionContext,
   running: RunningServer,
 ): Promise<void> {
   try {
-    const runtime = await resolveRuntime(context, (message) =>
-      log(`update check: ${message}`),
-    );
+    const runtime =
+      resolvedRuntime ??
+      (await resolveRuntime(context, (message) =>
+        log(`update check: ${message}`),
+      ));
     log(`update check: ${describeRuntime(runtime)}`);
 
     const currentBuildId = running.info?.buildId;
@@ -574,10 +614,13 @@ async function checkServerUpdateInBackground(
         `(running ${currentBuildId ?? 'unknown'}); running server left untouched`,
     );
     const restart = tr('重启服务', 'Restart service');
+    const runningVersion = running.info?.version ?? tr('未知版本', 'unknown');
     const choice = await vscode.window.showInformationMessage(
       tr(
-        `Token Tracker 服务端 ${runtime.serverVersion} 已下载完成，当前运行的服务不受影响，重启后生效。`,
-        `Token Tracker server ${runtime.serverVersion} is downloaded. The running server is untouched; restart to apply it.`,
+        `Token Tracker 服务端 ${runtime.serverVersion} 已就绪（当前运行 ${runningVersion}）。` +
+          '正在使用的服务不受影响，重启服务后才会切换到新版本。',
+        `Token Tracker server ${runtime.serverVersion} is ready (running ${runningVersion}). ` +
+          'The server in use is untouched; restart the service to switch to it.',
       ),
       restart,
     );
@@ -634,8 +677,15 @@ async function attachOrStartServer(
     port,
     autoStart,
     idleExitSeconds,
+    // Activation must not interrupt a server that is already serving this
+    // window: reuse the older build and let the update notification handle the
+    // restart.
+    true,
   );
   useRunningServer(context, started, port, range, idleExitSeconds);
+  // Always check: activation can start from the cached runtime, so the newer
+  // build still has to be downloaded (in the background) and announced.
+  void checkServerUpdateInBackground(context, started);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<TokenTrackerApi> {
@@ -819,9 +869,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<TokenT
         const running = await prepareAndStartServer(context, port, true, idleExitSeconds);
         useRunningServer(context, running, port, range, idleExitSeconds);
         log('server started by command');
-        void vscode.window.showInformationMessage(
-          tr('Token Tracker 服务已启动', 'Token Tracker server started'),
-        );
+        if (running.outdated) {
+          // The restart could not replace the instance because it was started by
+          // something other than this extension (another app, a terminal, or an
+          // older build), so the old version keeps serving.
+          void vscode.window.showWarningMessage(
+            tr(
+              'Token Tracker 服务版本与扩展不一致，且该实例由外部启动，未自动替换。',
+              'The running Token Tracker server version differs and was started externally, so it was not replaced.',
+            ),
+          );
+        } else {
+          void vscode.window.showInformationMessage(
+            tr('Token Tracker 服务已启动', 'Token Tracker server started'),
+          );
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log(`start server failed: ${message}`);

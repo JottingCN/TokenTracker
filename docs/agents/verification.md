@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Core 逻辑（解析、存储、定价、元数据） | `dotnet test --project tests/TokenTracker.Core.Tests/TokenTracker.Core.Tests.csproj -c Release` | 107 项 |
 | 看板 `web/` | `cd web && npm run build`（内含 `tsc --noEmit`） | 构建通过 |
-| 扩展 `vscode-extension/` | `npm run compile` + `npm test` | 19 项 |
+| 扩展 `vscode-extension/` | `npm run compile` + `npm test` | 24 项 |
 | 服务端 / 路由 / 序列化 | `npm run sync-server`（AOT 成功）+ `npm run smoke` | 77 项 |
 | 文档（本目录） | 检查链接与路径是否仍然存在 | — |
 
@@ -32,6 +32,7 @@ Code.exe --new-window \
 - 用临时端口（如 4330+）与临时数据库副本，避免影响正在使用的 4318 服务。
 - 检查状态栏文本或 Tip 结构时，用桩 `vscode` 模块（`MarkdownString` / `createStatusBarItem` / `getConfiguration`）配合 `NODE_PATH` 直接加载 `out/statusBar.js` 驱动真实 `StatusBarController`，打印 `item.tooltip.value` 断言，不必启动 GUI。
 - 验证「健康实例不被重启 / 后台更新检查失败不影响使用」时，先用临时数据目录手动起一个 `TOKENTRACKER_BUILD_ID=legacy-build-1` 的服务再激活扩展，确认 `server ready startedHere=false` 早于 `update check:` 日志且进程未变。
+- 验证更新流程不打断使用：写一个临时锁文件指向正在运行的服务 PID，再直接调用 `out/serverManager.js` 的 `ensureServer({ ..., reuseOutdated: true })`，必须返回 `outdated: true` 且原 PID 仍存活；随后不带该选项调用才会替换。`runtimeManager.test.js` 用「复制 node 可执行文件并运行」覆盖同样的锁定判断。
 
 ## 4. 服务端负载与内存
 

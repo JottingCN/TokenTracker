@@ -196,7 +196,11 @@ public sealed class SessionEventLogMonitorTests
                 string.Empty,
                 TestContext.Current.CancellationToken);
 
-            var monitor = new SessionEventLogMonitor(directory, new RealtimeHub());
+            var store = new SpanStore(Path.Combine(directory, "tokentracker.db"));
+            var monitor = new SessionEventLogMonitor(
+                directory,
+                new RealtimeHub(),
+                store);
             await monitor.RefreshAsync(TestContext.Current.CancellationToken);
             await File.AppendAllTextAsync(
                 file,
@@ -214,9 +218,30 @@ public sealed class SessionEventLogMonitorTests
             }
 
             Assert.Equal(1, monitor.GetStatus().UniqueEvents);
+
+            // The skipped line must not push the saved cursor past real data:
+            // after a restart the next event has to be read again.
+            await File.AppendAllTextAsync(
+                file,
+                "{\"id\":\"event-after-restart\",\"type\":\"tool.end\"}\n",
+                Encoding.UTF8,
+                TestContext.Current.CancellationToken);
+            var restarted = new SessionEventLogMonitor(
+                directory,
+                new RealtimeHub(),
+                store);
+            for (var attempt = 0;
+                 attempt < 20 && restarted.GetStatus().UniqueEvents == 0;
+                 attempt++)
+            {
+                await restarted.RefreshAsync(TestContext.Current.CancellationToken);
+            }
+
+            Assert.Equal(1, restarted.GetStatus().UniqueEvents);
         }
         finally
         {
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(directory))
             {
                 Directory.Delete(directory, recursive: true);

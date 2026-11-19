@@ -28,11 +28,8 @@
 
 ## 4. Agent 运行（agentRuns）
 
-会话页同时展示 AHP 的正式轮次/用量摘要与 OTel 推导的「Agent 运行」；两者口径不同，不得混成一个指标。AHP 轮次来自 `ChatState.turns` 与 `activeTurn`，历史通过 `fetchTurns` 按 cursor 补齐；OTel 会话 ID 可能对应 AHP chat resource，查询时先解析到所属 AHP session，再汇总其 chats；每个会话只在内存缓存摘要（最多 8 个会话、每会话最多保留 20,000 个轮次），不持久化消息、推理文本或工具输入/输出。
-
-- AHP 轮次与 usage 都按 Host 实际提供的数据展示；可选或缺失的 token 字段保持未知，不得补零。只有 `UsageInfo` 明确提供的输入、缓存读取、输出和模型才可展示；AHP 不提供费用或 cache-write，仍由现有 OTel 路径负责这些指标。
-- 时间范围筛选按 AHP 轮次开始时间执行；无时间戳的轮次只计入「全部」范围。Host 仍有历史 cursor、缓存触及 20,000 条上限或范围内存在无法定位的轮次时，标记历史不完整。最近列表最多展示 100 条，汇总仍基于当前已载入的摘要。
-- AHP 提供的工具名只用于轮次工具摘要与现有工具名哈希解析，不读取工具参数或结果正文。
+- **AHP 不提供轮次/用量**：AHP 会话 ID 与 OTel 会话 ID 是两套 ID（AHP 的 `ahp-session` / `ahp-chat` 均与 OTel session 无对应关系，`defaultChatProviderData.sdkSessionId` 才是映射），无法稳定关联，因此会话页不再展示 AHP 轮次或 AHP 会话明细。会话级统计一律以 OTel 调用的「Agent 运行」为准，不要重新引入按 AHP 轮次汇总的指标。
+- AHP 仍用于标题、工作区与工具名：会话页会请求 AHP 保持该会话的 chat 通道订阅，便于空闲轮次的 `toolCallStart` 回填工具显示名；不得据此读取轮次正文、token 或费用。
 
 - 一次运行 = 一个 invoke_agent span。根 invoke_agent（父 span 不入库）是主代理运行，每条用户消息一个；挂在 execute_tool 下的 invoke_agent 是子代理运行。
 - **is_root 读取时重算**：不能按「父 id 为空」判断，根轮的父是宿主 session span（不入库），旧实现把 85/91 判成子代理。规则是「父 span 不在本地 session_events 中即为根」，与拓扑同一口径。

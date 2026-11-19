@@ -12,6 +12,11 @@ public sealed class SessionWorkspaceCache
     private readonly object _gate = new();
     private readonly Dictionary<string, string> _pending =
         new(StringComparer.OrdinalIgnoreCase);
+    // Last value handed to the store. Callers resolve the same live path on every
+    // request; without this the table (and the data version) would be rewritten
+    // on each snapshot and no snapshot cache could ever hit.
+    private readonly Dictionary<string, string> _known =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public SessionWorkspaceCache(SpanStore store) => _store = store;
 
@@ -24,6 +29,13 @@ public sealed class SessionWorkspaceCache
 
         lock (_gate)
         {
+            if (_known.TryGetValue(sessionId, out var known) &&
+                string.Equals(known, liveWorkspacePath, StringComparison.Ordinal))
+            {
+                return liveWorkspacePath;
+            }
+
+            _known[sessionId] = liveWorkspacePath;
             _pending[sessionId] = liveWorkspacePath;
             if (_pending.Count >= FlushThreshold)
             {

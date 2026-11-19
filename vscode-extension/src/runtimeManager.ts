@@ -189,13 +189,84 @@ export async function prepareRuntime(
 export interface RuntimeCleanupResult {
   removed: string[];
   failed: string[];
+  skipped: string[];
+}
+
+/**
+ * Returns the runtime that is already on disk, without touching the network.
+ * Activation uses it to start serving immediately and to move the update check
+ * (which downloads) off the startup path: a 13 MB release download used to keep
+ * the dashboard unavailable for ~40 s on every server update.
+ */
+export function resolveCachedRuntime(storagePath: string): RuntimeInfo | null {
+  const executableName = process.platform === 'win32'
+    ? 'TokenTracker.Server.exe'
+    : 'TokenTracker.Server';
+  const runtimeRoot = path.join(storagePath, 'runtime');
+  const dataDirectory = path.join(storagePath, 'data');
+  const state = readRuntimeState(storagePath);
+  if (!state || !isRuntimeReady(state, runtimeRoot, executableName)) {
+    return null;
+  }
+
+  fs.mkdirSync(dataDirectory, { recursive: true });
+  return runtimeInfoFromState(state, dataDirectory, executableName);
+}
+
+/**
+ * True when a server runtime was already prepared before this activation. Used
+ * to keep the "first run downloads the server" notification from appearing on
+ * every update: the VSIX never bundles `server/`, so its absence alone does not
+ * mean a first run.
+ */
+export function hasPreparedRuntime(storagePath: string): boolean {
+  if (fs.existsSync(path.join(storagePath, 'server-runtime.json'))) {
+    return true;
+  }
+
+  const runtimeRoot = path.join(storagePath, 'runtime');
+  try {
+    return fs
+      .readdirSync(runtimeRoot, { withFileTypes: true })
+      .some(
+        (entry) =>
+          entry.isDirectory() &&
+          !entry.name.startsWith('.staging-') &&
+          fs.existsSync(path.join(runtimeRoot, entry.name, '.ready')),
+      );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A running server keeps its executable mapped, so opening the image for write
+ * fails on Windows (and on Unix the same call is a cheap no-op probe). This is
+ * the only reliable way to tell "a server is still serving from this directory"
+ * without inspecting process command lines; deleting the directory anyway would
+ * remove `wwwroot` from under a live server and break its dashboard.
+ */
+function isRuntimeInUse(runtimeDirectory: string, executableName: string): boolean {
+  const executablePath = path.join(runtimeDirectory, executableName);
+  try {
+    const handle = fs.openSync(executablePath, 'r+');
+    fs.closeSync(handle);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // A missing executable means the directory is stale and safe to remove.
+    return code !== 'ENOENT';
+  }
 }
 
 export function cleanupOldRuntimes(
   storagePath: string,
   keepBuildId: string,
+  executableName = process.platform === 'win32'
+    ? 'TokenTracker.Server.exe'
+    : 'TokenTracker.Server',
 ): RuntimeCleanupResult {
-  const result: RuntimeCleanupResult = { removed: [], failed: [] };
+  const result: RuntimeCleanupResult = { removed: [], failed: [], skipped: [] };
   const runtimeRoot = path.join(storagePath, 'runtime');
 
   let entries: fs.Dirent[];
@@ -210,9 +281,10 @@ export function cleanupOldRuntimes(
       continue;
     }
 
+    const directory = path.join(runtimeRoot, entry.name);
     if (entry.name.startsWith('.staging-')) {
       try {
-        fs.rmSync(path.join(runtimeRoot, entry.name), {
+        fs.rmSync(directory, {
           recursive: true,
           force: true,
         });
@@ -223,8 +295,13 @@ export function cleanupOldRuntimes(
       continue;
     }
 
+    if (isRuntimeInUse(directory, executableName)) {
+      result.skipped.push(entry.name);
+      continue;
+    }
+
     try {
-      fs.rmSync(path.join(runtimeRoot, entry.name), {
+      fs.rmSync(directory, {
         recursive: true,
         force: false,
       });

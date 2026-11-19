@@ -21,6 +21,12 @@ export interface EnsureServerOptions {
   dataDirectory: string;
   buildId: string;
   idleExitSeconds: number;
+  /**
+   * Keep a healthy server even when its build differs. Activation passes true so
+   * an update never kills a dashboard that is in use; the swap happens only when
+   * the user restarts the service (or the server exits on its own).
+   */
+  reuseOutdated?: boolean;
 }
 
 export interface RunningServer {
@@ -97,6 +103,19 @@ export async function ensureServer(options: EnsureServerOptions): Promise<Runnin
         url,
         port: options.port,
         startedHere: false,
+        info,
+      };
+    }
+
+    if (options.reuseOutdated) {
+      // A different build is healthy: leave it running so in-flight dashboards,
+      // status bars and WebSocket clients keep working. The caller announces the
+      // pending update and swaps it only when the user asks for a restart.
+      return {
+        url,
+        port: options.port,
+        startedHere: false,
+        outdated: true,
         info,
       };
     }

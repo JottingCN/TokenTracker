@@ -44,19 +44,11 @@ internal sealed class AhpTitleClient
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, SessionSummary> _sessionSummaries =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> _chatSessionOwners =
+    // Bounded set of sessions whose chat channels must stay subscribed while the
+    // UI is looking at them: idle chats only expose tool names through AHP events.
+    private readonly HashSet<string> _detailSessions =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _ambiguousChatSessionIds =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, AhpSessionUsage> _sessionUsage =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, DateTimeOffset> _sessionUsageRequests =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, DateTimeOffset> _requestedUsageAt =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _requestedUsageSessions =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _loadingUsageSessions =
+    private readonly Dictionary<string, DateTimeOffset> _detailRequestedAt =
         new(StringComparer.OrdinalIgnoreCase);
     private AhpClient? _client;
     private AhpToolNameObserver? _toolNameObserver;
@@ -99,79 +91,19 @@ internal sealed class AhpTitleClient
 
     public event Action? StatusChanged;
 
-    public AhpSessionUsage? GetSessionUsage(string sessionId)
-    {
-        lock (_gate)
-        {
-            var ownerId = ResolveUsageSessionId(sessionId);
-            return _sessionUsage.TryGetValue(ownerId, out var usage)
-                ? usage
-                : null;
-        }
-    }
-
-    public void RequestSessionUsage(string? sessionId, bool refresh = false)
+    public void RequestDetailSubscription(string? sessionId)
     {
         if (!IsSafeSessionId(sessionId))
         {
             return;
         }
 
-        AhpClient? client;
-        AhpToolNameObserver? observer;
-        SessionSummary summary;
-        string usageSessionId;
-        CancellationToken cancellationToken;
         lock (_gate)
         {
-            var requestedId = sessionId!;
-            var id = ResolveUsageSessionId(requestedId);
-            usageSessionId = id;
-            if (!_sessionSummaries.TryGetValue(id, out var foundSummary) ||
-                foundSummary is null)
-            {
-                _requestedUsageSessions.Add(requestedId);
-                _requestedUsageAt[requestedId] = DateTimeOffset.UtcNow;
-                TrimRequestedUsageSessions();
-                return;
-            }
-            summary = foundSummary;
-
-            var trackedId = id;
-            _requestedUsageSessions.Add(trackedId);
-            _requestedUsageAt[trackedId] = DateTimeOffset.UtcNow;
-            TrimRequestedUsageSessions();
-            if (!refresh && _sessionUsage.ContainsKey(id))
-            {
-                return;
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            if (_loadingUsageSessions.Contains(id) ||
-                refresh &&
-                _sessionUsageRequests.TryGetValue(id, out var lastRequest) &&
-                now - lastRequest < TimeSpan.FromSeconds(1))
-            {
-                return;
-            }
-
-            client = _client;
-            observer = _toolNameObserver;
-            cancellationToken = _connectionToken;
-            if (client is null || observer is null || cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
-            _loadingUsageSessions.Add(id);
-            _sessionUsageRequests[id] = now;
+            _detailSessions.Add(sessionId!);
+            _detailRequestedAt[sessionId!] = DateTimeOffset.UtcNow;
+            TrimDetailSessions();
         }
-
-        _ = LoadSessionUsageAsync(
-            client,
-            summary,
-            usageSessionId,
-            cancellationToken);
     }
 
     private void SetState(string state)
@@ -250,7 +182,7 @@ internal sealed class AhpTitleClient
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var rootSubscription = client.AttachSubscription(
             ProtocolVersion.RootResourceUri);
-        var toolNameObserver = new AhpToolNameObserver(client, OnAhpAction);
+        var toolNameObserver = new AhpToolNameObserver(client);
         var eventsTask = ReadEventsAsync(
             client,
             rootSubscription,
@@ -274,8 +206,6 @@ internal sealed class AhpTitleClient
             {
                 _titles.Clear();
                 _sessions.Clear();
-                _chatSessionOwners.Clear();
-                _ambiguousChatSessionIds.Clear();
             }
 
             var sessions = await ListSessionsAsync(
@@ -285,12 +215,8 @@ internal sealed class AhpTitleClient
             {
                 await toolNameObserver.SyncAsync(
                     sessions,
-                    GetRequestedUsageSessions(),
+                    GetDetailSessions(),
                     connectionCancellation.Token);
-                foreach (var sessionId in GetRequestedUsageSessions())
-                {
-                    RequestSessionUsage(sessionId, refresh: true);
-                }
             }
 
             SetState("connected");
@@ -314,10 +240,8 @@ internal sealed class AhpTitleClient
                 _titles.Clear();
                 _sessions.Clear();
                 _sessionSummaries.Clear();
-                _chatSessionOwners.Clear();
-                _ambiguousChatSessionIds.Clear();
-                _sessionUsage.Clear();
-                _loadingUsageSessions.Clear();
+                _detailSessions.Clear();
+                _detailRequestedAt.Clear();
                 _state = "searching";
             }
 
@@ -340,12 +264,8 @@ internal sealed class AhpTitleClient
                 {
                     await toolNameObserver.SyncAsync(
                         sessions,
-                        GetRequestedUsageSessions(),
+                        GetDetailSessions(),
                         cancellationToken);
-                    foreach (var sessionId in GetRequestedUsageSessions())
-                    {
-                        RequestSessionUsage(sessionId, refresh: true);
-                    }
                 }
             }
             catch (OperationCanceledException)
@@ -379,13 +299,6 @@ internal sealed class AhpTitleClient
                                 client,
                                 toolNameObserver,
                                 cancellationToken);
-                        }
-
-                        if (changed.Params.Changes.ModifiedAt is not null)
-                        {
-                            RequestSessionUsage(
-                                CanonicalSessionId(changed.Params.Session),
-                                refresh: true);
                         }
 
                         break;
@@ -431,224 +344,24 @@ internal sealed class AhpTitleClient
         {
             await toolNameObserver.SyncAsync(
                 sessions,
-                GetRequestedUsageSessions(),
+                GetDetailSessions(),
                 cancellationToken);
         }
     }
 
-    private async Task LoadSessionUsageAsync(
-        AhpClient client,
-        SessionSummary summary,
-        string sessionId,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var chats = new List<(string ChatResource, ChatState State)>();
-            foreach (var chat in summary.Chats ?? [])
-            {
-                if (string.IsNullOrWhiteSpace(chat.Resource))
-                {
-                    continue;
-                }
-
-                var state = await LoadChatStateAsync(
-                    client,
-                    chat.Resource,
-                    cancellationToken);
-                if (state is not null)
-                {
-                    chats.Add((chat.Resource, state));
-                }
-            }
-
-            var usage = AhpSessionUsageBuilder.Build(chats);
-            lock (_gate)
-            {
-                _sessionUsage[sessionId] = usage;
-            }
-
-            StatusChanged?.Invoke();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            Trace.TraceWarning(
-                "AHP session usage request failed for {0}: {1}",
-                sessionId,
-                exception.Message);
-        }
-        finally
-        {
-            lock (_gate)
-            {
-                _loadingUsageSessions.Remove(sessionId);
-            }
-        }
-    }
-
-    private static async Task<ChatState?> LoadChatStateAsync(
-        AhpClient client,
-        string chatResource,
-        CancellationToken cancellationToken)
-    {
-        var state = await RequestChatStateAsync(
-            client,
-            chatResource,
-            cancellationToken);
-        if (state is null)
-        {
-            return null;
-        }
-
-        for (var page = 0;
-             page < 1_000 &&
-             state.Turns.Count < AhpSessionUsageBuilder.MaxRetainedTurns &&
-             !string.IsNullOrWhiteSpace(state.TurnsNextCursor);
-             page++)
-        {
-            var cursor = state.TurnsNextCursor;
-            try
-            {
-                await client.RequestAsync<FetchTurnsParams, FetchTurnsResult>(
-                    "fetchTurns",
-                    new FetchTurnsParams
-                    {
-                        Channel = chatResource,
-                        Cursor = cursor,
-                    },
-                    cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                Trace.TraceWarning(
-                    "AHP historical turns request failed for {0}: {1}",
-                    chatResource,
-                    exception.Message);
-                break;
-            }
-
-            var nextState = await RequestChatStateAsync(
-                client,
-                chatResource,
-                cancellationToken);
-            if (nextState is null ||
-                nextState.Turns.Count <= state.Turns.Count ||
-                string.Equals(
-                    nextState.TurnsNextCursor,
-                    cursor,
-                    StringComparison.Ordinal))
-            {
-                break;
-            }
-
-            state = nextState;
-        }
-
-        return state;
-    }
-
-    private static async Task<ChatState?> RequestChatStateAsync(
-        AhpClient client,
-        string chatResource,
-        CancellationToken cancellationToken)
-    {
-        var result = await client.RequestAsync<SubscribeParams, SubscribeResult>(
-            "subscribe",
-            new SubscribeParams { Channel = chatResource },
-            cancellationToken);
-        return result?.Snapshot?.State.Chat;
-    }
-
-    private void OnAhpAction(string sessionId, StateAction action)
-    {
-        if (action.Value is ChatTurnStartedAction or
-            ChatUsageAction or
-            ChatToolCallStartAction or
-            ChatToolCallReadyAction or
-            ChatToolCallCompleteAction or
-            ChatToolCallResultConfirmedAction or
-            ChatToolCallAuthRequiredAction or
-            ChatToolCallAuthResolvedAction or
-            ChatTurnCompleteAction or
-            ChatTurnCancelledAction)
-        {
-            RequestSessionUsage(sessionId, refresh: true);
-        }
-    }
-
-    private IReadOnlyList<SessionSummary> GetSessionSummaries()
+    private HashSet<string> GetDetailSessions()
     {
         lock (_gate)
         {
-            return _sessionSummaries.Values.ToArray();
+            return _detailSessions.ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
     }
 
-    private HashSet<string> GetRequestedUsageSessions()
+    private void TrimDetailSessions()
     {
-        lock (_gate)
+        while (_detailSessions.Count > 8)
         {
-            return _requestedUsageSessions
-                .Select(ResolveUsageSessionId)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        }
-    }
-
-    private string ResolveUsageSessionId(string sessionId) =>
-        _chatSessionOwners.TryGetValue(sessionId, out var ownerId)
-            ? ownerId
-            : sessionId;
-
-    private void AddChatSessionOwner(string chatResource, string ownerId)
-    {
-        var chatId = CanonicalSessionId(chatResource);
-        if (chatId is null || _ambiguousChatSessionIds.Contains(chatId))
-        {
-            return;
-        }
-
-        if (_chatSessionOwners.TryGetValue(chatId, out var existingOwner) &&
-            !string.Equals(existingOwner, ownerId, StringComparison.OrdinalIgnoreCase))
-        {
-            _chatSessionOwners.Remove(chatId);
-            _ambiguousChatSessionIds.Add(chatId);
-            return;
-        }
-
-        _chatSessionOwners[chatId] = ownerId;
-    }
-
-    private void NormalizeRequestedUsageSessions()
-    {
-        var timestamps = _requestedUsageAt.ToArray();
-        _requestedUsageSessions.Clear();
-        _requestedUsageAt.Clear();
-        foreach (var (sessionId, requestedAt) in timestamps)
-        {
-            var ownerId = ResolveUsageSessionId(sessionId);
-            if (!_requestedUsageAt.TryGetValue(ownerId, out var existing) ||
-                requestedAt > existing)
-            {
-                _requestedUsageAt[ownerId] = requestedAt;
-            }
-        }
-
-        foreach (var sessionId in _requestedUsageAt.Keys)
-        {
-            _requestedUsageSessions.Add(sessionId);
-        }
-
-        TrimRequestedUsageSessions();
-    }
-
-    private void TrimRequestedUsageSessions()
-    {
-        while (_requestedUsageSessions.Count > 8)
-        {
-            var oldest = _requestedUsageAt
+            var oldest = _detailRequestedAt
                 .OrderBy(entry => entry.Value)
                 .Select(entry => entry.Key)
                 .FirstOrDefault();
@@ -657,10 +370,8 @@ internal sealed class AhpTitleClient
                 break;
             }
 
-            _requestedUsageSessions.Remove(oldest);
-            _requestedUsageAt.Remove(oldest);
-            _sessionUsageRequests.Remove(oldest);
-            _sessionUsage.Remove(oldest);
+            _detailSessions.Remove(oldest);
+            _detailRequestedAt.Remove(oldest);
         }
     }
 
@@ -741,25 +452,14 @@ internal sealed class AhpTitleClient
         lock (_gate)
         {
             _sessionSummaries.Clear();
-            _chatSessionOwners.Clear();
-            _ambiguousChatSessionIds.Clear();
             foreach (var session in sessions)
             {
                 var sessionId = CanonicalSessionId(session.Resource);
                 if (!string.IsNullOrWhiteSpace(sessionId))
                 {
                     _sessionSummaries[sessionId] = session;
-                    foreach (var chat in session.Chats ?? [])
-                    {
-                        if (!string.IsNullOrWhiteSpace(chat.Resource))
-                        {
-                            AddChatSessionOwner(chat.Resource, sessionId);
-                        }
-                    }
                 }
             }
-
-            NormalizeRequestedUsageSessions();
         }
 
         StatusChanged?.Invoke();

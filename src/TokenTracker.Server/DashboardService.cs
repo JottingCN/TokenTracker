@@ -112,12 +112,74 @@ public sealed class DashboardService
     private const int MaxOutcomeCacheEntries = 32;
     private long _outcomeVersion;
     private readonly SessionWorkspaceCache _workspaces;
+    // Every connected client asks for its own snapshot, and a burst of events
+    // wakes all of them at once. One build per identical request per data version
+    // keeps two dashboards (browser + status bar) from duplicating the whole SQL
+    // work and every allocation that comes with it.
+    private readonly object _snapshotCacheLock = new();
+    private readonly Dictionary<string, object> _snapshotCache =
+        new(StringComparer.Ordinal);
+    private (long Data, long Metadata) _snapshotCacheVersion;
+    private const int MaxSnapshotCacheEntries = 8;
+    private long _metadataVersion;
 
     /// <summary>
     /// Pass-through of <see cref="SpanStore.DataVersion"/> so a WebSocket connection
     /// can skip rebuilding a snapshot that no write has invalidated.
     /// </summary>
     public long DataVersion => _store.DataVersion;
+
+    /// <summary>
+    /// Data + metadata generation. Titles and workspaces change without touching
+    /// spans, so the WebSocket loop compares this instead of <see cref="DataVersion"/>
+    /// to still push a renamed session.
+    /// </summary>
+    public (long Data, long Metadata) SnapshotVersion =>
+        (_store.DataVersion, Interlocked.Read(ref _metadataVersion));
+
+    public void InvalidateSnapshots() =>
+        Interlocked.Increment(ref _metadataVersion);
+
+    // "Last 7/30 days" is anchored at UtcNow, so the window changes on every
+    // request and the snapshot cache would never hit. Snapping the start down to
+    // the minute keeps it stable for a whole minute and only ever includes a few
+    // extra seconds of history.
+    private static long FloorToMinute(long ms) =>
+        ms <= 0 || ms == long.MaxValue ? ms : ms - ms % 60_000;
+
+    private T Cached<T>(
+        string key,
+        (long Data, long Metadata) version,
+        Func<T> build)
+        where T : class
+    {
+        lock (_snapshotCacheLock)
+        {
+            if (_snapshotCacheVersion != version)
+            {
+                _snapshotCache.Clear();
+                _snapshotCacheVersion = version;
+            }
+
+            if (_snapshotCache.TryGetValue(key, out var existing) &&
+                existing is T cached)
+            {
+                return cached;
+            }
+        }
+
+        var built = build();
+        lock (_snapshotCacheLock)
+        {
+            if (_snapshotCacheVersion == version &&
+                _snapshotCache.Count < MaxSnapshotCacheEntries)
+            {
+                _snapshotCache[key] = built;
+            }
+        }
+
+        return built;
+    }
 
     public DashboardService(
         SpanStore store,
@@ -140,7 +202,24 @@ public sealed class DashboardService
         string? source = null)
     {
         var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
-        return GetDashboard(fromMs, toMs, includeUtility, source);
+        return GetDashboard(FloorToMinute(fromMs), toMs, includeUtility, source);
+    }
+
+    public SummaryChartPayload GetSummaryChart(
+        int range,
+        string groupBy,
+        string? model = null,
+        string? sessionId = null,
+        string? source = null)
+    {
+        var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
+        return GetSummaryChart(
+            FloorToMinute(fromMs),
+            toMs,
+            groupBy,
+            model,
+            sessionId,
+            source);
     }
 
     public SummaryChartPayload GetSummaryChart(
@@ -153,15 +232,19 @@ public sealed class DashboardService
     {
         source = NormalizeSource(source);
         EnsureCombined(source);
-        return new SummaryChartPayload(
-            _store.GetSummaryChart(
-                fromMs,
-                toMs,
-                groupBy,
-                model,
-                sessionId,
-                mainOnly: !string.IsNullOrWhiteSpace(sessionId),
-                source: source).ToList());
+        var version = SnapshotVersion;
+        return Cached(
+            $"chart:{version.Data}:{fromMs}:{toMs}:{groupBy}:{model}:{sessionId}:{source}",
+            version,
+            () => new SummaryChartPayload(
+                _store.GetSummaryChart(
+                    fromMs,
+                    toMs,
+                    groupBy,
+                    model,
+                    sessionId,
+                    mainOnly: !string.IsNullOrWhiteSpace(sessionId),
+                    source: source).ToList()));
     }
 
     public DashboardPayload GetDashboard(
@@ -172,6 +255,21 @@ public sealed class DashboardService
     {
         source = NormalizeSource(source);
         EnsureCombined(source);
+        var version = SnapshotVersion;
+        // `includeUtility` is intentionally absent from the key: the dashboard
+        // always aggregates with utility calls (see BuildDashboard), so different
+        // values would produce the same payload anyway.
+        return Cached(
+            $"dashboard:{version.Data}:{fromMs}:{toMs}:{source}",
+            version,
+            () => BuildDashboard(fromMs, toMs, source));
+    }
+
+    private DashboardPayload BuildDashboard(
+        long fromMs,
+        long toMs,
+        string? source)
+    {
         var lastReceivedAtMs = _store.GetLastReceivedAtMs();
         var updatedAt = lastReceivedAtMs > 0
             ? DateTimeOffset.FromUnixTimeMilliseconds(lastReceivedAtMs)
@@ -258,7 +356,7 @@ public sealed class DashboardService
         string? source = null)
     {
         var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
-        return GetModel(model, fromMs, toMs, source);
+        return GetModel(model, FloorToMinute(fromMs), toMs, source);
     }
 
     public ModelPayload GetModel(
@@ -269,6 +367,19 @@ public sealed class DashboardService
     {
         source = NormalizeSource(source);
         EnsureCombined(source);
+        var version = SnapshotVersion;
+        return Cached(
+            $"model:{version.Data}:{version.Metadata}:{fromMs}:{toMs}:{source}:{model}",
+            version,
+            () => BuildModel(model, fromMs, toMs, source));
+    }
+
+    private ModelPayload BuildModel(
+        string model,
+        long fromMs,
+        long toMs,
+        string? source)
+    {
         var metadataCache = new Dictionary<string, SessionMetadata?>(
             StringComparer.OrdinalIgnoreCase);
         _workspaces.Flush();
@@ -301,7 +412,7 @@ public sealed class DashboardService
     {
         var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
         return GetCalls(
-            fromMs,
+            FloorToMinute(fromMs),
             toMs,
             includeUtility,
             model,
@@ -441,7 +552,12 @@ public sealed class DashboardService
         bool includeCalls = true)
     {
         var (fromMs, toMs) = RangeTime.Resolve(range, DateTimeOffset.UtcNow);
-        return GetSession(sessionId, source, fromMs, toMs, includeCalls);
+        return GetSession(
+            sessionId,
+            source,
+            FloorToMinute(fromMs),
+            toMs,
+            includeCalls);
     }
 
     public SessionPayload GetSession(
@@ -453,6 +569,31 @@ public sealed class DashboardService
     {
         source = NormalizeSource(source);
         EnsureCombined(source);
+        // Keeps the session's chat channels subscribed so idle turns still
+        // resolve their tool display names from AHP events. This must run on
+        // cache hits too, otherwise the detail subscription ages out.
+        _metadata.RequestAhpSessionDetails(sessionId);
+        var version = SnapshotVersion;
+        // Only the aggregate projection is cached: the raw call list is the big
+        // payload and is requested by dedicated pages, not by the live loop.
+        if (!includeCalls)
+        {
+            return Cached(
+                $"session:{version.Data}:{version.Metadata}:{fromMs}:{toMs}:{source}:{sessionId}",
+                version,
+                () => BuildSession(sessionId, source, fromMs, toMs, includeCalls: false));
+        }
+
+        return BuildSession(sessionId, source, fromMs, toMs, includeCalls: true);
+    }
+
+    private SessionPayload BuildSession(
+        string sessionId,
+        string? source,
+        long fromMs,
+        long toMs,
+        bool includeCalls)
+    {
         var detailSource = source == "combined" ? null : source;
         // The session page must honour the selected range like the dashboard
         // does; filtering inside SQL keeps out-of-range rows from being loaded.
@@ -507,11 +648,6 @@ public sealed class DashboardService
         events.InsertRange(0, chatEvents);
 
         var metadata = _metadata.Get(sessionId);
-        _metadata.RequestAhpSessionUsage(sessionId);
-        var ahpUsage = BuildAhpSessionUsage(
-            _metadata.GetAhpSessionUsage(sessionId),
-            fromMs,
-            toMs);
         var tools = _store
             .GetSessionTools(sessionId, detailSource, fromMs, toMs)
             .ToList();
@@ -541,67 +677,7 @@ public sealed class DashboardService
                 sessionId),
             sessionId,
             metadata?.Title,
-            metadata?.WorkspacePath,
-            ahpUsage);
-    }
-
-    private static AhpSessionUsagePayload? BuildAhpSessionUsage(
-        AhpSessionUsage? usage,
-        long fromMs,
-        long toMs)
-    {
-        if (usage is null)
-        {
-            return null;
-        }
-
-        var allTime = fromMs <= 0 && toMs == long.MaxValue;
-        var hasUntimedTurns = usage.Turns.Any(turn => turn.StartedAtMs is null);
-        var turns = usage.Turns
-            .Where(turn => turn.StartedAtMs is { } start
-                ? start >= fromMs && start < toMs
-                : allTime)
-            .ToList();
-
-        return new AhpSessionUsagePayload(
-            usage.HistoryComplete && (allTime || !hasUntimedTurns),
-            allTime ? usage.TurnCount : turns.Count,
-            turns.LongCount(turn => turn.HasUsage),
-            SumKnown(turns.Select(turn => turn.InputTokens)),
-            SumKnown(turns.Select(turn => turn.CacheReadTokens)),
-            SumKnown(turns.Select(turn => turn.OutputTokens)),
-            turns
-                .OrderByDescending(turn => turn.StartedAtMs)
-                .Take(100)
-                .Select(turn => new AhpTurnUsagePayload(
-                    turn.ChatResource,
-                    turn.TurnId,
-                    turn.State,
-                    turn.StartedAtMs,
-                    turn.DurationMs,
-                    turn.Model,
-                    turn.InputTokens,
-                    turn.CacheReadTokens,
-                    turn.OutputTokens,
-                    turn.HasUsage,
-                    turn.Tools))
-                .ToList());
-    }
-
-    private static long? SumKnown(IEnumerable<long?> values)
-    {
-        var known = values
-            .Where(value => value.HasValue)
-            .Select(value => value.GetValueOrDefault());
-        var sum = 0L;
-        var found = false;
-        foreach (var value in known)
-        {
-            sum += value;
-            found = true;
-        }
-
-        return found ? sum : null;
+            metadata?.WorkspacePath);
     }
 
     private static CallSample ToSample(CallRow call) => new(

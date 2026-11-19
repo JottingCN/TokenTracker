@@ -76,10 +76,9 @@ code --install-extension tokentracker-*.vsix --force
 
 ## 自定义状态栏
 
-`tokentracker.statusBarFormat` 默认 `$(pulse) {turn} · {hit} · {ttft} · {speed} · {cost}`。
+`tokentracker.statusBarFormat` 默认 `$(pulse) {hit} · {ttft} · {speed} · {cost}`。
 
-- 可用占位符：`{icon}`、`{turn}`、`{step}`、`{hit}`、`{ttft}`、`{speed}`、`{cost}`、`{calls}`、`{duration}`、`{input}`、`{cache}`、`{output}`、`{reasoning}`、`{events}`、`{tools}`、`{toolerrors}`、`{agents}`、`{turns}`、`{hooks}`、`{range}`、`{model}`、`{session}`。
-- `{turn}` 显示最新对话轮次与已执行步数（如 `第3轮 12步`），`{step}` 只显示步数；轮次来自 Agent Host 的根 `invoke_agent`，纯 Copilot Chat 数据或当前范围没有轮次时该占位符自动省略。`{turns}` 是本范围内的轮次总数。
+- 可用占位符：`{icon}`、`{step}`、`{hit}`、`{ttft}`、`{speed}`、`{cost}`、`{calls}`、`{duration}`、`{input}`、`{cache}`、`{output}`、`{reasoning}`、`{events}`、`{tools}`、`{toolerrors}`、`{agents}`、`{hooks}`、`{range}`、`{model}`、`{session}`。
 - 冒号后指定格式，例如 `{hit:0.00%}`、`{ttft:0.0s}`、`{ttft:ms}`、`{speed:0.0}`、`{cost:0.000000}`、`{calls:0}`。
 - 缺失的可选指标（如无有效 TTFT）会自动省略，不会留下重复的分隔符。
 
@@ -91,7 +90,7 @@ code --install-extension tokentracker-*.vsix --force
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `tokentracker.statusBarFormat` | `$(pulse) {turn} · {hit} · {ttft} · {speed} · {cost}` | 状态栏模板 |
+| `tokentracker.statusBarFormat` | `$(pulse) {hit} · {ttft} · {speed} · {cost}` | 状态栏模板 |
 | `tokentracker.statsRange` | `7d` | 统计范围：`today` / `7d` / `30d` / `all` |
 | `tokentracker.costUnit` | `cny` | 费用单位：`cny` / `usd` / `credit` |
 | `tokentracker.creditRate` | `0.01` | 1 积分对应的人民币金额 |

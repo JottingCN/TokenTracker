@@ -18,14 +18,6 @@ public sealed class AhpTitleClientTests
     [Fact]
     public async Task ResolvesLiveTitleFromLocalAhpEndpoint()
     {
-        var parsedSnapshot = JsonSerializer.Deserialize<SubscribeResult>(
-            ChatSnapshot(historyLoaded: false),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web)
-            {
-                TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
-            });
-        Assert.NotNull(parsedSnapshot?.Snapshot?.State.Chat);
-
         var root = Path.Combine(
             Path.GetTempPath(),
             "tokentracker-tests",
@@ -110,32 +102,6 @@ public sealed class AhpTitleClientTests
             }
 
             Assert.Equal("Hashed Custom Tool", resolvedHashedToolName);
-
-            provider.RequestAhpSessionUsage("chat-1");
-            AhpSessionUsage? usage = null;
-            for (var attempt = 0;
-                 attempt < 50 && usage?.TurnCount != 3;
-                 attempt++)
-            {
-                await Task.Delay(100);
-                usage = provider.GetAhpSessionUsage("chat-1");
-            }
-
-            Assert.NotNull(usage);
-            Assert.Same(usage, provider.GetAhpSessionUsage("session-1"));
-            Assert.Contains("fetchTurns:ahp-chat:/chat-1", requests);
-            Assert.Equal(3, usage.TurnCount);
-            Assert.True(usage.HistoryComplete);
-            Assert.Equal(2, usage.Turns.Count(turn => turn.HasUsage));
-            Assert.Contains(usage.Turns, turn =>
-                turn.TurnId == "turn-current" &&
-                turn.InputTokens == 23 &&
-                turn.CacheReadTokens == 7 &&
-                turn.OutputTokens == 5);
-            Assert.Contains(usage.Turns, turn =>
-                turn.TurnId == "turn-active" &&
-                turn.State == "in_progress" &&
-                turn.InputTokens == 10);
         }
         finally
         {
@@ -283,7 +249,6 @@ public sealed class AhpTitleClientTests
             isServer: true,
             subProtocol: null,
             keepAliveInterval: TimeSpan.FromSeconds(20));
-        var historyLoaded = false;
         while (!cancellationToken.IsCancellationRequested &&
                socket.State == WebSocketState.Open)
         {
@@ -308,10 +273,6 @@ public sealed class AhpTitleClientTests
                     ? channelElement.GetString()
                     : null;
             requests?.Enqueue($"{method}:{channel}");
-            if (method == "fetchTurns")
-            {
-                historyLoaded = true;
-            }
 
             var result = method switch
             {
@@ -319,9 +280,6 @@ public sealed class AhpTitleClientTests
                 "listSessions" => """
                     {"items":[{"resource":"ahp-session:/session-1","provider":"copilot","title":"AHP live title","status":8,"createdAt":"2026-10-30T00:00:00Z","modifiedAt":"2026-10-30T00:00:00Z","workingDirectories":["file:///d:/source/demo"],"chats":[{"resource":"ahp-chat:/chat-1","title":"Chat","status":8}]}]}
                     """,
-                "subscribe" when channel == "ahp-chat:/chat-1" =>
-                    ChatSnapshot(historyLoaded),
-                "fetchTurns" => "{}",
                 "subscribe" => "{}",
                 _ => "{}",
             };
@@ -357,33 +315,6 @@ public sealed class AhpTitleClientTests
                     cancellationToken);
             }
         }
-    }
-
-    private static string ChatSnapshot(bool historyLoaded)
-    {
-        var completedTurns = historyLoaded
-            ? """
-              [
-                {"id":"turn-old","startedAt":"2026-10-29T23:59:00Z","message":{"text":"hidden","origin":{"kind":"user"}},"responseParts":[]},
-                {"id":"turn-current","startedAt":"2026-10-30T00:00:00Z","duration":1200,"message":{"text":"hidden","origin":{"kind":"user"}},"responseParts":[],"usage":{"model":"gpt-test","inputTokens":23,"cacheReadTokens":7,"outputTokens":5}}
-              ]
-              """
-            : """
-              [
-                {"id":"turn-current","startedAt":"2026-10-30T00:00:00Z","duration":1200,"message":{"text":"hidden","origin":{"kind":"user"}},"responseParts":[],"usage":{"model":"gpt-test","inputTokens":23,"cacheReadTokens":7,"outputTokens":5}}
-              ]
-              """;
-        var cursor = historyLoaded ? "" : ",\"turnsNextCursor\":\"older-cursor\"";
-        return
-            "{\"snapshot\":{\"resource\":\"ahp-chat:/chat-1\",\"fromSeq\":0," +
-            "\"state\":{\"resource\":\"ahp-chat:/chat-1\",\"title\":\"Chat\"," +
-            "\"status\":8,\"modifiedAt\":\"2026-10-30T00:00:00Z\",\"turns\":" +
-            completedTurns + cursor +
-            ",\"activeTurn\":{\"id\":\"turn-active\"," +
-            "\"startedAt\":\"2026-10-30T00:01:00Z\",\"message\":" +
-            "{\"text\":\"hidden\",\"origin\":{\"kind\":\"user\"}}," +
-            "\"responseParts\":[],\"usage\":{\"model\":\"gpt-test\"," +
-            "\"inputTokens\":10,\"outputTokens\":2}}}}}";
     }
 
     private static string Hash(string value) =>

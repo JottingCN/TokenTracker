@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -198,7 +200,13 @@ public sealed class SessionEventLogMonitor
             length - state.Offset,
             ReadChunkBytes);
 
-        byte[] chunk;
+        // Polling runs every 500 ms for up to 256 sessions, so a fresh 256 KB
+        // buffer per read (both above the LOH threshold) would churn the large
+        // object heap forever. Rent one buffer and append straight into the
+        // session's pending list instead of allocating a concatenated array.
+        var rented = ArrayPool<byte>.Shared.Rent(toRead);
+        var read = 0;
+        var readFailed = false;
         try
         {
             await using var stream = new FileStream(
@@ -209,12 +217,10 @@ public sealed class SessionEventLogMonitor
                 bufferSize: 4096,
                 useAsync: true);
             stream.Seek(state.Offset, SeekOrigin.Begin);
-            chunk = new byte[toRead];
-            var read = 0;
             while (read < toRead)
             {
                 var count = await stream.ReadAsync(
-                    chunk.AsMemory(read, toRead - read),
+                    rented.AsMemory(read, toRead - read),
                     cancellationToken);
                 if (count == 0)
                 {
@@ -222,39 +228,50 @@ public sealed class SessionEventLogMonitor
                 }
                 read += count;
             }
-
-            if (read < chunk.Length)
-            {
-                Array.Resize(ref chunk, read);
-            }
         }
         catch (IOException)
         {
-            return;
+            readFailed = true;
         }
         catch (UnauthorizedAccessException)
         {
-            return;
+            readFailed = true;
+        }
+        finally
+        {
+            // Only publish the bytes once the read succeeded; an aborted read must
+            // not leave half a chunk in the pending buffer, because the offset is
+            // not advanced and the next poll would read the same bytes again.
+            if (!readFailed && read > 0)
+            {
+                state.Pending.AddRange(rented.AsSpan(0, read));
+            }
+            ArrayPool<byte>.Shared.Return(rented);
         }
 
-        if (chunk.Length == 0)
+        if (readFailed || read == 0)
         {
             return;
         }
 
         var previousCommittedOffset = state.CommittedOffset;
-        var combined = new byte[state.Pending.Count + chunk.Length];
-        state.Pending.CopyTo(combined, 0);
-        chunk.CopyTo(combined, state.Pending.Count);
+        var combined = CollectionsMarshal.AsSpan(state.Pending);
 
         var processStart = 0;
         if (state.DiscardingOversizedLine)
         {
-            var newline = Array.IndexOf(combined, (byte)'\n');
+            var newline = combined.IndexOf((byte)'\n');
             if (newline < 0)
             {
-                state.DiscardedLineBytes += chunk.Length;
-                state.Offset += chunk.Length;
+                // Still inside the skipped line: only accumulate its size.
+                // CommittedOffset is advanced once the terminating newline is
+                // found, otherwise the bytes would be counted twice.
+                state.DiscardedLineBytes += combined.Length;
+                state.Offset += read;
+                state.Pending.Clear();
+                Interlocked.Exchange(
+                    ref _lastReadMs,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 return;
             }
 
@@ -273,7 +290,6 @@ public sealed class SessionEventLogMonitor
         ProcessCompleteLines(combined, processStart, completeEnd);
         state.CommittedOffset += completeEnd - processStart;
 
-        state.Pending.Clear();
         var tailLength = combined.Length - completeEnd;
         if (tailLength > 0)
         {
@@ -289,14 +305,21 @@ public sealed class SessionEventLogMonitor
                           $"{MaxEventLineBytes} bytes"
                         : "session event log monitor skipped a partial line because " +
                           $"buffered data exceeded {MaxPendingBytes} bytes");
+                state.Pending.Clear();
             }
-            else
+            else if (completeEnd > 0)
             {
-                state.Pending.AddRange(combined.AsSpan(completeEnd, tailLength));
+                // Keep only the incomplete tail so the pending list does not grow
+                // with every poll.
+                state.Pending.RemoveRange(0, completeEnd);
             }
         }
+        else
+        {
+            state.Pending.Clear();
+        }
 
-        state.Offset += chunk.Length;
+        state.Offset += read;
         _stateDirty |= state.CommittedOffset != previousCommittedOffset;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         Interlocked.Exchange(ref _lastReadMs, now);
@@ -394,22 +417,19 @@ public sealed class SessionEventLogMonitor
     }
 
     private void ProcessCompleteLines(
-        byte[] content,
+        ReadOnlySpan<byte> content,
         int start,
         int end)
     {
         for (var index = start; index < end;)
         {
-            var newline = Array.IndexOf(
-                content,
-                (byte)'\n',
-                index,
-                end - index);
+            var newline = content[index..end].IndexOf((byte)'\n');
             if (newline < 0)
             {
                 break;
             }
 
+            newline += index;
             var lineLength = newline - index;
             if (lineLength > 0 && content[index + lineLength - 1] == (byte)'\r')
             {
@@ -424,7 +444,7 @@ public sealed class SessionEventLogMonitor
             }
             else if (lineLength > 0)
             {
-                ProcessLine(content.AsSpan(index, lineLength));
+                ProcessLine(content.Slice(index, lineLength));
             }
 
             index = newline + 1;
@@ -490,9 +510,9 @@ public sealed class SessionEventLogMonitor
         }
     }
 
-    private static int GetLastCompleteLineEnd(byte[] content)
+    private static int GetLastCompleteLineEnd(ReadOnlySpan<byte> content)
     {
-        var newline = Array.LastIndexOf(content, (byte)'\n');
+        var newline = content.LastIndexOf((byte)'\n');
         return newline >= 0 ? newline + 1 : 0;
     }
 
